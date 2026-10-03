@@ -49,7 +49,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
+      # ubuntu runner 自带 Android SDK，用 setup-android 反而会卡在许可协议上
       - name: Build
         working-directory: android
         run: ./gradlew :app:assembleDebug --no-daemon

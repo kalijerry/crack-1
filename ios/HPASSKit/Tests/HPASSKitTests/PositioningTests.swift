@@ -176,9 +176,16 @@ final class PositioningTests: XCTestCase {
         let truth = FPTestStore.pointPosition(1)
         let far = FPTestStore.pointPosition(8)
 
+        // 窗口收紧到和帧间隔一致，保证"爆发帧"的窗口里只有远端读数。
+        // 用默认的 1500 ms 窗口时，窗口会同时含有上一帧的真实读数，
+        // WKNN 质心落在两者中间，对照组就测不出"完全瞬移"。
         func run(smoothing: Bool) -> [Double] {
             var rng = FPLCG(seed: 4242)
-            let pos = makePositioner { $0.useGraphSmoothing = smoothing }
+            let pos = makePositioner {
+                $0.useGraphSmoothing = smoothing
+                $0.windowMs = 1000
+                $0.maxWindowMs = 1000
+            }
             var xs: [Double] = []
             for f in 0..<8 {
                 let t = Int64(f + 1) * 1000

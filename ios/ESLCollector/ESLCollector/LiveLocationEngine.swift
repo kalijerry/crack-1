@@ -312,7 +312,7 @@ final class LiveLocationEngine: ObservableObject {
         pipe.recent.removeAll { now - $0.t > 2000 }
         let lastSec = pipe.recent.filter { now - $0.t <= 1000 }
         pipe.readingsPerSecond = lastSec.count
-        pipe.uniqueTagsPerSecond = Set(lastSec.map(\.id)).count
+        pipe.uniqueTagsPerSecond = Set(lastSec.map { $0.id }).count
 
         if let fix = pipe.positioner.estimate(nowMs: now) {
             pipe.estimate = fix

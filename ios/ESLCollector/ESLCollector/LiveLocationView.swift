@@ -42,7 +42,7 @@ struct LiveLocationView: View {
                           uncertaintyCm: uncertaintyCm,
                           rawEstimate: engine.estimate?.position,
                           route: engine.route,
-                          onTap: handleTap)
+                          onTap: { p in handleTap(p) })
                     .frame(height: max(geo.size.height * 0.46, 200))
                     .clipped()
 
@@ -57,10 +57,13 @@ struct LiveLocationView: View {
                                 .foregroundStyle(.orange)
                         }
                     }
-                    runSection
-                    navSection
-                    paramSection
-                    calibrationSection
+                    Group {
+                        runSection
+                        navSection
+                        paramSection
+                        calibrationSection
+                    }
+                    .disabled(!store.isReady)
                 }
             }
         }
@@ -103,7 +106,7 @@ struct LiveLocationView: View {
             HStack(spacing: 10) {
                 Text("点位 \(engine.estimate?.pointId ?? "—")")
                 Text(engine.wasConstrained ? "通道约束已生效" : "无通道约束")
-                    .foregroundStyle(engine.wasConstrained ? .orange : .secondary)
+                    .foregroundStyle(engine.wasConstrained ? Color.orange : Color.secondary)
                 Spacer()
             }
             if let err = engine.lastError {
@@ -121,8 +124,8 @@ struct LiveLocationView: View {
 
     private var runSection: some View {
         Section {
-            LoggedButton(engine.isRunning ? "停止" : "开始",
-                         detail: engine.isRunning ? "" : "指纹 \(store.fingerprints.count) 点") {
+            LoggedButton(name: "实时定位开关",
+                         detail: engine.isRunning ? "停止" : "开始 / 指纹 \(store.fingerprints.count) 点") {
                 engine.isRunning ? engine.stop() : engine.start()
             } label: {
                 Text(engine.isRunning ? "停止" : "开始")
@@ -165,7 +168,7 @@ struct LiveLocationView: View {
                 HStack(spacing: 14) {
                     Image(systemName: Self.arrowName(h.direction))
                         .font(.system(size: 42, weight: .semibold))
-                        .foregroundStyle(h.direction == .straight ? .green : .orange)
+                        .foregroundStyle(h.direction == .straight ? Color.green : Color.orange)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(Self.directionText(h.direction)).font(.headline)
                         Text("剩余 \(Int(h.remainingDistance.rounded())) cm")
@@ -336,7 +339,7 @@ struct LiveLocationView: View {
 
     // MARK: - 交互
 
-    private func handleTap(_ p: Point2) {
+    @MainActor private func handleTap(_ p: Point2) {
         switch tapMode {
         case .none:
             break
@@ -417,7 +420,7 @@ private struct GoodsPickerView: View {
                     Text(row.item.itemName ?? row.item.sku)
                     Text(row.item.sku + (row.position == nil ? " · 无坐标" : " · \(row.item.positions.count) 个位置"))
                         .font(.caption)
-                        .foregroundStyle(row.position == nil ? .red : .secondary)
+                        .foregroundStyle(row.position == nil ? Color.red : Color.secondary)
                 }
             }
             .disabled(row.position == nil)

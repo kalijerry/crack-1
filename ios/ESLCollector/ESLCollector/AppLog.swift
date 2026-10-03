@@ -144,11 +144,24 @@ final class AppLog: ObservableObject {
 
 /// 自动记录点击的按钮。界面里所有操作按钮都用它，保证日志完整。
 struct LoggedButton<Label: View>: View {
-    let name: String
-    var detail: String = ""
-    var role: ButtonRole?
-    let action: () -> Void
-    @ViewBuilder let label: () -> Label
+    private let name: String
+    private let detail: String
+    private let role: ButtonRole?
+    private let action: () -> Void
+    private let label: () -> Label
+
+    /// 显式声明构造器（而非依赖逐成员构造器），避免与下面的便捷构造器在泛型推断时产生歧义。
+    init(name: String,
+         detail: String = "",
+         role: ButtonRole? = nil,
+         action: @escaping () -> Void,
+         @ViewBuilder label: @escaping () -> Label) {
+        self.name = name
+        self.detail = detail
+        self.role = role
+        self.action = action
+        self.label = label
+    }
 
     var body: some View {
         Button(role: role) {
@@ -161,11 +174,8 @@ struct LoggedButton<Label: View>: View {
 }
 
 extension LoggedButton where Label == Text {
+    /// 纯文字按钮：标题同时作为日志里的控件名。
     init(_ title: String, detail: String = "", role: ButtonRole? = nil, action: @escaping () -> Void) {
-        self.name = title
-        self.detail = detail
-        self.role = role
-        self.action = action
-        self.label = { Text(title) }
+        self.init(name: title, detail: detail, role: role, action: action, label: { Text(title) })
     }
 }

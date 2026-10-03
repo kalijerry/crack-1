@@ -230,7 +230,7 @@ struct MapCanvas: View {
                 let r: CGFloat = hit ? 5 : 2
                 let rect = CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)
                 ctx.fill(Path(ellipseIn: rect),
-                         with: .color(hit ? .orange : .secondary.opacity(0.45)))
+                         with: .color(hit ? Color.orange : Color.secondary.opacity(0.45)))
             }
         }
 

@@ -4,6 +4,7 @@
 
 | 目录 | 内容 |
 |---|---|
+| `ios/HPASSKit` | **定位与导航 Swift 库**：蓝牙指纹定位、惯导融合、路径规划。见 [模块说明](ios/HPASSKit/README.md) |
 | `ios/ESLCollector` | iOS 采集 App（SwiftUI，iOS 16+）。录制价签 BLE 广播的 RSSI、50 Hz IMU，支持打点 |
 | `android` | Android 采集 App（Kotlin，无 AndroidX 依赖）。功能与 iOS 版相同，在 S25+ 上用 |
 | `tools/calibrate.py` | 读取两台手机的配对数据，拟合 RSSI 映射，并检查覆盖率和 IMU |

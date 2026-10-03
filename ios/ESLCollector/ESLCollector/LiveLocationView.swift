@@ -31,6 +31,28 @@ struct LiveLocationView: View {
     @State private var knownPointId = ""
 
     var body: some View {
+        // 本页是 TabView 的根，自己带 NavigationStack（商品 / 指纹点选择要用 NavigationLink）
+        NavigationStack {
+            content
+                .navigationTitle("实时定位")
+        }
+        // 生命周期挂在 NavigationStack 上：挂在内容上的话，push 子页面时也会触发 onDisappear
+        .onAppear {
+            declinationText = Fmt.f(engine.magneticDeclinationDeg, 1)
+        }
+        .onChange(of: engine.isRunning) { running in
+            UIApplication.shared.isIdleTimerDisabled = running
+        }
+        // 这里是标签页，切到日志页也会触发 onDisappear。
+        // 实地走测时需要边走边看日志，所以不在这里停止定位，只由「停止」按钮控制。
+        .onDisappear {
+            if !engine.isRunning {
+                UIApplication.shared.isIdleTimerDisabled = false
+            }
+        }
+    }
+
+    private var content: some View {
         GeometryReader { geo in
             VStack(spacing: 0) {
                 MapCanvas(map: store.map,
@@ -66,17 +88,6 @@ struct LiveLocationView: View {
                     .disabled(!store.isReady)
                 }
             }
-        }
-        .navigationTitle("实时定位")
-        .onAppear {
-            declinationText = Fmt.f(engine.magneticDeclinationDeg, 1)
-        }
-        .onChange(of: engine.isRunning) { running in
-            UIApplication.shared.isIdleTimerDisabled = running
-        }
-        .onDisappear {
-            engine.stop()
-            UIApplication.shared.isIdleTimerDisabled = false
         }
     }
 

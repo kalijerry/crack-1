@@ -9,10 +9,15 @@ settings:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
+packages:
+  HPASSKit:
+    path: ../HPASSKit
 targets:
   ESLCollector:
     type: application
     platform: iOS
+    dependencies:
+      - package: HPASSKit
     sources:
       - path: ESLCollector
     info:
@@ -26,6 +31,10 @@ targets:
         NSMotionUsageDescription: 记录加速度、陀螺仪和磁力计数据用于定位标定
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        # 允许访问局域网内的服务器；不放开任意明文 HTTP，公网服务器请用 HTTPS
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: 从门店服务器下载地图、指纹和价签数据
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.eslcollector

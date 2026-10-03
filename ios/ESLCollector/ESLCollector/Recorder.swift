@@ -170,7 +170,12 @@ final class Recorder: ObservableObject {
             }
             ble.start()
             motion.start(hz: 50)
-            if !motion.isAvailable { lastError = "设备运动传感器不可用" }
+            if !motion.isAvailable {
+                lastError = "设备运动传感器不可用"
+                AppLog.e("采集", "设备运动传感器不可用")
+            }
+            AppLog.shared.startMirroring(to: dir)
+            AppLog.i("采集", "开始录制：\(dir.lastPathComponent)，仅价签 \(onlyESL ? "是" : "否")")
 
             UIApplication.shared.isIdleTimerDisabled = true
             isRecording = true
@@ -180,6 +185,7 @@ final class Recorder: ObservableObject {
             }
         } catch {
             lastError = "开始录制失败：\(error.localizedDescription)"
+            AppLog.e("采集", "开始录制失败：\(error.localizedDescription)")
         }
     }
 
@@ -201,6 +207,8 @@ final class Recorder: ObservableObject {
         marksWriter = nil
         UIApplication.shared.isIdleTimerDisabled = false
         isRecording = false
+        AppLog.i("采集", "停止录制：BLE \(bleRows) 行，IMU \(imuRows) 行，打点 \(markCount) 次")
+        AppLog.shared.stopMirroring()
     }
 
     // MARK: - 打点
@@ -221,6 +229,8 @@ final class Recorder: ObservableObject {
         markingPoint = id
         shared.currentPoint = id
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        AppLog.i("打点", "点位 \(id) 开始，计划 \(markDuration) 秒" +
+                 (markX.isEmpty && markY.isEmpty ? "" : "，坐标 (\(markX), \(markY))"))
     }
 
     func endMark(note: String = "") {
@@ -234,6 +244,7 @@ final class Recorder: ObservableObject {
         markRemaining = 0
         markCount += 1
         UINotificationFeedbackGenerator().notificationOccurred(.success)
+        AppLog.i("打点", "点位 \(id) 结束" + (note.isEmpty ? "" : "（\(note)）"))
         // 纯数字编号自动 +1，方便连续打点
         if let n = Int(id) { pointId = String(n + 1) }
     }

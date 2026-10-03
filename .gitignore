@@ -23,3 +23,7 @@ sessions/
 __pycache__/
 .DS_Store
 Thumbs.db
+
+# 门店数据（地图 / 指纹 / 价签）不进仓库
+*.store.json
+store-data/

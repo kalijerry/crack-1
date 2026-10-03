@@ -22,17 +22,16 @@ import zipfile
 from collections import defaultdict
 from pathlib import Path
 
-# HPASS 对手机蓝牙读数（type=1）的打分档位：type0 档位 + eslAoaEmitPower(-15)
-TIER_THRESHOLDS = [(-65, 10.0), (-70, 3.0), (-80, 1.5), (-90, 1.0), (-100, 0.5)]
-# HPASS executeESLPos：1 秒窗口读数 <= 10 时改用 2 秒窗口
+# 读数稀疏判定：1 秒内读数少于这个数就算稀疏，定位算法通常需要退回更长的时间窗
 SPARSE_SECOND_LIMIT = 10
+# 分档宽度（dB）。把 RSSI 按固定宽度分箱，用来衡量校正前后"落在同一档"的比例。
+# 这是一个通用的量化指标，不针对任何特定算法。
+BIN_WIDTH_DB = 5.0
 
 
-def tier(rssi):
-    for th, score in TIER_THRESHOLDS:
-        if rssi >= th:
-            return score
-    return 0.0
+def rssi_bin(rssi):
+    """把 RSSI 量化到固定宽度的档位。"""
+    return math.floor(rssi / BIN_WIDTH_DB)
 
 
 # ---------------------------------------------------------------- 读取
@@ -204,12 +203,12 @@ def calibrate(ref: Session, tgt: Session, min_n: int, out_dir: Path, plot: bool)
     strong = [i for i, y in enumerate(ys) if y > -65]
     weak = [i for i, y in enumerate(ys) if y <= -65]
 
-    def tier_agree(mapper):
-        return sum(tier(ys[i]) == tier(mapper(xs[i])) for i in range(len(xs))) / len(xs)
+    def bin_agree(mapper):
+        return sum(rssi_bin(ys[i]) == rssi_bin(mapper(xs[i])) for i in range(len(xs))) / len(xs)
 
-    agree_raw = tier_agree(lambda x: x)
-    agree_off = tier_agree(lambda x: x + b_off)
-    agree_lin = tier_agree(lambda x: a_lin * x + b_lin)
+    agree_raw = bin_agree(lambda x: x)
+    agree_off = bin_agree(lambda x: x + b_off)
+    agree_lin = bin_agree(lambda x: a_lin * x + b_lin)
 
     # 线性模型只有在斜率明显偏离 1 且误差明显更小时才推荐
     use_linear = abs(a_lin - 1) > 0.1 and mae(res_lin) < mae(res_off) * 0.85
@@ -226,7 +225,7 @@ def calibrate(ref: Session, tgt: Session, min_n: int, out_dir: Path, plot: bool)
     if strong and weak:
         print(f"分段残差（仅偏移）：强信号(>-65) MAE {mae([res_off[i] for i in strong]):.2f}，"
               f"弱信号 MAE {mae([res_off[i] for i in weak]):.2f}")
-    print(f"\nHPASS 打分档位一致率：不校正 {agree_raw:.0%} → 仅偏移 {agree_off:.0%} → 线性 {agree_lin:.0%}")
+    print(f"\n{BIN_WIDTH_DB:.0f} dB 分档一致率：不校正 {agree_raw:.0%} → 仅偏移 {agree_off:.0%} → 线性 {agree_lin:.0%}")
 
     print("\n覆盖率（每个点位）：")
     print("  点位    参考机价签 目标机价签 重合率  参考读数/秒 目标读数/秒  参考稀疏秒 目标稀疏秒")
@@ -234,10 +233,11 @@ def calibrate(ref: Session, tgt: Session, min_n: int, out_dir: Path, plot: bool)
         print(f"  {c[0]:<7} {c[1]:>9} {c[2]:>10} {c[3]:>6.0%} {c[4]:>11.1f} {c[5]:>11.1f} {c[6]:>10.0%} {c[7]:>10.0%}")
     avg_ratio = statistics.mean(c[5] for c in coverage) / max(1e-9, statistics.mean(c[4] for c in coverage))
     print(f"  目标机读数量约为参考机的 {avg_ratio:.0%}"
-          + ("；⚠ 明显偏少，HPASS 会更频繁退回 2 秒窗口，可能需要调大窗口" if avg_ratio < 0.6 else ""))
+          + ("；⚠ 明显偏少，定位时需要更长的时间窗才能凑够读数" if avg_ratio < 0.6 else ""))
 
     print(f"\n推荐：{model['model']}，在目标机上把每条读数换算为 rssi = {model['a']}·rssi_raw {model['b']:+}，"
-          "再送入算法（不要用 loadFpData_MS 的 offset，它只平移指纹区间、不平移打分档位）。")
+          "再送入定位算法。要作用在原始读数上，而不是去平移指纹库区间——"
+          "后者无法修正按绝对 RSSI 分档的那部分逻辑。")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     result = {
@@ -246,7 +246,7 @@ def calibrate(ref: Session, tgt: Session, min_n: int, out_dir: Path, plot: bool)
         "recommended": model,
         "offset_model": {"b": round(b_off, 2), "mae": round(mae(res_off), 3)},
         "linear_model": {"a": round(a_lin, 4), "b": round(b_lin, 2), "mae": round(mae(res_lin), 3)},
-        "tier_agreement": {"raw": round(agree_raw, 3), "offset": round(agree_off, 3), "linear": round(agree_lin, 3)},
+        "bin_agreement": {"raw": round(agree_raw, 3), "offset": round(agree_off, 3), "linear": round(agree_lin, 3)},
         "pairs": len(pairs),
         "points": len(common),
         "target_reading_rate_ratio": round(avg_ratio, 3),

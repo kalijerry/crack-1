@@ -36,7 +36,7 @@ t_ms,point_id,esl_id,rssi,src,mfg_hex
 t_ms,ax,ay,az,gx,gy,gz,mx,my,mz,mag_acc,qw,qx,qy,qz,heading_deg
 ```
 
-数值统一换算成 **Android 传感器约定**，HPASS 算法可以直接使用：
+数值统一换算成 **Android 传感器约定**，两个平台的数据可以用同一套算法处理：
 
 | 列 | 单位 | 约定 |
 |---|---|---|

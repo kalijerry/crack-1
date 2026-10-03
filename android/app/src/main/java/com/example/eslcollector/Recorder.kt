@@ -250,7 +250,7 @@ class Recorder(private val ctx: Context) : SensorEventListener {
                 heading = (Math.toDegrees(ori[0].toDouble()) + 360.0) % 360.0
             }
             Sensor.TYPE_ACCELEROMETER -> {
-                // 以加速度计事件为节拍输出一行（与 HPASS core/E 的打包方式一致）
+                // 以加速度计事件为节拍输出一行，陀螺仪和磁场取最近一次的值
                 val t = wallOffsetMs + e.timestamp / 1_000_000
                 val v = e.values
                 imuWriter?.append(

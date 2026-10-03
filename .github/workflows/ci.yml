@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hpasskit:
+    name: HPASSKit (swift test)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: Build & test
+        working-directory: ios/HPASSKit
+        run: swift test 2>&1 | tee test.log; exit ${PIPESTATUS[0]}
+
+  ios-app:
+    name: iOS app (xcodebuild, unsigned)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        working-directory: ios/ESLCollector
+        run: xcodegen generate
+      - name: Build
+        working-directory: ios/ESLCollector
+        run: |
+          set -o pipefail
+          xcodebuild -project ESLCollector.xcodeproj -scheme ESLCollector \
+            -destination 'generic/platform=iOS' -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build | tail -200
+
+  android:
+    name: Android collector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Build
+        working-directory: android
+        run: ./gradlew :app:assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eslcollector-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+
+  python:
+    name: Python tools
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tests
+        run: python -m unittest discover -s tools/tests -v

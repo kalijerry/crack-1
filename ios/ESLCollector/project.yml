@@ -1,0 +1,34 @@
+name: ESLCollector
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  ESLCollector:
+    type: application
+    platform: iOS
+    sources:
+      - path: ESLCollector
+    info:
+      path: ESLCollector/Info.plist
+      properties:
+        CFBundleDisplayName: ESL采集
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UIRequiresFullScreen: true
+        NSBluetoothAlwaysUsageDescription: 扫描电子价签广播以记录信号强度
+        NSMotionUsageDescription: 记录加速度、陀螺仪和磁力计数据用于定位标定
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.eslcollector
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: NO

@@ -1,0 +1,25 @@
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/.kotlin/
+*.iml
+
+# iOS（工程与 Info.plist 由 xcodegen 生成）
+ios/ESLCollector/ESLCollector.xcodeproj/
+ios/ESLCollector/ESLCollector/Info.plist
+xcuserdata/
+DerivedData/
+*.xcworkspace/
+
+# 采集数据与标定输出：门店数据不进仓库
+calibration_out/
+*.zip
+sessions/
+
+# Python / 系统
+__pycache__/
+.DS_Store
+Thumbs.db

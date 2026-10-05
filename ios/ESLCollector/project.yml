@@ -28,6 +28,7 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIRequiresFullScreen: true
         NSBluetoothAlwaysUsageDescription: 扫描电子价签广播以记录信号强度
+        NSLocationWhenInUseUsageDescription: 读取罗盘航向用于定位标定，不使用位置
         NSMotionUsageDescription: 记录加速度、陀螺仪和磁力计数据用于定位标定
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true

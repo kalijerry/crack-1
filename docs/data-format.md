@@ -59,3 +59,20 @@ point_id,x_cm,y_cm,t_start_ms,t_end_ms,note
 
 - `x_cm`、`y_cm` 是门店地图坐标，单位 cm，可以不填。
 - 做标定时，**两台手机要并排同时打点，并使用相同的 point_id**。
+
+---
+
+# 格式 v2：地磁可行性实验的附加文件（仅 iOS）
+
+`meta.json` 里 `format_version` 为 2 时，会话目录除上述文件外还有下列文件。v1 的四个文件不变，`calibrate.py` 不受影响。
+`meta.json` 另有 `setup_note`（保护壳 / MagSafe / 手持姿态备注）和 `sensors_available`（本次各传感器是否可用）。
+
+| 文件 | 列 | 频率 | 说明 |
+|---|---|---|---|
+| `mag_raw.csv` | `t_ms,mx,my,mz` | ≈100 Hz | 原始磁力计，µT，设备坐标系，**未做偏置校正**。与 `imu.csv` 里已校准的 `mx..mz` 相减即系统当前估计的偏置，用来检测校准跳变 |
+| `baro.csv` | `t_ms,rel_alt_m,pressure_kpa` | ≈1 Hz | 相对高度（起点为 0）与气压 |
+| `heading.csv` | `t_ms,magnetic_deg,true_deg,accuracy_deg,x,y,z` | 事件 | CLHeading；`true_deg` 无定位授权时为 -1 |
+| `pedometer.csv` | `t_ms,steps,distance_m,cadence_hz,pace_s_per_m` | 事件 | CMPedometer 累计值，缺项为空 |
+| `device.csv` | `t_ms,battery,battery_state,thermal,low_power,brightness` | 1 Hz | `thermal`：0 正常 1 偏热 2 严重 3 危急 |
+
+尚未包含：ARKit 位姿（阶段 1 后续，建图真值用）。

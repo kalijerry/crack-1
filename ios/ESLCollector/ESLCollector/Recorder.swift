@@ -82,6 +82,10 @@ final class Recorder: ObservableObject {
     @Published var topTags: [TagStat] = []
     @Published var bleRows = 0
     @Published var imuRows = 0
+    @Published var magRawHz = 0
+    @Published var magRawRows = 0
+    /// 保护壳 / MagSafe 附件 / 手持姿态等备注，写入 meta.json（地磁对这些很敏感）。
+    @Published var setupNote = ""
 
     // 打点
     @Published var pointId = "1"
@@ -95,6 +99,7 @@ final class Recorder: ObservableObject {
     private let ble = BLEScanner()
     private let motion = MotionRecorder()
     private let shared = SharedState()
+    private lazy var sensors = SensorLogger(motionManager: motion.manager)
     private var bleWriter: CSVWriter?
     private var imuWriter: CSVWriter?
     private var marksWriter: CSVWriter?
@@ -170,6 +175,8 @@ final class Recorder: ObservableObject {
             }
             ble.start()
             motion.start(hz: 50)
+            try sensors.start(dir: dir)
+            try writeMeta(endMs: nil)
             if !motion.isAvailable {
                 lastError = "设备运动传感器不可用"
                 AppLog.e("采集", "设备运动传感器不可用")
@@ -194,6 +201,7 @@ final class Recorder: ObservableObject {
         if markingPoint != nil { endMark(note: "录制停止时结束") }
         ble.stop()
         motion.stop()
+        sensors.stop()
         ble.onReading = nil
         motion.onSample = nil
         uiTimer?.invalidate()
@@ -262,6 +270,8 @@ final class Recorder: ObservableObject {
         topTags = top
         imuHz = dt > 0 ? Int((Double(imuCount) / dt).rounded()) : 0
         magAccuracy = mag
+        magRawHz = dt > 0 ? Int((Double(sensors.takeMagCount()) / dt).rounded()) : 0
+        magRawRows = sensors.magRawRows
         bleRows = bleWriter?.rowCount ?? 0
         imuRows = imuWriter?.rowCount ?? 0
         if let end = markEnd {
@@ -271,6 +281,7 @@ final class Recorder: ObservableObject {
         // 定期落盘，避免异常退出丢数据
         bleWriter?.flush()
         imuWriter?.flush()
+        sensors.flush()
     }
 
     private func writeMeta(endMs: Int64?) throws {
@@ -289,6 +300,11 @@ final class Recorder: ObservableObject {
             "start_ms": startMs,
             "only_esl": onlyESL,
             "imu_target_hz": 50,
+            "format_version": 2,
+            "setup_note": setupNote,
+            "mag_raw_target_hz": 100,
+            "sensors_available": sensors.available,
+            "mag_raw_convention": "uT, CMMagnetometerData: device frame, NOT bias-corrected; calibrated field is in imu.csv mx..mz",
             "imu_convention": "android: acc m/s^2 incl. gravity (+z up when flat), gyro rad/s, mag uT calibrated",
         ]
         if let endMs { meta["end_ms"] = endMs }

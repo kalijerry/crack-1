@@ -23,7 +23,7 @@ jobs:
         run: swift test 2>&1 | tee test.log; exit ${PIPESTATUS[0]}
 
   ios-app:
-    name: iOS app (xcodebuild, unsigned)
+    name: iOS app (xcodebuild, unsigned ipa)
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -32,13 +32,37 @@ jobs:
       - name: Generate project
         working-directory: ios/ESLCollector
         run: xcodegen generate
-      - name: Build
+      - name: Build (Release, unsigned)
         working-directory: ios/ESLCollector
         run: |
           set -o pipefail
           xcodebuild -project ESLCollector.xcodeproj -scheme ESLCollector \
-            -destination 'generic/platform=iOS' -configuration Debug \
+            -destination 'generic/platform=iOS' -configuration Release \
+            -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build | tail -200
+      - name: Check Info.plist permission strings
+        working-directory: ios/ESLCollector
+        run: |
+          APP=build/Build/Products/Release-iphoneos/ESLCollector.app
+          test -d "$APP" || { echo "找不到 $APP"; ls build/Build/Products/*; exit 1; }
+          plutil -p "$APP/Info.plist"
+          for k in NSBluetoothAlwaysUsageDescription NSMotionUsageDescription NSLocationWhenInUseUsageDescription; do
+            plutil -extract "$k" raw "$APP/Info.plist" >/dev/null || { echo "缺少 $k"; exit 1; }
+          done
+      # 未签名 ipa：下载后用 Sideloadly 以免费 Apple ID 签名安装，见 docs/sideload.md
+      - name: Package unsigned ipa
+        working-directory: ios/ESLCollector
+        run: |
+          rm -rf Payload ESLCollector-unsigned.ipa
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/ESLCollector.app Payload/
+          zip -qry ESLCollector-unsigned.ipa Payload
+          unzip -l ESLCollector-unsigned.ipa | tail -3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eslcollector-unsigned-ipa
+          path: ios/ESLCollector/ESLCollector-unsigned.ipa
+          retention-days: 30
 
   android:
     name: Android collector

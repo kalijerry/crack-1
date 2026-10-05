@@ -34,6 +34,11 @@ private final class MagPipeline {
     var lastPublishMs: Int64 = 0
     var pendingCheck: String?
     var trackWriter: CSVWriter?
+
+    // 实时定位（标点即走）
+    var tracking = false
+    var magAccuracy = -1
+    var stepBase = 0
 }
 
 /// 地磁模式：校准（现场建磁场图）和定位（惯导 + 磁场地图的粒子滤波）。
@@ -42,7 +47,7 @@ private final class MagPipeline {
 /// 这个模式不用蓝牙。
 @MainActor
 final class MagneticEngine: ObservableObject {
-    enum Phase { case idle, calibrating, localizing }
+    enum Phase { case idle, calibrating, localizing, live }
 
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var feature: MagneticFeature?
@@ -65,6 +70,16 @@ final class MagneticEngine: ObservableObject {
     @Published private(set) var hint: MagNavHint?
     @Published var autoAdvance = true
     @Published private(set) var trackFileName: String?
+
+    // 实时定位（标点即走）
+    @Published private(set) var magAccuracy = -1
+    @Published private(set) var isTracking = false
+    @Published private(set) var headingEditing = false
+    @Published private(set) var uncertaintyCm: Double = 0
+    /// 用磁罗盘持续修正航向。钢货架附近罗盘常偏，默认关，只靠陀螺。
+    @Published var useCompassHeading = false
+    /// 有磁场地图时，用地磁粒子滤波纠偏。
+    @Published var useMagCorrection = false
 
     static let trailCapacity = 600
     private static let arriveCm: Double = 100
@@ -138,6 +153,148 @@ final class MagneticEngine: ObservableObject {
                 let used = MagMapStore.shared.addCalibration(waypoints: waypoints, samples: samples)
                 if used == 0 { self.lastError = "这一遍没有有效数据（点位之间需要真的走过去）" }
             }
+        }
+    }
+
+    // MARK: - 实时定位：校准传感器 → 长按定点 → 双击设朝向 → 走
+
+    /// 打开传感器。此时就能看磁场精度和步数；定点、设好朝向后才开始推算位置。
+    func startLive() {
+        guard phase == .idle else { return }
+        guard motion.isAvailable else {
+            lastError = "设备运动传感器不可用"
+            return
+        }
+        lastError = nil
+        let store = MagMapStore.shared
+        // 先用一个放在地图中心的引擎跑计步，便于在原地踏步检查
+        let warmup = makeFusion(at: Point2(store.widthCm / 2, store.heightCm / 2), heading: nil)
+        let writer = Self.makeTrackWriter()
+        trackFileName = writer?.name
+        queue.sync {
+            pipe.fusion = warmup
+            pipe.localizer = nil
+            pipe.tracking = false
+            pipe.stepBase = 0
+            pipe.lastFusedPos = nil
+            pipe.lastOut = nil
+            pipe.estimate = nil
+            pipe.pendingCheck = nil
+            pipe.trackWriter = writer?.writer
+        }
+        position = nil
+        trail = []
+        checks = []
+        estimate = nil
+        stepCount = 0
+        uncertaintyCm = 0
+        isTracking = false
+        headingEditing = false
+        hint = nil
+        targetId = nil
+        startMotion(mode: .live)
+        AppLog.i("地磁", "实时定位：打开传感器，罗盘修正 \(useCompassHeading ? "开" : "关")，地磁纠偏 \(useMagCorrection ? "开" : "关")")
+    }
+
+    func stopLive() {
+        guard phase == .live else { return }
+        stopMotion()
+        queue.async { [pipe] in
+            pipe.trackWriter?.close()
+            pipe.trackWriter = nil
+            pipe.tracking = false
+        }
+        isTracking = false
+        headingEditing = false
+        AppLog.i("地磁", "实时定位停止，修正 \(checks.count) 次")
+    }
+
+    /// 长按地图：我现在在这里。走动中长按 = 修正位置，同时记下修正前的误差。
+    func setAnchor(_ p: Point2) {
+        guard phase == .live else { return }
+        let store = MagMapStore.shared
+        // 离点位 50 cm 以内就吸附到点位上
+        var target = p
+        var label = "x \(Int(p.x)) y \(Int(p.y))"
+        if let near = store.points.min(by: { $0.position.distance(to: p) < $1.position.distance(to: p) }),
+           near.position.distance(to: p) <= 50 {
+            target = near.position
+            label = "点位 \(near.id)"
+        }
+        if isTracking, let cur = position {
+            let err = cur.distance(to: target)
+            checks.append(MagCheck(pointId: label, errorCm: err))
+            AppLog.i("地磁", "修正位置到 \(label)：修正前估计 \(cur)，偏差 \(Fmt.f(err, 0)) cm")
+            restartTracking(at: target, heading: headingRad, checkLabel: label)
+        } else {
+            AppLog.i("地磁", "定点：\(label)")
+        }
+        position = target
+        if isTracking { trail.append(target) } else { trail = [target] }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        refreshHint()
+    }
+
+    /// 双击地图：开始 / 结束设朝向。结束时如果还没开始推算，就从这里开始。
+    func toggleHeadingEdit() {
+        guard phase == .live else { return }
+        guard let p = position else {
+            lastError = "先长按地图，设定你现在的位置"
+            return
+        }
+        lastError = nil
+        if !headingEditing {
+            headingEditing = true
+            AppLog.tap("地磁·设朝向", "开始")
+            return
+        }
+        headingEditing = false
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        let deg = Int((headingRad * 180 / Double.pi).rounded())
+        if isTracking {
+            let h = headingRad
+            queue.async { [pipe] in pipe.fusion?.setHeading(h) }
+            AppLog.i("地磁", "重新设朝向：\(deg)°")
+        } else {
+            restartTracking(at: p, heading: headingRad, checkLabel: nil)
+            isTracking = true
+            AppLog.i("地磁", "开始推算：起点 \(p)，朝向 \(deg)°")
+        }
+    }
+
+    /// 设朝向时点 / 拖到的位置：箭头从我的位置指向这里。
+    func pointHeading(toward t: Point2) {
+        guard headingEditing, let p = position, p.distance(to: t) > 10 else { return }
+        headingRad = atan2(t.x - p.x, t.y - p.y)
+        refreshHint()
+    }
+
+    private func makeFusion(at p: Point2, heading: Double?) -> FusionEngine {
+        var cfg = FusionConfig()
+        cfg.useCorridorConstraint = false
+        cfg.useMagneticHeading = useCompassHeading
+        let f = FusionEngine(corridors: [], config: cfg)
+        f.setInitialPosition(p, headingRad: heading)
+        return f
+    }
+
+    /// 在 p 以朝向 heading 重新开始推算（换一个新引擎，步数累加）。
+    private func restartTracking(at p: Point2, heading: Double, checkLabel: String?) {
+        let fusion = makeFusion(at: p, heading: heading)
+        var localizer: MagneticLocalizer?
+        if useMagCorrection, let field = MagMapStore.shared.field {
+            localizer = MagneticLocalizer(field: field)
+            localizer?.reset(start: p, spreadCm: 50)
+        }
+        queue.sync {
+            pipe.stepBase += pipe.lastOut?.stepCount ?? 0
+            if !pipe.tracking { pipe.stepBase = 0 }
+            pipe.fusion = fusion
+            pipe.localizer = localizer
+            pipe.lastFusedPos = nil
+            pipe.lastOut = nil
+            pipe.tracking = true
+            if let c = checkLabel { pipe.pendingCheck = c }
         }
     }
 
@@ -272,6 +429,46 @@ final class MagneticEngine: ObservableObject {
                 pipe.lastCalSampleMs = s.tMs
             }
             publishLive(pipe: pipe, tMs: s.tMs)
+        case .live:
+            pipe.magAccuracy = s.magAccuracy
+            guard let fusion = pipe.fusion, let out = fusion.process(sample) else {
+                publishLive(pipe: pipe, tMs: s.tMs)
+                return
+            }
+            pipe.lastOut = out
+            guard pipe.tracking else {
+                publishLive(pipe: pipe, tMs: s.tMs)
+                return
+            }
+            let delta = pipe.lastFusedPos.map { out.position - $0 } ?? .zero
+            pipe.lastFusedPos = out.position
+            var shown = out.position
+            var unc = out.uncertaintyCm
+            var est: MagneticEstimate?
+            if let loc = pipe.localizer {
+                let e = loc.step(delta: delta, feature: feat)
+                est = e
+                shown = e.position
+                unc = e.uncertaintyCm
+            }
+            let steps = pipe.stepBase + out.stepCount
+            if let w = pipe.trackWriter {
+                let check = pipe.pendingCheck ?? ""
+                pipe.pendingCheck = nil
+                w.append([
+                    "\(out.tMs)", Fmt.f(shown.x, 1), Fmt.f(shown.y, 1),
+                    Fmt.f(unc, 1), Fmt.f(est?.confidence ?? -1, 3),
+                    Fmt.f(out.position.x, 1), Fmt.f(out.position.y, 1), Fmt.f(out.headingDeg, 1),
+                    "\(steps)",
+                    Fmt.f(feat?.total ?? 0, 2), Fmt.f(feat?.vertical ?? 0, 2), Fmt.f(feat?.horizontal ?? 0, 2),
+                    Fmt.csv(check),
+                ].joined(separator: ","))
+            }
+            let heading = out.headingRad, acc = pipe.magAccuracy
+            Task { @MainActor in
+                self.magAccuracy = acc
+                self.applyFix(position: shown, uncertainty: unc, heading: heading, steps: steps, feature: feat, estimate: est)
+            }
         case .localizing:
             guard let fusion = pipe.fusion, let loc = pipe.localizer, let out = fusion.process(sample) else {
                 publishLive(pipe: pipe, tMs: s.tMs)
@@ -295,7 +492,10 @@ final class MagneticEngine: ObservableObject {
                 ].joined(separator: ","))
             }
             let heading = out.headingRad, steps = out.stepCount
-            Task { @MainActor in self.applyLocalization(est, heading: heading, steps: steps, feature: feat) }
+            Task { @MainActor in
+                self.applyFix(position: est.position, uncertainty: est.uncertaintyCm, heading: heading,
+                              steps: steps, feature: feat, estimate: est)
+            }
         }
     }
 
@@ -304,19 +504,26 @@ final class MagneticEngine: ObservableObject {
         guard tMs - pipe.lastPublishMs >= 200 else { return }
         pipe.lastPublishMs = tMs
         let f = pipe.latest, n = pipe.calSamples.count
+        let acc = pipe.magAccuracy, steps = pipe.stepBase + (pipe.lastOut?.stepCount ?? 0)
+        let tracking = pipe.tracking
         Task { @MainActor in
             self.feature = f
             if self.phase == .calibrating { self.calSampleCount = n }
+            if self.phase == .live {
+                self.magAccuracy = acc
+                if !tracking { self.stepCount = steps }
+            }
         }
     }
 
-    private func applyLocalization(_ est: MagneticEstimate, heading: Double, steps: Int, feature f: MagneticFeature?) {
-        guard phase == .localizing else { return }
+    private func applyFix(position p: Point2, uncertainty: Double, heading: Double, steps: Int,
+                          feature f: MagneticFeature?, estimate est: MagneticEstimate?) {
+        guard phase == .localizing || (phase == .live && isTracking) else { return }
         estimate = est
-        headingRad = heading
+        uncertaintyCm = uncertainty
+        if !headingEditing { headingRad = heading }
         stepCount = steps
         feature = f
-        let p = est.position
         position = p
         if let last = trail.last, last.distance(to: p) < 15 {
             // 太近不记
@@ -338,7 +545,7 @@ final class MagneticEngine: ObservableObject {
         turn = atan2(sin(turn), cos(turn))                 // 规范到 (−π, π]
         let arrived = dist <= Self.arriveCm
         hint = MagNavHint(targetId: id, distanceCm: dist, turnRad: turn, arrived: arrived)
-        if arrived, autoAdvance, phase == .localizing {
+        if arrived, autoAdvance, phase == .localizing || phase == .live {
             let pts = MagMapStore.shared.points
             if let i = pts.firstIndex(where: { $0.id == id }), i + 1 < pts.count {
                 AppLog.i("地磁", "到达点位 \(id)，下一个目标 \(pts[i + 1].id)")

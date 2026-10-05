@@ -125,4 +125,30 @@ final class MagneticTests: XCTestCase {
         let est = loc.estimate()                               // 均匀撒点、没有任何观测
         XCTAssertLessThan(est.confidence, 0.3)
     }
+
+    /// 手动设航向后，不论是否开启罗盘修正，静止时航向都应保持在手动值（罗盘指向别处）。
+    func testManualHeadingIsKept() {
+        for useMag in [false, true] {
+            var cfg = FusionConfig()
+            cfg.useCorridorConstraint = false
+            cfg.useMagneticHeading = useMag
+            let f = FusionEngine(corridors: [], config: cfg)
+            f.setInitialPosition(Point2(500, 500), headingRad: nil)
+            var t: Int64 = 0
+            func feed(_ n: Int) -> FusionOutput? {
+                var last: FusionOutput?
+                for _ in 0..<n {
+                    t += 20
+                    let s = IMUSample(tMs: t, ax: 0, ay: 0, az: 9.81, gx: 0, gy: 0, gz: 0, mx: 20, my: 0, mz: -40)
+                    if let o = f.process(s) { last = o }
+                }
+                return last
+            }
+            _ = feed(200)                       // 罗盘自动初始化
+            f.setHeading(1.0)
+            let out = feed(1500)                // 30 s
+            XCTAssertNotNil(out)
+            XCTAssertEqual(out?.headingRad ?? 0, 1.0, accuracy: 0.05, "useMagneticHeading=\(useMag)")
+        }
+    }
 }

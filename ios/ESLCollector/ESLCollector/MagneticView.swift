@@ -15,7 +15,12 @@ private struct MagMapCanvas: View {
     var uncertaintyCm: Double = 0
     var targetId: String?
     var highlightId: String?
+    var showHeading = true
+    var headingEditing = false
     var onLongPress: ((Point2) -> Void)?
+    var onDoubleTap: (() -> Void)?
+    /// 设朝向时手指点到 / 拖到的位置。
+    var onPoint: ((Point2) -> Void)?
 
     private let pad: CGFloat = 24
 
@@ -96,12 +101,23 @@ private struct MagMapCanvas: View {
                                    with: .color(.blue.opacity(0.4)), lineWidth: 1.5)
                     }
                     ctx.fill(Path(ellipseIn: CGRect(x: c.x - 7, y: c.y - 7, width: 14, height: 14)), with: .color(.blue))
-                    // 航向箭头：θ=0 指向 +y（屏幕向下），dx = sinθ，dy = cosθ
-                    let tip = CGPoint(x: c.x + CGFloat(sin(headingRad)) * 22, y: c.y + CGFloat(cos(headingRad)) * 22)
-                    var arrow = Path()
-                    arrow.move(to: c)
-                    arrow.addLine(to: tip)
-                    ctx.stroke(arrow, with: .color(.blue), lineWidth: 3)
+                    if showHeading {
+                        // 航向箭头：θ=0 指向 +y（屏幕向下），dx = sinθ，dy = cosθ。设朝向时画长一点、换颜色。
+                        let len: CGFloat = headingEditing ? 60 : 22
+                        let color: Color = headingEditing ? .orange : .blue
+                        let dir = CGPoint(x: CGFloat(sin(headingRad)), y: CGFloat(cos(headingRad)))
+                        let tip = CGPoint(x: c.x + dir.x * len, y: c.y + dir.y * len)
+                        var arrow = Path()
+                        arrow.move(to: c)
+                        arrow.addLine(to: tip)
+                        // 箭头尖
+                        let back = CGPoint(x: tip.x - dir.x * 10, y: tip.y - dir.y * 10)
+                        arrow.move(to: tip)
+                        arrow.addLine(to: CGPoint(x: back.x - dir.y * 6, y: back.y + dir.x * 6))
+                        arrow.move(to: tip)
+                        arrow.addLine(to: CGPoint(x: back.x + dir.y * 6, y: back.y - dir.x * 6))
+                        ctx.stroke(arrow, with: .color(color), lineWidth: 3)
+                    }
                 }
             }
             .frame(width: side, height: side)
@@ -119,6 +135,15 @@ private struct MagMapCanvas: View {
                         }
                     }
             )
+            .simultaneousGesture(
+                SpatialTapGesture(count: 2).onEnded { _ in onDoubleTap?() }
+            )
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .local).onChanged { v in
+                    guard headingEditing, let onPoint else { return }
+                    onPoint(toCm(v.location))
+                }
+            )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .aspectRatio(1, contentMode: .fit)
@@ -127,11 +152,11 @@ private struct MagMapCanvas: View {
 
 // MARK: - 页面
 
-/// 地磁定位：导入地图 → 手动定点 → 校准 → 定位导航。
+/// 地磁定位：地图点位 → 实时定位（定点即走）；高级里保留按点位建磁场图和粒子滤波定位。
 @MainActor
 struct MagneticView: View {
     enum Step: String, CaseIterable, Identifiable {
-        case map = "地图点位", calibrate = "地磁校准", locate = "定位导航"
+        case map = "地图点位", live = "实时定位", advanced = "高级"
         var id: String { rawValue }
     }
 
@@ -169,8 +194,10 @@ struct MagneticView: View {
                     }
                     switch step {
                     case .map: mapPanel
-                    case .calibrate: calibratePanel
-                    case .locate: locatePanel
+                    case .live: livePanel
+                    case .advanced:
+                        calibratePanel
+                        locatePanel
                     }
                 }
             }
@@ -188,23 +215,40 @@ struct MagneticView: View {
     // MARK: 画布
 
     private var canvas: some View {
-        MagMapCanvas(widthCm: store.widthCm, heightCm: store.heightCm,
-                     points: store.points,
-                     trail: step == .locate ? engine.trail : [],
-                     position: step == .locate ? engine.position : nil,
-                     headingRad: engine.headingRad,
-                     uncertaintyCm: engine.estimate?.uncertaintyCm ?? 0,
-                     targetId: step == .locate ? engine.targetId : nil,
-                     highlightId: calibrationHighlight,
-                     onLongPress: step == .map ? { p in
-                         let mp = store.addPoint(at: p)
-                         if startId.isEmpty { startId = mp.id }
-                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                     } : nil)
+        let showsTrack = step != .map
+        let live = step == .live && engine.phase == .live
+        return MagMapCanvas(widthCm: store.widthCm, heightCm: store.heightCm,
+                            points: store.points,
+                            trail: showsTrack ? engine.trail : [],
+                            position: showsTrack ? engine.position : nil,
+                            headingRad: engine.headingRad,
+                            uncertaintyCm: engine.uncertaintyCm,
+                            targetId: showsTrack ? engine.targetId : nil,
+                            highlightId: calibrationHighlight,
+                            showHeading: !live || engine.isTracking || engine.headingEditing,
+                            headingEditing: live && engine.headingEditing,
+                            onLongPress: longPressAction,
+                            onDoubleTap: live ? { engine.toggleHeadingEdit() } : nil,
+                            onPoint: live ? { engine.pointHeading(toward: $0) } : nil)
+    }
+
+    private var longPressAction: ((Point2) -> Void)? {
+        switch step {
+        case .map:
+            return { p in
+                let mp = store.addPoint(at: p)
+                if startId.isEmpty { startId = mp.id }
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            }
+        case .live:
+            return engine.phase == .live && !engine.headingEditing ? { engine.setAnchor($0) } : nil
+        case .advanced:
+            return nil
+        }
     }
 
     private var calibrationHighlight: String? {
-        guard step == .calibrate, engine.phase == .calibrating else { return nil }
+        guard step == .advanced, engine.phase == .calibrating else { return nil }
         let pts = engine.calUsedPoints
         let i = engine.calMoving ? engine.calIndex + 1 : engine.calIndex
         return pts.indices.contains(i) ? pts[i].id : nil
@@ -248,7 +292,118 @@ struct MagneticView: View {
         } header: { Text("点位 \(store.points.count)（左滑删除）") }
     }
 
-    // MARK: 步骤 2：地磁校准
+    // MARK: 实时定位：校准传感器 → 长按定点 → 双击设朝向 → 走
+
+    @ViewBuilder private var livePanel: some View {
+        if engine.phase != .live {
+            Section {
+                Text("1. 打开传感器，拿手机在空中画 8 字，直到磁场精度变成「高」。\n2. 长按地图：我现在在这里。\n3. 双击地图开始设朝向，在地图上点或拖动让箭头指向你面朝的方向，再双击确定。\n4. 走起来，看地图上的点跟着动。")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Toggle("用罗盘修正航向", isOn: $engine.useCompassHeading)
+                Toggle("地磁纠偏（需要已有磁场数据）", isOn: $engine.useMagCorrection)
+                    .disabled(store.field == nil)
+                bigButton("打开传感器，开始", name: "实时·开始") { engine.startLive() }
+                    .disabled(engine.phase != .idle)
+            } header: { Text("实时定位") } footer: {
+                Text("罗盘在钢货架旁常偏几十度，默认关闭，只用陀螺仪推算航向。")
+            }
+        } else {
+            Section {
+                HStack {
+                    Text("磁场精度")
+                    Spacer()
+                    Text(Self.accuracyText(engine.magAccuracy))
+                        .fontWeight(.semibold)
+                        .foregroundStyle(engine.magAccuracy >= 2 ? .green : (engine.magAccuracy == 1 ? .orange : .red))
+                }
+                row("步数", "\(engine.stepCount)")
+                if engine.magAccuracy < 2 {
+                    Text("拿手机在空中画几次 8 字，直到精度变「高」。原地踏几步，看步数会不会增加。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            } header: { Text("① 传感器") }
+
+            Section {
+                Text(liveInstruction).font(.callout)
+                if let p = engine.position {
+                    row("位置", "x \(Int(p.x))  y \(Int(p.y)) cm")
+                    row("朝向", "\(Int((engine.headingRad * 180 / Double.pi).rounded()))°")
+                }
+                if engine.isTracking {
+                    row("不确定度", "± \(Int(engine.uncertaintyCm)) cm")
+                }
+                bigButton("停止", name: "实时·停止") { engine.stopLive() }
+                    .tint(.red)
+            } header: { Text(engine.isTracking ? "③ 走" : "② 定点与朝向") }
+
+            if engine.isTracking {
+                navSection
+
+                Section {
+                    if engine.checks.isEmpty {
+                        Text("走到一个你确定的位置，长按地图把点拉过去，这里会记下拉之前偏了多少。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    ForEach(engine.checks.suffix(8).reversed()) { c in
+                        HStack {
+                            Text(c.pointId)
+                            Spacer()
+                            Text("\(Int(c.errorCm)) cm").monospacedDigit()
+                                .foregroundStyle(c.errorCm <= 100 ? .green : (c.errorCm <= 200 ? .orange : .red))
+                        }
+                    }
+                    if !engine.checks.isEmpty {
+                        let errs = engine.checks.map(\.errorCm)
+                        row("平均 / 最大", "\(Int(errs.reduce(0, +) / Double(errs.count))) / \(Int(errs.max() ?? 0)) cm")
+                    }
+                    if let n = engine.trackFileName { row("轨迹文件", n).font(.footnote) }
+                } header: { Text("修正记录（准不准）") }
+            }
+        }
+    }
+
+    private var liveInstruction: String {
+        if engine.position == nil { return "长按地图：我现在在这里（离点位 50 cm 内会自动吸附到点位）。" }
+        if engine.headingEditing { return "在地图上点或拖动，让橙色箭头指向你面朝的方向，然后双击确定。" }
+        if !engine.isTracking { return "双击地图，开始设朝向。" }
+        return "走起来。到了确定的位置可以长按修正，双击可以重新设朝向。"
+    }
+
+    private static func accuracyText(_ a: Int) -> String {
+        switch a {
+        case 2: return "高"
+        case 1: return "中"
+        case 0: return "低"
+        default: return "未校准"
+        }
+    }
+
+    @ViewBuilder private var navSection: some View {
+        Section {
+            Picker("目标", selection: Binding(get: { engine.targetId ?? "" },
+                                             set: { engine.setTarget($0.isEmpty ? nil : $0) })) {
+                Text("无").tag("")
+                ForEach(store.points, id: \.id) { Text("点位 \($0.id)").tag($0.id) }
+            }
+            Toggle("到达后自动切到下一个点位", isOn: $engine.autoAdvance)
+            if let h = engine.hint {
+                HStack(spacing: 16) {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 44, weight: .bold))
+                        .foregroundStyle(h.arrived ? .green : .blue)
+                        .rotationEffect(.radians(-h.turnRad))
+                    VStack(alignment: .leading) {
+                        Text(h.arrived ? "已到达点位 \(h.targetId)" : turnText(h.turnRad))
+                            .font(.headline)
+                        Text("距点位 \(h.targetId) \(Fmt.f(h.distanceCm / 100, 1)) m")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        } header: { Text("导航") }
+    }
+
+    // MARK: 高级：按点位走一遍建磁场图（地磁校准）
 
     @ViewBuilder private var calibratePanel: some View {
         Section {
@@ -294,12 +449,12 @@ struct MagneticView: View {
                         }
                 }
             }
-        } header: { Text("校准") } footer: {
+        } header: { Text("建磁场图（按点位走一遍）") } footer: {
             Text("按编号顺序沿点位之间的直线走。建议正反各走一遍。保持看屏姿势，不要戴磁吸壳或支架。校准和定位用同一姿势才准。")
         }
     }
 
-    // MARK: 步骤 3：定位导航
+    // MARK: 高级：用磁场地图定位（粒子滤波）
 
     @ViewBuilder private var locatePanel: some View {
         Section {
@@ -319,7 +474,7 @@ struct MagneticView: View {
                                            unknownStart: unknownStart)
                 }
             }
-        } header: { Text("定位") } footer: {
+        } header: { Text("用磁场图定位") } footer: {
             if engine.phase != .localizing {
                 Text("已知起点：站在所选点位上，面朝下一个点位（最后一个点位则面朝上一个）再点开始。")
             }
@@ -339,28 +494,7 @@ struct MagneticView: View {
                 if let n = engine.trackFileName { row("轨迹文件", n).font(.footnote) }
             }
 
-            Section {
-                Picker("目标", selection: Binding(get: { engine.targetId ?? "" },
-                                                 set: { engine.setTarget($0.isEmpty ? nil : $0) })) {
-                    Text("无").tag("")
-                    ForEach(store.points, id: \.id) { Text("点位 \($0.id)").tag($0.id) }
-                }
-                Toggle("到达后自动切到下一个点位", isOn: $engine.autoAdvance)
-                if let h = engine.hint {
-                    HStack(spacing: 16) {
-                        Image(systemName: "arrow.up")
-                            .font(.system(size: 44, weight: .bold))
-                            .foregroundStyle(h.arrived ? .green : .blue)
-                            .rotationEffect(.radians(-h.turnRad))
-                        VStack(alignment: .leading) {
-                            Text(h.arrived ? "已到达点位 \(h.targetId)" : turnText(h.turnRad))
-                                .font(.headline)
-                            Text("距点位 \(h.targetId) \(Fmt.f(h.distanceCm / 100, 1)) m")
-                                .font(.subheadline).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            } header: { Text("导航") }
+            navSection
 
             Section {
                 Picker("我现在站在", selection: $checkId) {

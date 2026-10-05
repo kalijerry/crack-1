@@ -4,7 +4,7 @@ struct ContentView: View {
     @State private var tab = Tab.collect
 
     enum Tab: Hashable {
-        case collect, storeData, live, log
+        case collect, storeData, live, magnetic, log
     }
 
     var body: some View {
@@ -18,8 +18,12 @@ struct ContentView: View {
                 .tag(Tab.storeData)
 
             LiveLocationView()
-                .tabItem { Label("实时定位", systemImage: "location.viewfinder") }
+                .tabItem { Label("蓝牙定位", systemImage: "location.viewfinder") }
                 .tag(Tab.live)
+
+            MagneticView()
+                .tabItem { Label("地磁定位", systemImage: "scope") }
+                .tag(Tab.magnetic)
 
             LogView()
                 .tabItem { Label("日志", systemImage: "list.bullet.rectangle") }
@@ -37,7 +41,8 @@ struct ContentView: View {
         switch tab {
         case .collect: return "采集"
         case .storeData: return "门店数据"
-        case .live: return "实时定位"
+        case .live: return "蓝牙定位"
+        case .magnetic: return "地磁定位"
         case .log: return "日志"
         }
     }

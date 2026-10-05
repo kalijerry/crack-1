@@ -1,0 +1,538 @@
+<title>测试区点位编辑器</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* 布局：手机竖屏一列。方格图占满宽度，下面依次是选中点、点位列表、导出。 */
+:root {
+  --bg: #f1f4f6;
+  --panel: #ffffff;
+  --ink: #14212b;
+  --muted: #5b6b77;
+  --line: #d3dce2;
+  --grid: #dbe3e8;
+  --grid-strong: #a9b8c2;
+  --accent: #c8400a;      /* 点位 */
+  --accent-ink: #ffffff;
+  --sel: #0a63c4;         /* 选中 */
+  --bad: #b3261e;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "PingFang SC", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f171c; --panel: #172128; --ink: #e5edf1; --muted: #93a4af; --line: #2b3a44;
+    --grid: #22303a; --grid-strong: #46596a; --accent: #ff8a4c; --accent-ink: #1a0d05;
+    --sel: #5aa9f2; --bad: #ff8a80; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f171c; --panel: #172128; --ink: #e5edf1; --muted: #93a4af; --line: #2b3a44;
+  --grid: #22303a; --grid-strong: #46596a; --accent: #ff8a4c; --accent-ink: #1a0d05;
+  --sel: #5aa9f2; --bad: #ff8a80; color-scheme: dark;
+}
+body { background: var(--bg); color: var(--ink); font: 15px/1.5 var(--font-body); padding-inline: 16px; padding-block: 16px 40px; }
+.wrap { max-width: 600px; margin-inline: auto; display: flex; flex-direction: column; gap: 14px; }
+h1 { font-size: 20px; font-weight: 600; margin: 0; text-wrap: balance; }
+.sub { color: var(--muted); font-size: 13px; margin: 2px 0 0; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+.card h2 { font-size: 12px; font-weight: 600; letter-spacing: .08em; color: var(--muted); margin: 0 0 8px; text-transform: uppercase; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.row > * { min-width: 0; }
+label.f { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); flex: 1 1 90px; }
+input[type=text], input[type=number], select {
+  font: 500 15px var(--font-mono); color: var(--ink); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 8px 10px; min-height: 44px; width: 100%;
+}
+input:focus-visible, select:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--sel); outline-offset: 2px; }
+input.bad { border-color: var(--bad); }
+button, .btn {
+  font: 500 14px var(--font-body); min-height: 44px; padding: 0 14px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+}
+button.primary { background: var(--sel); border-color: var(--sel); color: #fff; }
+:root[data-theme="dark"] button.primary { color: #07121c; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) button.primary { color: #07121c; } }
+button.danger { color: var(--bad); }
+button:disabled { opacity: .45; cursor: default; }
+.stage { padding: 8px; }
+canvas {
+  display: block; width: 100%; aspect-ratio: 1; touch-action: none; user-select: none; -webkit-user-select: none;
+  -webkit-touch-callout: none; border-radius: 6px; cursor: crosshair; max-width: 100%;
+}
+.hint { font-size: 13px; color: var(--muted); margin: 8px 2px 0; }
+.nudge { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; flex: 1 1 100%; }
+.nudge button { padding: 0; font-size: 18px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font: 500 13px var(--font-mono); min-height: 36px; padding: 0 10px; }
+.chip[aria-pressed=true] { border-color: var(--sel); box-shadow: inset 0 0 0 1px var(--sel); }
+.empty { color: var(--muted); font-size: 14px; }
+.toggle { display: flex; align-items: center; gap: 8px; min-height: 44px; font-size: 14px; }
+.toggle input { width: 20px; height: 20px; }
+details summary { cursor: pointer; min-height: 36px; display: flex; align-items: center; color: var(--muted); font-size: 13px; }
+textarea { width: 100%; min-height: 160px; font: 12px/1.4 var(--font-mono); color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; resize: vertical; }
+.toast { position: fixed; left: 16px; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); max-width: 568px; margin-inline: auto; background: var(--ink); color: var(--bg); padding: 10px 14px; border-radius: 8px; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .15s; }
+.toast.on { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .toast { transition: none; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>测试区点位编辑器</h1>
+    <p class="sub">10 × 10 米，单位 cm。原点在左上角，x 向右，y 向下，与 App 的地图坐标一致。</p>
+  </header>
+
+  <section class="card stage">
+    <canvas id="cv" role="img" aria-label="10 米乘 10 米的方格图，长按放置点位"></canvas>
+    <p class="hint">长按空白处放点（电脑上右键也可以）。点一下已有的点可以选中，在下面微调坐标。</p>
+  </section>
+
+  <section class="card">
+    <h2>放点设置</h2>
+    <div class="row">
+      <label class="f" for="snap">吸附到
+        <select id="snap">
+          <option value="1">1 cm</option><option value="5">5 cm</option><option value="10" selected>10 cm</option>
+          <option value="25">25 cm</option><option value="50">50 cm</option><option value="100">1 m（整格）</option>
+        </select>
+      </label>
+      <label class="toggle" for="line"><input type="checkbox" id="line" checked> 按编号连线</label>
+    </div>
+  </section>
+
+  <section class="card" id="selCard">
+    <h2>选中的点</h2>
+    <div id="selEmpty" class="empty">还没有选中的点。</div>
+    <div id="selForm" hidden>
+      <div class="row">
+        <label class="f" for="pid">编号<input type="text" id="pid" inputmode="text" autocomplete="off" autocapitalize="off"></label>
+        <label class="f" for="px">x（cm）<input type="number" id="px" inputmode="numeric" min="0" max="1000" step="1"></label>
+        <label class="f" for="py">y（cm）<input type="number" id="py" inputmode="numeric" min="0" max="1000" step="1"></label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div class="nudge" aria-label="按吸附步长微调位置">
+          <button type="button" id="nl" aria-label="左移">←</button>
+          <button type="button" id="nu" aria-label="上移">↑</button>
+          <button type="button" id="nd" aria-label="下移">↓</button>
+          <button type="button" id="nr" aria-label="右移">→</button>
+        </div>
+        <button type="button" class="danger" id="del">删除这个点</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>点位 <span id="count" style="font-family:var(--font-mono)">0</span></h2>
+    <div id="chips" class="chips"></div>
+    <div id="listEmpty" class="empty">长按方格图放第一个点。</div>
+    <div class="row" style="margin-top:10px">
+      <button type="button" class="danger" id="clear">清空全部</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>导出</h2>
+    <div class="row">
+      <label class="f" for="floorId">楼层 ID<input type="text" id="floorId" value="1" autocomplete="off" autocapitalize="off"></label>
+      <label class="f" for="floorName" style="flex-basis:180px">楼层名称<input type="text" id="floorName" value="测试区 10×10 m" autocomplete="off"></label>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button type="button" class="primary" id="save">保存为 JSON 文件</button>
+      <button type="button" id="copy">复制 JSON</button>
+      <label class="btn" for="imp" style="display:inline-flex;align-items:center">导入 JSON</label>
+      <input type="file" id="imp" accept=".json,application/json" hidden>
+    </div>
+    <p class="hint">保存后在手机「文件」App 里找到它，再到采集 App 的「门店数据」页导入地图。</p>
+    <details id="prev">
+      <summary>查看 JSON</summary>
+      <textarea id="json" readonly spellcheck="false" aria-label="地图 JSON"></textarea>
+    </details>
+  </section>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  "use strict";
+  var SIZE = 1000;              // 地图边长，cm
+  var HOLD_MS = 450;            // 长按时长
+  var MOVE_TOL = 10;            // 长按期间手指移动超过这个像素就取消
+  var HIT_PX = 18;              // 点中已有点的判定半径
+  var KEY = "mapEditor.v1";
+
+  var state = { pts: [], sel: null };
+  var cv = document.getElementById("cv");
+  var ctx = cv.getContext("2d");
+  var $ = function (id) { return document.getElementById(id); };
+  var geom = { css: 300, padL: 28, padT: 24, padR: 10, padB: 10, plot: 262 };
+  var press = null;             // { id, x, y, t0, timer, raf }
+  var toastTimer = 0, clearTimer = 0;
+
+  // ------------------------------------------------------------ 工具
+
+  function snapStep() { return Number($("snap").value) || 1; }
+  function snapTo(v) { var s = snapStep(); return Math.min(SIZE, Math.max(0, Math.round(v / s) * s)); }
+  function toPx(cm) { return geom.padL + cm / SIZE * geom.plot; }
+  function toPy(cm) { return geom.padT + cm / SIZE * geom.plot; }
+  function fromPx(px) { return (px - geom.padL) / geom.plot * SIZE; }
+  function fromPy(py) { return (py - geom.padT) / geom.plot * SIZE; }
+  function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+  function byId(id) { for (var i = 0; i < state.pts.length; i++) if (state.pts[i].id === id) return state.pts[i]; return null; }
+
+  function nextId() {
+    var max = 0;
+    state.pts.forEach(function (p) { if (/^\d+$/.test(p.id)) max = Math.max(max, Number(p.id)); });
+    var n = max + 1;
+    while (byId(String(n))) n++;
+    return String(n);
+  }
+
+  function toast(msg) {
+    var t = $("toast");
+    t.textContent = msg;
+    t.classList.add("on");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.classList.remove("on"); }, 2600);
+  }
+
+  // ------------------------------------------------------------ 存取
+
+  function buildJson() {
+    var fid = $("floorId").value.trim() || "1";
+    return JSON.stringify({
+      mapId: 1,
+      floorId: /^\d+$/.test(fid) ? Number(fid) : fid,
+      floorName: $("floorName").value.trim() || "测试区 10×10 m",
+      width: SIZE,
+      height: SIZE,
+      mapElementList: [],
+      markPoints: state.pts.map(function (p) { return { id: p.id, x: Math.round(p.x), y: Math.round(p.y) }; })
+    }, null, 2);
+  }
+
+  function persist() {
+    try {
+      localStorage.setItem(KEY, JSON.stringify({ pts: state.pts, floorId: $("floorId").value, floorName: $("floorName").value, snap: $("snap").value, line: $("line").checked }));
+    } catch (e) { /* 无痕模式等：不保存草稿也能用 */ }
+  }
+
+  function restore() {
+    try {
+      var raw = localStorage.getItem(KEY);
+      if (!raw) return;
+      var d = JSON.parse(raw);
+      if (Array.isArray(d.pts)) state.pts = d.pts.filter(validPoint);
+      if (d.floorId) $("floorId").value = d.floorId;
+      if (d.floorName) $("floorName").value = d.floorName;
+      if (d.snap) $("snap").value = d.snap;
+      if (typeof d.line === "boolean") $("line").checked = d.line;
+    } catch (e) { /* 草稿损坏就忽略 */ }
+  }
+
+  function validPoint(p) {
+    return p && typeof p.id === "string" && p.id !== "" && isFinite(p.x) && isFinite(p.y);
+  }
+
+  // ------------------------------------------------------------ 绘制
+
+  function resize() {
+    var w = Math.floor(cv.getBoundingClientRect().width) || 300;
+    var dpr = window.devicePixelRatio || 1;
+    geom.css = w;
+    geom.plot = w - geom.padL - geom.padR;
+    cv.width = Math.round(w * dpr);
+    cv.height = Math.round(w * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+  }
+
+  function draw() {
+    var w = geom.css, c = ctx;
+    var grid = cssVar("--grid"), strong = cssVar("--grid-strong"), ink = cssVar("--muted");
+    var accent = cssVar("--accent"), aink = cssVar("--accent-ink"), sel = cssVar("--sel");
+    c.clearRect(0, 0, w, w);
+    c.fillStyle = cssVar("--bg");
+    c.fillRect(0, 0, w, w);
+
+    c.lineWidth = 1;
+    c.font = "11px " + cssVar("--font-mono");
+    c.fillStyle = ink;
+    c.textBaseline = "middle";
+    for (var m = 0; m <= 10; m++) {
+      var x = Math.round(toPx(m * 100)) + .5, y = Math.round(toPy(m * 100)) + .5;
+      c.strokeStyle = (m === 0 || m === 10 || m === 5) ? strong : grid;
+      c.beginPath(); c.moveTo(x, toPy(0)); c.lineTo(x, toPy(SIZE)); c.stroke();
+      c.beginPath(); c.moveTo(toPx(0), y); c.lineTo(toPx(SIZE), y); c.stroke();
+      c.textAlign = "center"; c.fillText(String(m), x, geom.padT - 11);
+      c.textAlign = "right"; c.fillText(String(m), geom.padL - 6, y);
+    }
+    c.textAlign = "left";
+    c.fillText("m", geom.padL + 4, 7);
+
+    if ($("line").checked && state.pts.length > 1) {
+      c.strokeStyle = strong; c.setLineDash([5, 4]); c.lineWidth = 1.5;
+      c.beginPath();
+      state.pts.forEach(function (p, i) { i ? c.lineTo(toPx(p.x), toPy(p.y)) : c.moveTo(toPx(p.x), toPy(p.y)); });
+      c.stroke(); c.setLineDash([]);
+    }
+
+    c.textAlign = "center"; c.textBaseline = "middle";
+    state.pts.forEach(function (p) {
+      var px = toPx(p.x), py = toPy(p.y), isSel = state.sel === p.id;
+      if (isSel) { c.strokeStyle = sel; c.lineWidth = 2.5; c.beginPath(); c.arc(px, py, 14, 0, 7); c.stroke(); }
+      c.fillStyle = accent;
+      c.beginPath(); c.arc(px, py, 9, 0, 7); c.fill();
+      c.fillStyle = aink;
+      c.font = "600 " + (p.id.length > 2 ? 8 : 10) + "px " + cssVar("--font-mono");
+      c.fillText(p.id.length > 3 ? p.id.slice(0, 3) : p.id, px, py + .5);
+    });
+
+    if (press) {
+      var k = Math.min(1, (performance.now() - press.t0) / HOLD_MS);
+      c.strokeStyle = sel; c.lineWidth = 2.5;
+      c.beginPath(); c.arc(press.x, press.y, 6 + 16 * k, 0, 7); c.stroke();
+    }
+  }
+
+  // ------------------------------------------------------------ 界面同步
+
+  function refresh() {
+    draw();
+    $("count").textContent = String(state.pts.length);
+    $("listEmpty").hidden = state.pts.length > 0;
+    var chips = $("chips");
+    chips.textContent = "";
+    state.pts.forEach(function (p) {
+      var b = document.createElement("button");
+      b.type = "button"; b.className = "chip"; b.setAttribute("aria-pressed", String(state.sel === p.id));
+      b.textContent = p.id + "  " + Math.round(p.x) + "," + Math.round(p.y);
+      b.addEventListener("click", function () { select(p.id); });
+      chips.appendChild(b);
+    });
+    var p = byId(state.sel);
+    $("selEmpty").hidden = !!p;
+    $("selForm").hidden = !p;
+    if (p) {
+      if (document.activeElement !== $("pid")) $("pid").value = p.id;
+      if (document.activeElement !== $("px")) $("px").value = Math.round(p.x);
+      if (document.activeElement !== $("py")) $("py").value = Math.round(p.y);
+      $("pid").classList.remove("bad");
+    }
+    $("json").value = buildJson();
+    persist();
+  }
+
+  function select(id) { state.sel = id; refresh(); }
+
+  // ------------------------------------------------------------ 画布交互
+
+  function local(e) {
+    var r = cv.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * (geom.css / r.width), y: (e.clientY - r.top) * (geom.css / r.height) };
+  }
+
+  function hit(px, py) {
+    var best = null, bd = HIT_PX;
+    state.pts.forEach(function (p) {
+      var d = Math.hypot(toPx(p.x) - px, toPy(p.y) - py);
+      if (d <= bd) { best = p; bd = d; }
+    });
+    return best;
+  }
+
+  function addAt(px, py) {
+    var x = snapTo(fromPx(px)), y = snapTo(fromPy(py));
+    var p = { id: nextId(), x: x, y: y };
+    state.pts.push(p);
+    state.sel = p.id;
+    if (navigator.vibrate) { try { navigator.vibrate(15); } catch (e) { /* 忽略 */ } }
+    refresh();
+    toast("已放置点位 " + p.id + "（x " + x + "，y " + y + " cm）");
+  }
+
+  function stopPress() {
+    if (!press) return;
+    clearTimeout(press.timer);
+    cancelAnimationFrame(press.raf);
+    press = null;
+    draw();
+  }
+
+  function fire() {
+    if (!press) return;
+    var x = press.x, y = press.y;
+    stopPress();
+    var inside = x >= toPx(0) - 6 && x <= toPx(SIZE) + 6 && y >= toPy(0) - 6 && y <= toPy(SIZE) + 6;
+    if (!inside) return;
+    var near = hit(x, y);
+    if (near) select(near.id); else addAt(x, y);
+  }
+
+  cv.addEventListener("pointerdown", function (e) {
+    if (e.button === 2) return;       // 右键走 contextmenu
+    stopPress();
+    var p = local(e);
+    press = { id: e.pointerId, x: p.x, y: p.y, t0: performance.now(), startX: p.x, startY: p.y, moved: false };
+    try { cv.setPointerCapture(e.pointerId); } catch (err) { /* 忽略 */ }
+    press.timer = setTimeout(fire, HOLD_MS);
+    var tick = function () { if (press) { draw(); press.raf = requestAnimationFrame(tick); } };
+    press.raf = requestAnimationFrame(tick);
+  });
+
+  cv.addEventListener("pointermove", function (e) {
+    if (!press || e.pointerId !== press.id) return;
+    var p = local(e);
+    if (Math.hypot(p.x - press.startX, p.y - press.startY) > MOVE_TOL) { press.moved = true; stopPress(); }
+  });
+
+  cv.addEventListener("pointerup", function (e) {
+    if (!press || e.pointerId !== press.id) return;
+    var x = press.x, y = press.y, shortTap = performance.now() - press.t0 < HOLD_MS;
+    stopPress();
+    if (shortTap) {                    // 轻点：选中点，或取消选中
+      var near = hit(x, y);
+      state.sel = near ? near.id : null;
+      refresh();
+    }
+  });
+
+  cv.addEventListener("pointercancel", stopPress);
+
+  cv.addEventListener("contextmenu", function (e) {
+    e.preventDefault();                // 电脑右键放点；手机长按不弹系统菜单
+    if (e.pointerType === "touch") return;   // 触屏长按已由 pointer 事件处理，避免重复放点
+    var p = local(e);
+    stopPress();
+    var near = hit(p.x, p.y);
+    if (near) select(near.id); else addAt(p.x, p.y);
+  });
+
+  // ------------------------------------------------------------ 选中点编辑
+
+  function editNum(input, key) {
+    input.addEventListener("input", function () {
+      var p = byId(state.sel);
+      if (!p || input.value === "") return;
+      var v = Number(input.value);
+      if (!isFinite(v)) return;
+      p[key] = Math.min(SIZE, Math.max(0, v));
+      refresh();
+    });
+  }
+  editNum($("px"), "x");
+  editNum($("py"), "y");
+
+  $("pid").addEventListener("input", function () {
+    var p = byId(state.sel), v = $("pid").value.trim();
+    if (!p) return;
+    var clash = v === "" || (v !== p.id && byId(v));
+    $("pid").classList.toggle("bad", !!clash);
+    if (clash) return;
+    p.id = v; state.sel = v;
+    refresh();
+  });
+
+  function nudge(dx, dy) {
+    var p = byId(state.sel), s = snapStep();
+    if (!p) return;
+    p.x = Math.min(SIZE, Math.max(0, p.x + dx * s));
+    p.y = Math.min(SIZE, Math.max(0, p.y + dy * s));
+    refresh();
+  }
+  $("nl").addEventListener("click", function () { nudge(-1, 0); });
+  $("nr").addEventListener("click", function () { nudge(1, 0); });
+  $("nu").addEventListener("click", function () { nudge(0, -1); });
+  $("nd").addEventListener("click", function () { nudge(0, 1); });
+
+  $("del").addEventListener("click", function () {
+    var id = state.sel;
+    state.pts = state.pts.filter(function (p) { return p.id !== id; });
+    state.sel = null;
+    refresh();
+    toast("已删除点位 " + id);
+  });
+
+  $("clear").addEventListener("click", function () {
+    var b = $("clear");
+    if (!state.pts.length) return;
+    if (b.dataset.armed !== "1") {     // 页面里自带二次确认，confirm() 在这里不可用
+      b.dataset.armed = "1"; b.textContent = "再点一次，确认清空";
+      clearTimeout(clearTimer);
+      clearTimer = setTimeout(function () { b.dataset.armed = ""; b.textContent = "清空全部"; }, 3000);
+      return;
+    }
+    clearTimeout(clearTimer);
+    b.dataset.armed = ""; b.textContent = "清空全部";
+    state.pts = []; state.sel = null;
+    refresh();
+    toast("已清空");
+  });
+
+  ["snap", "line", "floorId", "floorName"].forEach(function (id) { $(id).addEventListener("input", refresh); });
+
+  // ------------------------------------------------------------ 导出与导入
+
+  function filename() { return "map-10x10-floor" + ($("floorId").value.trim() || "1").replace(/[^\w-]/g, "_") + ".json"; }
+
+  $("save").addEventListener("click", function () {
+    if (!state.pts.length) { toast("还没有点位，先长按方格图放点"); return; }
+    var text = buildJson();
+    window.claude.use("downloads").then(function (d) {
+      if (!d) throw { code: "unavailable" };
+      return d.save({ filename: filename(), data: text });
+    }).then(function () {
+      toast("已交给系统保存，文件名 " + filename());
+    }).catch(function (err) {
+      var code = err && err.code;
+      if (code === "declined") { toast("已取消保存"); return; }
+      toast("这里无法直接保存，已改为复制 JSON");
+      copyText(text);
+    });
+  });
+
+  function copyText(text) {
+    var done = function () { toast("已复制 JSON（" + state.pts.length + " 个点位）"); };
+    var fallback = function () {
+      $("prev").open = true;
+      var t = $("json"); t.focus(); t.select();
+      toast("请长按文本框，选「全选」再「拷贝」");
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else { fallback(); }
+  }
+  $("copy").addEventListener("click", function () { copyText(buildJson()); });
+
+  $("imp").addEventListener("change", function () {
+    var f = $("imp").files && $("imp").files[0];
+    if (!f) return;
+    var r = new FileReader();
+    r.onload = function () {
+      try {
+        var v = JSON.parse(String(r.result));
+        if (typeof v === "string") v = JSON.parse(v);        // 与 App 一样，兼容再包一层字符串
+        if (!v || !Array.isArray(v.markPoints)) throw new Error("文件里没有 markPoints");
+        var pts = v.markPoints.map(function (p) { return { id: String(p.id), x: Number(p.x), y: Number(p.y) }; }).filter(validPoint);
+        state.pts = pts; state.sel = null;
+        if (v.floorId !== undefined) $("floorId").value = String(v.floorId);
+        if (v.floorName) $("floorName").value = String(v.floorName);
+        refresh();
+        toast("已导入 " + pts.length + " 个点位");
+      } catch (e) { toast("导入失败：" + e.message); }
+      $("imp").value = "";
+    };
+    r.readAsText(f);
+  });
+
+  // ------------------------------------------------------------ 启动
+
+  restore();
+  window.addEventListener("resize", resize);
+  if (window.matchMedia) {
+    var mq = window.matchMedia("(prefers-color-scheme: dark)");
+    (mq.addEventListener ? mq.addEventListener.bind(mq, "change") : mq.addListener.bind(mq))(draw);
+  }
+  new MutationObserver(draw).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  resize();
+  refresh();
+})();
+</script>

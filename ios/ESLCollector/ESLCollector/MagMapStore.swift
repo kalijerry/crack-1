@@ -1,0 +1,152 @@
+import Foundation
+import HPASSKit
+
+/// 地磁模式用的「一张地图」：10×10 m 的范围、手动定的点位、校准得到的磁场网格，全放在一个 JSON 里。
+///
+/// 文件在 `Documents/magmap.json`，格式兼容门店地图（`width` `height` `mapElementList`），
+/// 额外字段：`markPoints`（点位）、`magField`（校准结果，定位用）、`magStats`（累积统计，继续校准用）。
+@MainActor
+final class MagMapStore: ObservableObject {
+    static let shared = MagMapStore()
+
+    @Published private(set) var widthCm: Double = 1000
+    @Published private(set) var heightCm: Double = 1000
+    @Published var floorName = "测试区 10×10 m"
+    @Published private(set) var points: [MarkPoint] = []
+    @Published private(set) var field: MagneticFieldMap?
+    @Published private(set) var sampleCount = 0
+    @Published private(set) var validCells = 0
+    @Published private(set) var lastError: String?
+
+    private var builder = MagneticFieldBuilder(widthCm: 1000, heightCm: 1000)
+    /// 导入的地图里自带的磁场（没有累积统计，只能用来定位）。
+    private var importedField: MagneticFieldMap?
+
+    nonisolated static var fileURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("magmap.json")
+    }
+
+    init() {
+        if let data = try? Data(contentsOf: Self.fileURL) {
+            do { try load(data) } catch {
+                lastError = "读取已保存的地磁地图失败：\(error)"
+                AppLog.e("地磁", lastError ?? "")
+            }
+        }
+    }
+
+    // MARK: 点位
+
+    /// 在 p（cm）处放一个点，吸附到 10 cm，编号自动递增。
+    @discardableResult
+    func addPoint(at p: Point2) -> MarkPoint {
+        let x = min(max((p.x / 10).rounded() * 10, 0), widthCm)
+        let y = min(max((p.y / 10).rounded() * 10, 0), heightCm)
+        var n = (points.compactMap { Int($0.id) }.max() ?? 0) + 1
+        while points.contains(where: { $0.id == String(n) }) { n += 1 }
+        let mp = MarkPoint(id: String(n), x: x, y: y)
+        points.append(mp)
+        save()
+        AppLog.i("地磁", "放置点位 \(mp.id)：x \(Int(x)) y \(Int(y)) cm")
+        return mp
+    }
+
+    func deletePoint(id: String) {
+        points.removeAll { $0.id == id }
+        save()
+        AppLog.i("地磁", "删除点位 \(id)")
+    }
+
+    func clearPoints() {
+        points = []
+        save()
+    }
+
+    func point(id: String) -> MarkPoint? { points.first { $0.id == id } }
+
+    // MARK: 校准结果
+
+    /// 并入一遍校准数据，返回实际用到的样本数。
+    @discardableResult
+    func addCalibration(waypoints: [MagneticFieldBuilder.Waypoint],
+                        samples: [MagneticFieldBuilder.TimedFeature]) -> Int {
+        let used = builder.addTrack(waypoints: waypoints, samples: samples)
+        refreshField()
+        save()
+        AppLog.i("地磁", "并入校准数据：\(used) 个样本，累计 \(builder.sampleCount)，有效格 \(validCells)/\(builder.totalCells)")
+        return used
+    }
+
+    func clearCalibration() {
+        builder.reset()
+        importedField = nil
+        refreshField()
+        save()
+        AppLog.i("地磁", "已清空校准数据")
+    }
+
+    private func refreshField() {
+        if builder.sampleCount > 0 {
+            field = builder.build()
+        } else {
+            field = importedField
+        }
+        sampleCount = builder.sampleCount
+        validCells = field?.coveredCells ?? 0
+    }
+
+    // MARK: 导入 / 导出
+
+    /// 导入地图 JSON（网页编辑器导出的，或本 App 导出的）。
+    func importMap(_ data: Data) throws {
+        try load(data)
+        save()
+        AppLog.i("地磁", "导入地图：\(points.count) 个点位，" + (field == nil ? "无磁场数据" : "含磁场数据 \(validCells) 格"))
+    }
+
+    func exportData() throws -> Data {
+        var root: [String: Any] = [
+            "mapId": 1, "floorId": 1, "floorName": floorName,
+            "width": widthCm, "height": heightCm,
+            "mapElementList": [Any](),
+            "markPoints": points.map { ["id": $0.id, "x": Int($0.x.rounded()), "y": Int($0.y.rounded())] as [String: Any] },
+        ]
+        if let f = field { root["magField"] = f.jsonObject() }
+        if builder.sampleCount > 0 {
+            let snap = try JSONEncoder().encode(builder.snapshot())
+            root["magStats"] = try JSONSerialization.jsonObject(with: snap)
+        }
+        return try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
+    }
+
+    private func save() {
+        do { try exportData().write(to: Self.fileURL, options: .atomic) } catch {
+            lastError = "保存地图失败：\(error.localizedDescription)"
+            AppLog.e("地磁", lastError ?? "")
+        }
+    }
+
+    private func load(_ data: Data) throws {
+        let map = try StoreDataLoader.loadMap(data)
+        guard map.width > 0, map.height > 0 else {
+            throw StoreDataError.unsupportedFormat("地图缺少 width / height（单位 cm）")
+        }
+        widthCm = map.width
+        heightCm = map.height
+        floorName = map.floorName ?? floorName
+        points = try StoreDataLoader.loadMarkPoints(data)
+        importedField = try StoreDataLoader.loadMagneticField(data)
+
+        builder = MagneticFieldBuilder(widthCm: widthCm, heightCm: heightCm)
+        if let root = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) as? [String: Any],
+           let stats = root["magStats"],
+           let raw = try? JSONSerialization.data(withJSONObject: stats),
+           let snap = try? JSONDecoder().decode(MagneticFieldBuilder.Snapshot.self, from: raw),
+           let restored = MagneticFieldBuilder(snapshot: snap) {
+            builder = restored
+        }
+        refreshField()
+        lastError = nil
+    }
+}

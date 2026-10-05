@@ -229,6 +229,7 @@ final class MagneticEngine: ObservableObject {
     // MARK: - 传感器与流水线
 
     private func startMotion(mode: Phase) {
+        let pipe = self.pipe
         queue.sync {
             pipe.mode = mode
             pipe.extractor.reset()
@@ -237,7 +238,6 @@ final class MagneticEngine: ObservableObject {
             pipe.lastCalSampleMs = 0
             pipe.lastPublishMs = 0
         }
-        let pipe = self.pipe
         motion.onSample = { [weak self] s in
             guard let self else { return }
             self.queue.async { self.handleIMU(s, pipe: pipe) }

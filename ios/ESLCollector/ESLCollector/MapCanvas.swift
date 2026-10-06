@@ -478,7 +478,7 @@ final class ShelfPathCache {
     private var cached = (standard: Path(), nonStandard: Path(), others: Path())
 
     func paths(for m: StoreMap) -> (standard: Path, nonStandard: Path, others: Path) {
-        let k = "\(Int(m.width))x\(Int(m.height))/\(m.shelves.count)/\(m.others.count)/\(m.shelves.first?.x ?? 0)"
+        let k = "\(Int(m.width))x\(Int(m.height))/\(m.shelves.count)/\(m.others.count)/\(m.shelves.first?.x ?? 0),\(m.shelves.first?.y ?? 0)"
         if k == key { return cached }
         let id = MapTransform(scale: 1, origin: .zero)
         var std = Path(), non = Path(), oth = Path()

@@ -37,11 +37,15 @@ final class Store3DScene {
     private var avatarPos = SCNVector3(0, 0, 0)
     private var avatarHeading = 0.0
 
+    /// 建场景时地图里已经套用的货架偏移（cm）。之后改偏移只挪货架节点，不重建。
+    private let bakedShelfOffset: Point2
+
     /// 实物货架的显示高度（米）。地图里没有高度数据，默认 1.8 m；激光雷达量到真实高度之后再改。
     private(set) var shelfHeightM = 1.8
 
-    init(map: StoreMap) {
+    init(map: StoreMap, shelfOffset: Point2 = Point2(0, 0)) {
         self.map = map
+        bakedShelfOffset = shelfOffset
         widthM = max(map.width, 100) / 100
         heightM = max(map.height, 100) / 100
         var minX = Double.infinity, minZ = Double.infinity, maxX = -Double.infinity, maxZ = -Double.infinity
@@ -83,6 +87,11 @@ final class Store3DScene {
         guard abs(m - shelfHeightM) > 0.01 else { return }
         shelfHeightM = m
         rebuildShelves()
+    }
+
+    /// 实时改货架整体偏移（cm）：只移动货架节点，一帧就能看到。
+    func setShelfOffset(_ d: Point2) {
+        shelvesNode.position = SCNVector3((d.x - bakedShelfOffset.x) / 100, 0, (d.y - bakedShelfOffset.y) / 100)
     }
 
     private func rebuildShelves() {

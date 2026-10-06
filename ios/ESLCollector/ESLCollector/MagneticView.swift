@@ -196,6 +196,9 @@ struct MagneticView: View {
                     .disabled(!store.usesStoreMap)
             } else {
                 Text(surveyInstruction).font(.callout)
+                if survey.position != nil && survey.stage != .needPosition {
+                    bigButton(survey.headingEditing ? "确定朝向" : "设朝向", name: "建图·朝向") { survey.toggleHeadingEdit() }
+                }
                 bigButton("结束采集", name: "建图·结束") { survey.stop() }.tint(.red)
             }
             if let err = survey.lastError { Text(err).font(.footnote).foregroundStyle(.red) }
@@ -250,7 +253,7 @@ struct MagneticView: View {
     private var surveyInstruction: String {
         switch survey.stage {
         case .needPosition: return "长按地图：我现在在这里。找一个路口或已知点位站着。"
-        case .needHeading: return "双击地图，然后在地图上点或拖动，让橙色箭头指向你要走的方向，再双击确定。"
+        case .needHeading: return "点「设朝向」（或双击地图），在地图上点或拖动，让橙色箭头指向你要走的方向，再点「确定朝向」（或再双击）。"
         case .aligning: return "朝箭头方向直线走 1.5 m，App 会自动对齐 ARKit 轨迹。"
         case .tracking: return "沿通道走。到路口、或约 30 m 一次，长按地图修正位置。要换方向时双击重设朝向。"
         case .idle: return ""
@@ -304,6 +307,11 @@ struct MagneticView: View {
                 if engine.isTracking && !engine.searching {
                     row("不确定度", "± \(Int(engine.uncertaintyCm)) cm")
                 }
+                if engine.position != nil && !engine.searching {
+                    // 双击不好用时的备用：用按钮开始 / 确定朝向
+                    bigButton(engine.headingEditing ? "确定朝向" : (engine.isTracking ? "重设朝向" : "设朝向"),
+                              name: "实时·朝向") { engine.toggleHeadingEdit() }
+                }
                 if engine.searching, let e = engine.estimate {
                     row("搜索中", "置信度 \(Int((e.confidence * 100).rounded()))%")
                 }
@@ -340,8 +348,8 @@ struct MagneticView: View {
     private var liveInstruction: String {
         if engine.searching { return "正在找你在哪：沿通道直行 20～30 米，不要原地转圈。找到后地图上会出现蓝点。" }
         if engine.position == nil { return "长按地图：我现在在这里（离点位 50 cm 内会自动吸附到点位）。" }
-        if engine.headingEditing { return "在地图上点或拖动，让橙色箭头指向你面朝的方向，然后双击确定。" }
-        if !engine.isTracking { return "双击地图，开始设朝向。" }
+        if engine.headingEditing { return "在地图上点或拖动，让橙色箭头指向你面朝的方向，然后点「确定朝向」（或再双击地图）。" }
+        if !engine.isTracking { return "点「设朝向」（或双击地图），开始设朝向。" }
         return "走起来。到了确定的位置可以长按修正，双击可以重新设朝向。"
     }
 

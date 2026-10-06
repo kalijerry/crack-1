@@ -148,6 +148,18 @@ struct MapCanvas: View {
                 let held = touchStart.map { Date().timeIntervalSince($0) } ?? 0
                 touchStart = nil
                 if headingEditing {
+                    // 设朝向中：拖动 / 点击只用来指方向；但「再双击」要能被识别，用来确定
+                    let moved = hypot(v.translation.width, v.translation.height) > 12
+                    let now = Date()
+                    if !moved, let onDoubleTap, let last = lastTapTime,
+                       now.timeIntervalSince(last) < 0.5,
+                       hypot(v.startLocation.x - lastTapLoc.x, v.startLocation.y - lastTapLoc.y) < 40 {
+                        lastTapTime = nil
+                        onDoubleTap()
+                    } else {
+                        lastTapTime = moved ? nil : now
+                        lastTapLoc = v.startLocation
+                    }
                     dragOffset = .zero
                     dragMoved = false
                     return

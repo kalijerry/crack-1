@@ -22,6 +22,8 @@ final class Store3DModel: ObservableObject {
         signature = sig
         lastCoverageRevision = -1
         fieldSignature = -1
+        lastPaint = nil
+        paintShown = false
         objectWillChange.send()
         return s
     }
@@ -34,6 +36,25 @@ final class Store3DModel: ObservableObject {
         lastCoverageRevision = rev
         lastCoverageTime = Date()
         s.setCoverage(crosses: crosses, states: coverage.states, binCm: SurveyCoverage.binCm)
+    }
+
+    private weak var lastPaint: PaintLayer?
+    private var paintShown = false
+
+    /// 不画按方向的采集进度（切到涂色图层时）
+    func clearCoverage() {
+        guard let s = scene, lastCoverageRevision != -2 else { return }
+        lastCoverageRevision = -2
+        s.setCoverage(crosses: [], states: [], binCm: SurveyCoverage.binCm)
+    }
+
+    /// 涂色图层换了（每秒最多一次）才重新贴
+    func updatePaint(_ l: PaintLayer?) {
+        guard let s = scene else { return }
+        if l === lastPaint && (l != nil) == paintShown { return }
+        lastPaint = l
+        paintShown = l != nil
+        s.setPaint(l)
     }
 
     func updateField(_ f: MagneticFieldMap?, signature sig: Int) {

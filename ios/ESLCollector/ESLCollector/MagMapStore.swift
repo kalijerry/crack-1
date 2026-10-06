@@ -14,6 +14,8 @@ final class MagMapStore: ObservableObject {
     @Published var floorName = "测试区 10×10 m"
     @Published private(set) var points: [MarkPoint] = []
     @Published private(set) var field: MagneticFieldMap?
+    /// 当前磁场图从哪来（例如「2 个会话：…，10-06 16:20」），界面上显示，删除时清掉
+    @Published private(set) var fieldSource: String? = UserDefaults.standard.string(forKey: "magFieldSource")
     @Published private(set) var sampleCount = 0
     @Published private(set) var validCells = 0
     @Published private(set) var lastError: String?
@@ -150,12 +152,28 @@ final class MagMapStore: ObservableObject {
     }
 
     /// 启用手机上（SurveyMapBuilder）建出来的磁场图：替换当前磁场数据，来源是原始磁力计减偏置。
-    func applyBuilt(_ f: MagneticFieldMap) {
+    func applyBuilt(_ f: MagneticFieldMap, source: String? = nil) {
         builder.reset()
         importedField = f
         magSource = "raw"
+        setFieldSource(source)
         refreshField()
         save()
+    }
+
+    /// 删除当前磁场图（手机上生成的、导入的、点位校准累计的都清掉）。点位、地图朝向保留。
+    func deleteField() {
+        builder.reset()
+        importedField = nil
+        setFieldSource(nil)
+        refreshField()
+        save()
+        AppLog.w("地磁", "已删除磁场图")
+    }
+
+    private func setFieldSource(_ s: String?) {
+        fieldSource = s
+        UserDefaults.standard.set(s, forKey: "magFieldSource")
     }
 
     func clearCalibration() {

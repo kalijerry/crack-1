@@ -21,6 +21,51 @@ final class SurveyCoverage: ObservableObject {
             .appendingPathComponent("survey-coverage.json")
     }
 
+    // MARK: 涂色（Oriient 式：走过的地方按圆圈涂满通道宽度）
+
+    /// 涂色网格；地图尺寸已知时才有
+    private(set) var paintGrid: CoveragePaint?
+    /// 给 2D / 3D 画的涂色图（只含有通道的那块），每秒最多重画一次
+    @Published private(set) var paintLayer: PaintLayer?
+    /// 当前所在通道的涂色比例（采集时显示）
+    @Published private(set) var currentCorridorPaint: (code: String, fraction: Double)?
+    private var paintDirty = false
+    private var lastPaintImage = Date.distantPast
+
+    private static var paintURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("survey-paint.bin")
+    }
+
+    /// 地图尺寸 / 通道变了才重建涂色网格，并读回存盘的涂色。
+    func configurePaint(crosses: [CrossSegment], widthCm: Double, heightCm: Double) {
+        guard !crosses.isEmpty, widthCm > 0, heightCm > 0 else { return }
+        if let p = paintGrid, p.cols == Int((widthCm / p.cellCm).rounded(.up)), p.crosses.count == crosses.count,
+           zip(p.crosses, crosses).allSatisfy({ $0.a == $1.a && $0.b == $1.b }) { return }
+        let p = CoveragePaint(crosses: crosses, widthCm: widthCm, heightCm: heightCm)
+        if let d = try? Data(contentsOf: Self.paintURL) { p.load(d) }
+        paintGrid = p
+        rebuildPaintImage()
+    }
+
+    /// 在 p 处涂一圈（采集质量合格时调用）。
+    func paint(at p: Point2) {
+        guard let pt = paintGrid else { return }
+        if pt.paint(at: p) { paintDirty = true }
+        if paintDirty && Date().timeIntervalSince(lastPaintImage) > 1 { rebuildPaintImage() }
+        if Date().timeIntervalSince(lastPaintImage) > 1 || currentCorridorPaint == nil {
+            currentCorridorPaint = pt.corridorIndex(at: p).map { (pt.crosses[$0].code, pt.fraction(corridor: $0)) }
+        }
+    }
+
+    func breakPaintStroke() { paintGrid?.breakStroke() }
+
+    func rebuildPaintImage() {
+        paintDirty = false
+        lastPaintImage = Date()
+        paintLayer = paintGrid.flatMap(PaintLayer.make)
+    }
+
     func configure(crosses: [CrossSegment]) {
         guard crosses.count != segments.count || zip(crosses, segments).contains(where: { $0.a != $1.a || $0.b != $1.b }) else { return }
         segments = crosses
@@ -108,6 +153,10 @@ final class SurveyCoverage: ObservableObject {
     var totalMeters: Double { lengths.reduce(0, +) / 100 }
 
     func reset() {
+        paintGrid?.reset()
+        try? FileManager.default.removeItem(at: Self.paintURL)
+        rebuildPaintImage()
+        currentCorridorPaint = nil
         for i in forward.indices {
             forward[i] = [Bool](repeating: false, count: forward[i].count)
             backward[i] = forward[i]
@@ -120,6 +169,8 @@ final class SurveyCoverage: ObservableObject {
         struct File: Codable { var f: [[Int]]; var b: [[Int]] }
         let file = File(f: forward.map { $0.map { $0 ? 1 : 0 } }, b: backward.map { $0.map { $0 ? 1 : 0 } })
         if let d = try? JSONEncoder().encode(file) { try? d.write(to: Self.fileURL, options: .atomic) }
+        if let p = paintGrid { try? p.serialized().write(to: Self.paintURL, options: .atomic) }
+        if paintDirty { rebuildPaintImage() }
     }
 
     private func load() {
@@ -258,6 +309,8 @@ final class SurveyEngine: ObservableObject {
         }
         let store = MagMapStore.shared
         coverage.configure(crosses: store.crosses)
+        coverage.configurePaint(crosses: store.crosses, widthCm: store.widthCm, heightCm: store.heightCm)
+        coverage.breakPaintStroke()
         lastError = nil
         recorder.deviceLabel = "survey"
         recorder.recordBLE = Features.bluetooth
@@ -372,6 +425,7 @@ final class SurveyEngine: ObservableObject {
             trail.append(p)
             walkedSinceAnchorM = 0
             lock?.reset()
+            coverage.breakPaintStroke()
             writeAnchor(kind: "reanchor", map: p, ar: a, heading: nil,
                         note: (snapLabel ?? "") + (before.map { " 修正前偏 \(Int($0.distance(to: p))) cm" } ?? ""))
             publishAlignment()
@@ -460,7 +514,10 @@ final class SurveyEngine: ObservableObject {
             totalWalkedM += step.length / 100
             trail.append(p)
             if trail.count > 1500 { trail.removeFirst(trail.count - 1500) }
-            if sampleQualityOK { coverage.mark(position: p, moving: step) }
+            if sampleQualityOK {
+                coverage.mark(position: p, moving: step)
+                coverage.paint(at: p)
+            }
             lastMapPos = p
             headingRad = atan2(step.x, step.y)
         }
@@ -537,6 +594,7 @@ final class SurveyEngine: ObservableObject {
         trail = [p]
         walkedSinceAnchorM = 0
         lock?.reset()
+        coverage.breakPaintStroke()
         let note = "自动起点 ±\(Int(uncertainty)) cm"
         writeAnchor(kind: "start", map: p, ar: a, heading: nil, note: note)
         writeAnchor(kind: "align", map: p, ar: a, heading: newPhi, note: note)
@@ -583,4 +641,50 @@ final class SurveyEngine: ObservableObject {
 /// 只在 shadowQueue 上读写
 private final class ShadowBox: @unchecked Sendable {
     var sh: ShadowLocalizer?
+}
+
+/// 涂色图层：一张图（每格一个像素）+ 它在地图上的范围（cm）。2D 和 3D 共用。
+final class PaintLayer {
+    let image: CGImage
+    let rect: CGRect
+    /// 涂色的圆圈半径（cm），画当前位置的圈用
+    let radiusCm: Double
+
+    init(image: CGImage, rect: CGRect, radiusCm: Double) {
+        self.image = image
+        self.rect = rect
+        self.radiusCm = radiusCm
+    }
+
+    /// 通道里没涂：淡灰；走过一趟：浅绿；两趟以上：深绿。通道外透明。
+    static func make(_ p: CoveragePaint) -> PaintLayer? {
+        let b = p.bbox
+        let w = b.i1 - b.i0 + 1, h = b.j1 - b.j0 + 1
+        guard w > 0, h > 0 else { return nil }
+        var px = [UInt8](repeating: 0, count: w * h * 4)
+        for j in 0..<h {
+            for i in 0..<w {
+                let k = (b.j0 + j) * p.cols + (b.i0 + i)
+                guard p.mask[k] else { continue }
+                let o = (j * w + i) * 4
+                // 预乘 alpha
+                let (r, g, bl, a): (Double, Double, Double, Double)
+                switch p.counts[k] {
+                case 0: (r, g, bl, a) = (0.55, 0.55, 0.58, 0.18)
+                case 1: (r, g, bl, a) = (0.20, 0.78, 0.35, 0.45)
+                default: (r, g, bl, a) = (0.10, 0.55, 0.22, 0.80)
+                }
+                px[o] = UInt8(r * a * 255); px[o + 1] = UInt8(g * a * 255); px[o + 2] = UInt8(bl * a * 255); px[o + 3] = UInt8(a * 255)
+            }
+        }
+        guard let provider = CGDataProvider(data: Data(px) as CFData),
+              let img = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
+                                space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                                provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+        else { return nil }
+        let rect = CGRect(x: Double(b.i0) * p.cellCm, y: Double(b.j0) * p.cellCm,
+                          width: Double(w) * p.cellCm, height: Double(h) * p.cellCm)
+        return PaintLayer(image: img, rect: rect, radiusCm: p.radiusCm)
+    }
 }

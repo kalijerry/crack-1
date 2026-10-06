@@ -70,7 +70,10 @@ final class SurveyMapService: ObservableObject {
                     AppLog.w("建图", self.lastError ?? "")
                     return
                 }
-                MagMapStore.shared.applyBuilt(f)
+                let df = DateFormatter()
+                df.dateFormat = "MM-dd HH:mm"
+                let names = urls.map { $0.lastPathComponent.replacingOccurrences(of: "ios_survey_", with: "") }
+                MagMapStore.shared.applyBuilt(f, source: "\(urls.count) 个会话（\(names.joined(separator: "、"))），\(df.string(from: Date())) 生成")
                 self.lines.append("完成：有数据的格子 \(valid) 个（补齐后 \(f.coveredCells)），已启用")
                 AppLog.i("建图", "手机上生成磁场图完成：样本 \(total)，有效格 \(valid)，补齐后 \(f.coveredCells)")
             }

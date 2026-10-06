@@ -268,6 +268,12 @@ struct MagneticView: View {
             Section {
                 Text("1. 打开传感器，拿手机在空中画 8 字，直到磁场精度变成「高」。\n2. 长按地图：我现在在这里。\n3. 双击地图开始设朝向，在地图上点或拖动让箭头指向你面朝的方向，再双击确定。\n4. 走起来，看地图上的点跟着动。")
                     .font(.footnote).foregroundStyle(.secondary)
+                Toggle("视觉里程计（摄像头 + ARKit，取代计步）", isOn: $engine.useVisualOdometry)
+                Picker("激光雷达测货架距离", selection: $engine.depthMode) {
+                    ForEach(DepthMode.allCases) { Text($0.title).tag($0) }
+                }
+                .disabled(!ARKitLogger.supportsLiDAR)
+                Toggle("用计步器的距离校正步长", isOn: $engine.usePedometerScale)
                 Toggle("用罗盘修正航向", isOn: $engine.useCompassHeading)
                 Toggle("地磁纠偏（需要已有磁场数据）", isOn: $engine.useMagCorrection)
                     .disabled(store.field == nil)
@@ -278,7 +284,7 @@ struct MagneticView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             } header: { Text("实时定位") } footer: {
-                Text("罗盘在钢货架旁常偏几十度，默认关闭，只用陀螺仪推算航向。")
+                Text("视觉里程计要手机竖着拿、摄像头朝前，耗电发热，丢跟踪时自动退回计步。激光雷达「只记录」不影响定位，只把测到的左右货架距离存进文件，用来和地图核对；核对没问题再选「参与定位」。罗盘在钢货架旁常偏几十度，默认关闭。")
             }
         } else {
             Section {
@@ -295,6 +301,37 @@ struct MagneticView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             } header: { Text("① 传感器") }
+
+            Section("传感器状态") {
+                HStack {
+                    Text("磁场可信度")
+                    Spacer()
+                    Text("\(Int((engine.magTrust * 100).rounded()))%").fontWeight(.semibold)
+                        .foregroundStyle(engine.magTrust >= 0.8 ? .green : (engine.magTrust > 0 ? .orange : .red))
+                }
+                row("持握", engine.posture.title)
+                if engine.useVisualOdometry {
+                    HStack {
+                        Text("视觉里程计")
+                        Spacer()
+                        Text(visualOdometryText).fontWeight(.semibold)
+                            .foregroundStyle(engine.vioAligned ? .green : (engine.vioTracking == 2 ? .orange : .secondary))
+                    }
+                    if engine.isTracking && !engine.posture.suitsCamera {
+                        Text("手机太平或反扣，摄像头看不到前方，视觉里程计会丢跟踪。请竖起一点，摄像头朝前。")
+                            .font(.footnote).foregroundStyle(.orange)
+                    }
+                }
+                if !engine.lateralText.isEmpty { row("货架距离（激光雷达）", engine.lateralText) }
+                if let r = engine.pedometerRatio { row("计步器 / 惯导距离", Fmt.f(r, 2)) }
+                if !engine.activityText.isEmpty { row("运动类型", engine.activityText) }
+                if engine.cartSuspected {
+                    Text("在移动但没有脚步，像是推着车。计步推算会偏短，定位精度下降。").font(.footnote).foregroundStyle(.orange)
+                }
+                if engine.thermal == .serious || engine.thermal == .critical {
+                    Text("手机发热，视觉里程计可能降频。可以停一会儿，或关掉激光雷达。").font(.footnote).foregroundStyle(.red)
+                }
+            }
 
             Section {
                 if !engine.isTracking && store.field != nil && store.usesStoreMap && engine.position == nil {
@@ -344,6 +381,13 @@ struct MagneticView: View {
                 } header: { Text("修正记录（准不准）") }
             }
         }
+    }
+
+    private var visualOdometryText: String {
+        if engine.vioTracking == 0 { return engine.isTracking ? "不可用" : "定点后启动" }
+        if engine.vioAligned { return "已对齐，在用" }
+        if engine.vioTracking == 2 { return "对齐中 \(Int(engine.vioProgress * 100))%（直走 1.5 m）" }
+        return "跟踪受限，用计步顶上"
     }
 
     private var liveInstruction: String {

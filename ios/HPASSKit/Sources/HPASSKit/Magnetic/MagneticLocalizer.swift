@@ -30,6 +30,8 @@ public struct MagneticConfig {
     public var updateDistanceCm: Double = 50
     /// 每走 1 cm 附加的位置噪声比例，外加一个固定底噪（cm）。
     public var positionNoiseFraction: Double = 0.08
+    /// 收敛之后用的位置噪声比例（nil = 同上）。运动模型很准（视觉里程计）时调小，粒子不会沿通道「滑」到别处。
+    public var convergedPositionNoiseFraction: Double?
     public var positionNoiseFloorCm: Double = 2
     /// 冷启动时每个粒子的航向偏差 1σ（度）；以及每走 1 m 的随机游走（度）。
     public var initialHeadingBiasSigmaDeg: Double = 12
@@ -334,7 +336,8 @@ public final class MagneticLocalizer {
     private func predict(delta: Point2, dist: Double) {
         var mx = 0.0, my = 0.0, mw = 0.0
         let distM = dist / 100
-        let posSigma = config.positionNoiseFraction * dist + config.positionNoiseFloorCm
+        let frac = hasConverged ? (config.convergedPositionNoiseFraction ?? config.positionNoiseFraction) : config.positionNoiseFraction
+        let posSigma = frac * dist + config.positionNoiseFloorCm
         let biasWalk = config.headingBiasWalkDegPerM * Double.pi / 180 * distM.squareRoot()
         let scaleWalk = config.scaleWalkPerM * distM.squareRoot()
         let hs = config.corridorHeadingSigmaDeg * Double.pi / 180

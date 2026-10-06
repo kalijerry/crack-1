@@ -88,4 +88,15 @@ final class ShelfClassifierTests: XCTestCase {
         XCTAssertEqual(map.physicalShelves.count, 1)
         XCTAssertEqual(map.physicalShelves[0].code, "Shelf-001-1")
     }
+
+    func testShelfOffsetMovesShelvesOnly() {
+        let map = StoreMap(width: 1000, height: 1000, shelves: [
+            ShelfRect(code: "Shelf-001-1", x: 100, y: 200, width: 120, height: 60, rotation: 30)
+        ], crosses: [CrossSegment(code: "C", a: Point2(0, 0), b: Point2(0, 500), lineWidth: 150)])
+        let m = map.withShelfOffset(Point2(-100, 20))
+        XCTAssertEqual(m.shelves[0].x, 0)
+        XCTAssertEqual(m.shelves[0].y, 220)
+        XCTAssertEqual(m.shelves[0].rotation, 30)
+        XCTAssertEqual(m.crosses, map.crosses)
+    }
 }

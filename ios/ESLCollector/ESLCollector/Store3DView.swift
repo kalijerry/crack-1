@@ -13,10 +13,11 @@ final class Store3DModel: ObservableObject {
 
     /// 地图换了就重建场景；返回场景。
     @discardableResult
-    func ensure(map: StoreMap) -> Store3DScene {
+    func ensure(map: StoreMap, shelfOffset: Point2 = Point2(0, 0)) -> Store3DScene {
+        // 签名里不含货架偏移：偏移变了只挪货架节点（setShelfOffset），不重建整个场景
         let sig = "\(Int(map.width))x\(Int(map.height))/\(map.shelves.count)/\(map.crosses.count)"
         if let s = scene, sig == signature { return s }
-        let s = Store3DScene(map: map)
+        let s = Store3DScene(map: map, shelfOffset: shelfOffset)
         scene = s
         signature = sig
         lastCoverageRevision = -1

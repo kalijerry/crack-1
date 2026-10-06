@@ -37,11 +37,15 @@ final class Store3DScene {
     private var avatarPos = SCNVector3(0, 0, 0)
     private var avatarHeading = 0.0
 
+    /// 建场景时地图里已经套用的货架偏移（cm）。之后改偏移只挪货架节点，不重建。
+    private let bakedShelfOffset: Point2
+
     /// 实物货架的显示高度（米）。地图里没有高度数据，默认 1.8 m；激光雷达量到真实高度之后再改。
     private(set) var shelfHeightM = 1.8
 
-    init(map: StoreMap) {
+    init(map: StoreMap, shelfOffset: Point2 = Point2(0, 0)) {
         self.map = map
+        bakedShelfOffset = shelfOffset
         widthM = max(map.width, 100) / 100
         heightM = max(map.height, 100) / 100
         var minX = Double.infinity, minZ = Double.infinity, maxX = -Double.infinity, maxZ = -Double.infinity
@@ -83,6 +87,11 @@ final class Store3DScene {
         guard abs(m - shelfHeightM) > 0.01 else { return }
         shelfHeightM = m
         rebuildShelves()
+    }
+
+    /// 实时改货架整体偏移（cm）：只移动货架节点，一帧就能看到。
+    func setShelfOffset(_ d: Point2) {
+        shelvesNode.position = SCNVector3((d.x - bakedShelfOffset.x) / 100, 0, (d.y - bakedShelfOffset.y) / 100)
     }
 
     private func rebuildShelves() {
@@ -129,6 +138,8 @@ final class Store3DScene {
         let black = Self.material(S3Color(white: 0.05, alpha: 1), lit: false)
         let faint = Self.material(S3Color(red: 0.2, green: 0.4, blue: 0.9, alpha: 0.22), lit: false)
         let thin = Self.material(S3Color(white: 0.45, alpha: 0.5), lit: false)
+        let orangeBand = Self.material(S3Color(red: 1.0, green: 0.6, blue: 0.1, alpha: 0.40), lit: false)
+        let orange = Self.material(S3Color(red: 1.0, green: 0.55, blue: 0.0, alpha: 1), lit: false)
 
         for (i, c) in crosses.enumerated() {
             let len = c.a.distance(to: c.b)
@@ -160,6 +171,9 @@ final class Store3DScene {
                 switch st {
                 case .none:
                     piece(from: s0, to: s1, width: 8, y: 0.012, height: 0.004, material: thin)
+                case .partial:
+                    piece(from: s0, to: s1, width: c.lineWidth, y: 0.012, height: 0.004, material: orangeBand)
+                    piece(from: s0, to: s1, width: 22, y: 0.02, height: 0.006, material: orange)
                 case .isolated:
                     piece(from: s0, to: s1, width: c.lineWidth, y: 0.012, height: 0.004, material: band)
                     piece(from: s0, to: s1, width: 22, y: 0.02, height: 0.006, material: green)

@@ -429,6 +429,10 @@ struct MapCanvas: View {
             switch state {
             case .none:
                 ctx.stroke(p, with: .color(Color.secondary.opacity(0.35)), style: StrokeStyle(lineWidth: 0.8, lineCap: .butt))
+            case .partial:
+                // 只走了一个方向：橙色，提醒反方向再走一遍
+                ctx.stroke(p, with: .color(Color.orange.opacity(0.30)), style: StrokeStyle(lineWidth: band, lineCap: .butt))
+                ctx.stroke(p, with: .color(Color.orange), style: StrokeStyle(lineWidth: 1.8, lineCap: .butt))
             case .isolated:
                 ctx.stroke(p, with: .color(Color.green.opacity(0.28)), style: StrokeStyle(lineWidth: band, lineCap: .butt))
                 ctx.stroke(p, with: .color(Color.green), style: StrokeStyle(lineWidth: 1.8, lineCap: .butt))
@@ -474,7 +478,7 @@ final class ShelfPathCache {
     private var cached = (standard: Path(), nonStandard: Path(), others: Path())
 
     func paths(for m: StoreMap) -> (standard: Path, nonStandard: Path, others: Path) {
-        let k = "\(Int(m.width))x\(Int(m.height))/\(m.shelves.count)/\(m.others.count)/\(m.shelves.first?.x ?? 0)"
+        let k = "\(Int(m.width))x\(Int(m.height))/\(m.shelves.count)/\(m.others.count)/\(m.shelves.first?.x ?? 0),\(m.shelves.first?.y ?? 0)"
         if k == key { return cached }
         let id = MapTransform(scale: 1, origin: .zero)
         var std = Path(), non = Path(), oth = Path()

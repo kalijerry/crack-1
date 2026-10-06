@@ -58,9 +58,11 @@ final class MagMapStore: ObservableObject {
         let sameSize = abs(m.width - widthCm) < 1 && abs(m.height - heightCm) < 1
         let sameCrosses = m.crosses.count == crosses.count
         crosses = m.crosses
-        if !sameCrosses || m.shelves.count != shelves.count { walkableCache = nil; raycasterCache = nil }
+        if !sameCrosses { walkableCache = nil }
         // 只有标准货架（Shelf-001…100）是实物；虚拟货架和 107 / 401 / Shelf-4-… 等不参与
-        shelves = m.physicalShelves
+        let phys = m.physicalShelves
+        if phys != shelves { raycasterCache = nil }   // 货架数量变了或者整体偏移改了
+        shelves = phys
         if sameSize { return }
         widthCm = m.width
         heightCm = m.height

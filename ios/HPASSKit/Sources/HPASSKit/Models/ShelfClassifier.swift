@@ -35,4 +35,12 @@ extension ShelfRect {
 extension StoreMap {
     /// 实物货架（只有标准货架）。给 LiDAR 测距、碰撞这类需要「真有东西」的地方用。
     public var physicalShelves: [ShelfRect] { shelves.filter { $0.kind == .standard } }
+
+    /// 所有货架整体平移 (dx, dy) cm 后的地图。通道不动：通道是准的，货架图层整体偏了。
+    public func withShelfOffset(_ d: Point2) -> StoreMap {
+        guard d.x != 0 || d.y != 0 else { return self }
+        var m = self
+        m.shelves = shelves.map { var s = $0; s.x += d.x; s.y += d.y; return s }
+        return m
+    }
 }

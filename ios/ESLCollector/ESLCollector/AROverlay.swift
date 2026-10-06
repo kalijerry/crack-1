@@ -46,7 +46,7 @@ final class AROverlayScene {
 
     /// 以 `center` 为中心重建附近的货架、通道、点位。走出 3 m 才重建。
     func setLocal(center: Point2, map: StoreMap, points: [MarkPoint], force: Bool = false) {
-        let key = "\(map.shelves.count)/\(map.crosses.count)/\(points.count)/\(shelfHeightM)"
+        let key = "\(map.shelves.count)/\(map.shelves.first.map { "\($0.x),\($0.y)" } ?? "")/\(map.crosses.count)/\(points.count)/\(shelfHeightM)"
         if !force, key == builtKey, let c = builtCenter, c.distance(to: center) < 300 { return }
         builtCenter = center
         builtKey = key

@@ -42,7 +42,13 @@ final class StoreDataStore: ObservableObject {
         }
     }
 
+    /// 已经套用了货架偏移的地图。所有页面都用它。
     @Published private(set) var map: StoreMap?
+    /// 货架图层整体偏移（cm，地图坐标）。在 3D 里实时校准，存在本机。
+    @Published private(set) var shelfOffset = Point2(0, 0)
+    /// 文件里原样的地图（没套偏移）
+    private var rawMap: StoreMap?
+    private static let shelfOffsetKey = "shelfOffsetCm.v1"
     @Published private(set) var fingerprints: [FingerprintPoint] = []
     @Published private(set) var eslItems: [EslItem] = []
     @Published private(set) var goods: [GoodsItem] = []
@@ -65,7 +71,24 @@ final class StoreDataStore: ObservableObject {
     }
 
     private init() {
+        if let a = UserDefaults.standard.array(forKey: Self.shelfOffsetKey) as? [Double], a.count == 2 {
+            shelfOffset = Point2(a[0], a[1])
+        }
         reload()
+    }
+
+    /// 设置货架整体偏移，立刻生效并保存。
+    func setShelfOffset(_ d: Point2) {
+        let r = Point2((d.x * 10).rounded() / 10, (d.y * 10).rounded() / 10)
+        guard r != shelfOffset else { return }
+        shelfOffset = r
+        UserDefaults.standard.set([r.x, r.y], forKey: Self.shelfOffsetKey)
+        map = rawMap?.withShelfOffset(r)
+    }
+
+    /// 偏移调完之后记一条日志（调的过程中不记，避免刷屏）。
+    func logShelfOffset() {
+        AppLog.i("门店数据", "货架偏移：x \(Int(shelfOffset.x)) cm，y \(Int(shelfOffset.y)) cm")
     }
 
     // MARK: 写入
@@ -107,10 +130,12 @@ final class StoreDataStore: ObservableObject {
         // 地图
         info[FileKind.map.rawValue] = parse(.map) { data in
             let m = try StoreDataLoader.loadMap(data)
-            self.map = m
+            self.rawMap = m
+            self.map = m.withShelfOffset(self.shelfOffset)
             return "\(m.shelves.count) 个货架 / \(m.crosses.count) 条通道" +
                 (m.floorName.map { " / 楼层 \($0)" } ?? "")
         } onMissing: {
+            self.rawMap = nil
             self.map = nil
         }
 

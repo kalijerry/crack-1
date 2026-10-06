@@ -46,6 +46,9 @@ struct MagneticView: View {
     @State private var show3D = false
     @State private var camera3D: Camera3D = .follow
     @State private var shelfHeight3D = 1.8
+    /// 3D 里的货架偏移校准面板是否打开
+    @State private var calibrateShelves = false
+    @State private var shelfStepCm = 10.0
     @State private var mapUpText = ""
     @StateObject private var arModel = AROverlayModel()
     @State private var showAR = false
@@ -186,8 +189,11 @@ struct MagneticView: View {
                     }
                 }
             } else if show3D, let sc = model3D.scene {
-                Store3DView(scene: sc, follow: camera3D == .follow)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                ZStack(alignment: .bottom) {
+                    Store3DView(scene: sc, follow: camera3D == .follow)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    if calibrateShelves { shelfCalibrationPad.padding(8) }
+                }
             } else {
                 canvas
             }
@@ -208,6 +214,17 @@ struct MagneticView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(.orange)
                 }
+                if show3D && storeData.map != nil {
+                    LoggedButton(name: "3D·校准货架", detail: calibrateShelves ? "关" : "开") {
+                        calibrateShelves.toggle()
+                        // 按地图方向挪，俯视时屏幕方向和地图方向一致，最好对
+                        if calibrateShelves { camera3D = .top } else { storeData.logShelfOffset() }
+                    } label: {
+                        Text(calibrateShelves ? "完成" : "校准").font(.footnote.bold()).frame(width: 40, height: 28)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(calibrateShelves ? .green : .indigo)
+                }
                 if show3D {
                     Picker("视角", selection: $camera3D) {
                         ForEach(Camera3D.allCases) { Text($0.rawValue).tag($0) }
@@ -219,7 +236,12 @@ struct MagneticView: View {
             }
             .padding(8)
         }
-        .onChange(of: show3D) { on in if on { sync3D(full: true) } }
+        .onChange(of: show3D) { on in if on { sync3D(full: true) } else if calibrateShelves { calibrateShelves = false; storeData.logShelfOffset() } }
+        .onChange(of: storeData.shelfOffset) { _ in
+            store.adopt(map: storeData.map)   // 深度射线投射用新的货架位置
+            sync3D(full: false)
+            syncAR(force: true)
+        }
         .onChange(of: survey.arAlignment) { _ in syncAR() }
         .onChange(of: engine.arAlignment) { _ in syncAR() }
         .onChange(of: survey.arFloorY) { _ in syncAR() }
@@ -237,6 +259,42 @@ struct MagneticView: View {
         .onChange(of: store.points) { _ in sync3D(full: true) }
         .onChange(of: store.sampleCount) { _ in sync3D(full: true) }
         .onChange(of: step) { _ in sync3D(full: true) }
+    }
+
+    // MARK: 货架偏移校准
+
+    /// 3D 底部的方向键：按地图方向整体挪货架，立刻看到效果。通道不动。
+    private var shelfCalibrationPad: some View {
+        let d = storeData.shelfOffset
+        func nudge(_ dx: Double, _ dy: Double) -> some View {
+            Button {
+                storeData.setShelfOffset(Point2(d.x + dx * shelfStepCm, d.y + dy * shelfStepCm))
+            } label: {
+                Image(systemName: dx < 0 ? "arrow.left" : dx > 0 ? "arrow.right" : dy < 0 ? "arrow.up" : "arrow.down")
+                    .font(.body.bold()).frame(width: 44, height: 36)
+            }
+            .buttonStyle(.bordered)
+        }
+        return HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("货架整体偏移").font(.footnote.bold())
+                Text("x \(Fmt.f(d.x, 0)) cm  y \(Fmt.f(d.y, 0)) cm").font(.footnote.monospacedDigit())
+                Picker("步长", selection: $shelfStepCm) {
+                    Text("5").tag(5.0); Text("10").tag(10.0); Text("50").tag(50.0)
+                }
+                .pickerStyle(.segmented).frame(width: 130)
+                Text("按地图方向（俯视），单位 cm").font(.caption2).foregroundStyle(.secondary)
+                Button("归零") { storeData.setShelfOffset(Point2(0, 0)) }
+                    .font(.footnote).disabled(d.x == 0 && d.y == 0)
+            }
+            VStack(spacing: 4) {
+                nudge(0, -1)
+                HStack(spacing: 4) { nudge(-1, 0); nudge(1, 0) }
+                nudge(0, 1)
+            }
+        }
+        .padding(10)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
     }
 
     // MARK: AR 叠加
@@ -311,7 +369,7 @@ struct MagneticView: View {
     }
 
     private func toggle3D() {
-        if !show3D { model3D.ensure(map: canvasMap ?? StoreMap(width: store.widthCm, height: store.heightCm, shelves: [], crosses: [])) }
+        if !show3D { model3D.ensure(map: canvasMap ?? StoreMap(width: store.widthCm, height: store.heightCm, shelves: [], crosses: []), shelfOffset: storeData.shelfOffset) }
         show3D.toggle()
         if show3D { sync3D(full: true); applyCamera3D() }
     }
@@ -329,7 +387,7 @@ struct MagneticView: View {
     private func sync3D(full: Bool) {
         guard show3D else { return }
         let map = canvasMap ?? StoreMap(width: store.widthCm, height: store.heightCm, shelves: [], crosses: [])
-        let s = model3D.ensure(map: map)
+        let s = model3D.ensure(map: map, shelfOffset: storeData.shelfOffset)
         let isSurvey = step == .survey
         s.setPose(position: isSurvey ? survey.position : engine.position,
                   headingRad: isSurvey ? survey.headingRad : engine.headingRad,
@@ -342,6 +400,7 @@ struct MagneticView: View {
         // 采集进度：建图采集页看；实时定位页也画上，能看出哪里有磁场数据
         if step != .map { model3D.updateCoverage(crosses: store.crosses, coverage: survey.coverage, force: full) }
         s.setShelfHeight(shelfHeight3D)
+        s.setShelfOffset(storeData.shelfOffset)
         if camera3D == .follow { s.followAvatar() }
     }
 
@@ -359,6 +418,13 @@ struct MagneticView: View {
             if let m = storeData.map {
                 row("地图尺寸", "\(Fmt.f(m.width / 100, 1)) × \(Fmt.f(m.height / 100, 1)) m")
                 row("货架 / 通道", "\(m.shelves.count) / \(m.crosses.count)")
+                if storeData.shelfOffset != Point2(0, 0) {
+                    HStack {
+                        row("货架偏移（3D 里校准）", "x \(Fmt.f(storeData.shelfOffset.x, 0))  y \(Fmt.f(storeData.shelfOffset.y, 0)) cm")
+                        Button("归零") { storeData.setShelfOffset(Point2(0, 0)); storeData.logShelfOffset() }
+                            .buttonStyle(.borderless)
+                    }
+                }
             } else {
                 row("地图尺寸", "\(Fmt.f(store.widthCm / 100, 1)) × \(Fmt.f(store.heightCm / 100, 1)) m（没有货架数据）")
                 Text("还没有货架和通道。在这里导入完整的门店地图 JSON，或到「门店数据」页导入。").font(.footnote).foregroundStyle(.orange)
@@ -532,8 +598,17 @@ struct MagneticView: View {
             let done = survey.coverage.coveredMeters
             row("已覆盖（双向算满）", "\(Int(done)) / \(Int(total)) m")
             ProgressView(value: total > 0 ? done / total : 0)
-            Text("地图上：带绿带的是已经采过的段（两个方向都走完才算）。中间的线：绿色实线 = 这一段还是孤立的；黑色虚线 = 已经和别的路段通过路口关联起来了。全场采完、连通之后，会全部变成黑色虚线。")
-                .font(.footnote).foregroundStyle(.secondary)
+            let oneWay = survey.coverage.oneWayMeters
+            if oneWay > 0 {
+                row("只走了一个方向", "\(Int(oneWay)) m").foregroundStyle(.orange)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                legendRow(color: .secondary.opacity(0.5), dashed: false, band: false, text: "淡灰细线：还没走")
+                legendRow(color: .orange, dashed: false, band: true, text: "橙色：只走了一个方向，要反方向再走一遍")
+                legendRow(color: .green, dashed: false, band: true, text: "绿带 + 绿色实线：双向采完，还是孤立的一段")
+                legendRow(color: .primary, dashed: true, band: true, text: "绿带 + 黑色虚线：双向采完，已和别的路段关联")
+            }
+            .font(.footnote)
             if !survey.isRunning {
                 Button("清空采集进度", role: .destructive) { confirmResetCoverage = true }
                     .confirmationDialog("清空采集进度？已录的会话文件不受影响。", isPresented: $confirmResetCoverage, titleVisibility: .visible) {
@@ -541,6 +616,21 @@ struct MagneticView: View {
                     }
             }
         } header: { Text("采集进度") }
+    }
+
+    /// 采集进度图例的一行：一小段示意线 + 说明。
+    private func legendRow(color: Color, dashed: Bool, band: Bool, text: String) -> some View {
+        HStack(spacing: 8) {
+            ZStack {
+                if band {
+                    Capsule().fill((color == .primary ? Color.green : color).opacity(0.3)).frame(width: 34, height: 10)
+                }
+                Path { p in p.move(to: CGPoint(x: 0, y: 5)); p.addLine(to: CGPoint(x: 34, y: 5)) }
+                    .stroke(color, style: StrokeStyle(lineWidth: band ? 2 : 1, dash: dashed ? [5, 4] : []))
+                    .frame(width: 34, height: 10)
+            }
+            Text(text).foregroundStyle(.secondary)
+        }
     }
 
     private var surveyInstruction: String {

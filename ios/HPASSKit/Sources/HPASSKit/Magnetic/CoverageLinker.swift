@@ -4,6 +4,8 @@ import Foundation
 public enum CoverageState: UInt8 {
     /// 还没采完。
     case none
+    /// 只走了一个方向：还要反方向再走一遍（`CoverageLinker` 本身不产生它，由调用方按单向记录叠加）。
+    case partial
     /// 已采完，但还是孤立的一段：没有和别的已采路段通过交叉口连起来。
     case isolated
     /// 已采完，并且已经和别的已采路段关联起来（共用一个交叉口 / T 形口，两边在路口附近都采过）。

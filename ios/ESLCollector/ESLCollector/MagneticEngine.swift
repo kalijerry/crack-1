@@ -91,6 +91,8 @@ private final class MagPipeline {
 
     // 磁场来源：地图用「原始磁力计减偏置」建的，实时也必须一样
     var useRawMag = false
+    var imuWriter: CSVWriter?
+    var rawWriter: CSVWriter?
     let biasTracker = RawBiasTracker()
     var lastRawT: Int64?
 
@@ -515,6 +517,15 @@ final class MagneticEngine: ObservableObject {
             cfg.initialScaleSigma = 0.03
             cfg.scaleWalkPerM = 0.003
         }
+        if useVisualOdometry && ARKitLogger.isSupported {
+            // 视觉里程计时：
+            // - 以垂直分量 Bz 为主：人掉头时，手机偏置的估计误差会让水平分量 Bh 和总强度 |B| 的误差反过来，Bz 不受影响；
+            // - 跳到远处另一个簇要连续确认 15 次（约 7.5 m）：视觉里程计一路漂移不到 1%，地磁只该做小修正；
+            // - 收敛后粒子噪声调小，不会沿着「长得像」的通道滑走。
+            cfg.featureWeights = (0.5, 1.0, 0.25)
+            cfg.jumpConfirmUpdates = 15
+            cfg.convergedPositionNoiseFraction = 0.03
+        }
         cfg.lateralWeight = depthMode == .fuse ? 1 : 0
         let loc = MagneticLocalizer(field: field, walkable: MagMapStore.shared.walkableMap(), config: cfg)
         loc.raycaster = MagMapStore.shared.raycaster()
@@ -565,6 +576,16 @@ final class MagneticEngine: ObservableObject {
             try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
             dir = d
             lateralFile = d.appendingPathComponent("depth_lateral.csv")
+            // 原始惯导和磁力计也记下来，这段定位可以用 hpass-replay 原样回放
+            let imuW = try? CSVWriter(url: d.appendingPathComponent("imu.csv"),
+                                      header: "t_ms,ax,ay,az,gx,gy,gz,mx,my,mz,mag_acc,qw,qx,qy,qz,heading_deg")
+            let rawW = try? CSVWriter(url: d.appendingPathComponent("mag_raw.csv"), header: "t_ms,mx,my,mz")
+            let meta: [String: Any] = ["platform": "ios", "live": true, "start_ms": Fmt.nowMs(),
+                                       "map_source": MagMapStore.shared.magSource]
+            if let data = try? JSONSerialization.data(withJSONObject: meta, options: [.prettyPrinted]) {
+                try? data.write(to: d.appendingPathComponent("meta.json"))
+            }
+            queue.sync { pipe.imuWriter = imuW; pipe.rawWriter = rawW }
         }
         do {
             try ar.start(dir: dir, wantsDepth: depthMode != .off, lateralFile: lateralFile)
@@ -579,6 +600,10 @@ final class MagneticEngine: ObservableObject {
 
     private func stopVisualOdometry() {
         guard arRunning else { return }
+        queue.async { [pipe] in
+            pipe.imuWriter?.close(); pipe.imuWriter = nil
+            pipe.rawWriter?.close(); pipe.rawWriter = nil
+        }
         ar.stop()
         arRunning = false
         arAlignment = nil
@@ -818,6 +843,7 @@ final class MagneticEngine: ObservableObject {
                 queue.async {
                     pipe.lastRaw = v
                     pipe.lastRawT = t
+                    pipe.rawWriter?.append("\(t),\(Fmt.f(v.0, 3)),\(Fmt.f(v.1, 3)),\(Fmt.f(v.2, 3))")
                     // raw 模式：特征按原始磁力计的时刻算（重力方向来自加速度），不受 iOS 重新校准影响
                     if pipe.useRawMag, let m = pipe.biasTracker.corrected(v) {
                         pipe.latest = pipe.extractor.process(magnetic: m, tMs: t) ?? pipe.latest
@@ -858,6 +884,11 @@ final class MagneticEngine: ObservableObject {
         let sample = HPASSKit.IMUSample(tMs: s.tMs, ax: s.acc.0, ay: s.acc.1, az: s.acc.2,
                                         gx: s.gyr.0, gy: s.gyr.1, gz: s.gyr.2,
                                         mx: s.mag.0, my: s.mag.1, mz: s.mag.2)
+        pipe.imuWriter?.append([
+            "\(s.tMs)", Fmt.f(s.acc.0), Fmt.f(s.acc.1), Fmt.f(s.acc.2),
+            Fmt.f(s.gyr.0, 5), Fmt.f(s.gyr.1, 5), Fmt.f(s.gyr.2, 5),
+            Fmt.f(s.mag.0, 3), Fmt.f(s.mag.1, 3), Fmt.f(s.mag.2, 3), "\(s.magAccuracy)", "1", "0", "0", "0", "-1",
+        ].joined(separator: ","))
         let feat: MagneticFeature?
         if pipe.useRawMag {
             pipe.extractor.updateGravity(sample)
@@ -1147,6 +1178,9 @@ final class MagneticEngine: ObservableObject {
             shown = prev + (p - prev) * 0.5
         } else {
             shown = p
+        }
+        if let prev = position, prev.distance(to: p) > 200 {
+            AppLog.w("地磁", "位置跳变 \(Int(prev.distance(to: p))) cm：\(prev) → \(p)，置信度 \(est.map { Fmt.f($0.confidence, 2) } ?? "—")，不确定度 \(Int(uncertainty)) cm")
         }
         position = shown
         if let last = trail.last, last.distance(to: p) < 15 {

@@ -19,7 +19,9 @@ func fail(_ msg: String) -> Never {
     FileHandle.standardError.write(Data((msg + "\n").utf8))
     exit(1)
 }
-guard let sessionDir = arg("--session"), let mapPath = arg("--map"), let truthPath = arg("--truth") else {
+// --truth 可以不给：回放 App「定位」时录下的数据（mag-tracks/<名字>_files），只能冷启动，输出轨迹和跳变次数
+let truthPath = arg("--truth")
+guard let sessionDir = arg("--session"), let mapPath = arg("--map"), truthPath != nil || CommandLine.arguments.contains("--cold") else {
     fail("用法：hpass-replay --session <目录> --map map.json --truth truth.csv [--magmap magmap.json] [--cold] [--out replay.csv]")
 }
 let cold = CommandLine.arguments.contains("--cold")
@@ -37,14 +39,15 @@ if let mp = arg("--magmap") {
 }
 
 struct TruthPoint { var t: Int64; var p: Point2 }
-let truth = rows(truthPath).compactMap { r -> TruthPoint? in
+let truth = (truthPath.map(rows) ?? []).compactMap { r -> TruthPoint? in
     guard r.count >= 3, let t = Int64(r[0]), let x = Double(r[1]), let y = Double(r[2]) else { return nil }
     return TruthPoint(t: t, p: Point2(x, y))
 }
-guard truth.count > 10 else { fail("真值太少") }
+guard truth.count > 10 || truthPath == nil else { fail("真值太少") }
+let t0Truth: Int64 = truth.first?.t ?? 0
 
 func truthAt(_ t: Int64) -> Point2? {
-    guard t >= truth[0].t, t <= truth[truth.count - 1].t else { return nil }
+    guard let first = truth.first, let last = truth.last, t >= first.t, t <= last.t else { return nil }
     var lo = 0, hi = truth.count - 1
     while hi - lo > 1 { let m = (lo + hi) / 2; if truth[m].t <= t { lo = m } else { hi = m } }
     let a = truth[lo], b = truth[hi]
@@ -56,10 +59,10 @@ let imu = rows(sessionDir + "/imu.csv").compactMap { r -> IMUSample? in
     guard r.count >= 10, let t = Int64(r[0]) else { return nil }
     let v = r[1...9].map { Double($0) ?? 0 }
     return IMUSample(tMs: t, ax: v[0], ay: v[1], az: v[2], gx: v[3], gy: v[4], gz: v[5], mx: v[6], my: v[7], mz: v[8])
-}.filter { $0.tMs >= truth[0].t - 3000 }
+}.filter { $0.tMs >= t0Truth - 3000 }
 
 // 起点和朝向：真值的第一个点，以及前 1.5 m 的行进方向
-let start = truth[0].p
+let start = truth.first?.p ?? .zero
 var heading: Double?
 if let far = truth.first(where: { $0.p.distance(to: start) >= 150 }) {
     heading = atan2(far.p.x - start.x, far.p.y - start.y)
@@ -92,7 +95,16 @@ let useRaw = mapSource == "raw" && !rawMag.isEmpty && !CommandLine.arguments.con
 let biasTracker = RawBiasTracker()
 var featIdx = 0
 /// 处理一个 IMU 样本，返回最新特征。raw 模式：特征按原始磁力计的时刻逐个算，重力方向来自加速度。
-func featureStep(_ s: IMUSample) -> MagneticFeature? {
+/// 模拟「反方向走」时手机偏置误差带来的水平分量偏差（µT）。
+let bhOffset = arg("--bh-offset").flatMap(Double.init) ?? 0
+func skew(_ f: MagneticFeature?) -> MagneticFeature? {
+    guard var x = f, bhOffset != 0 else { return f }
+    x.horizontal += bhOffset
+    x.total = (x.vertical * x.vertical + x.horizontal * x.horizontal).squareRoot()
+    return x
+}
+func featureStep(_ s: IMUSample) -> MagneticFeature? { skew(featureStepRaw(s)) }
+func featureStepRaw(_ s: IMUSample) -> MagneticFeature? {
     guard useRaw else { return extractor.process(s) }
     extractor.updateGravity(s)
     if let r = rawMag.isEmpty ? nil : rawMag[min(rawIdx, rawMag.count - 1)], abs(r.t - s.tMs) <= 20 {
@@ -115,6 +127,10 @@ var localizer: MagneticLocalizer?
 if let f = field {
     var cfg = MagneticConfig()
     if cold { cfg.initialHeadingBiasSigmaDeg = 30 }
+    // 实验参数：特征权重、跳变确认次数、收敛后位置噪声
+    if let w = arg("--weights")?.split(separator: ",").compactMap({ Double($0) }), w.count == 3 { cfg.featureWeights = (w[0], w[1], w[2]) }
+    if let n = arg("--confirm").flatMap(Int.init) { cfg.jumpConfirmUpdates = n }
+    if let f = arg("--conv-noise").flatMap(Double.init) { cfg.convergedPositionNoiseFraction = f }
     if useVIO && !cold && CommandLine.arguments.contains("--tight") {
         cfg.initialHeadingBiasSigmaDeg = 5; cfg.headingBiasWalkDegPerM = 1; cfg.positionNoiseFraction = 0.04
         cfg.initialScaleSigma = 0.03; cfg.scaleWalkPerM = 0.003
@@ -134,8 +150,21 @@ var latestFeature: MagneticFeature?
 var lastPDR: Point2?
 var pdrPos: Point2 = start
 
+var lastShownPF: Point2?
+var jumps = 0
 func record(_ t: Int64, _ shownPDR: Point2, _ pf: MagneticEstimate?) {
-    guard let tr = truthAt(t) else { return }
+    if let e = pf, e.converged {
+        if let l = lastShownPF, l.distance(to: e.position) > 200 { jumps += 1 }
+        lastShownPF = e.position
+    }
+    if let e = pf, e.converged, convergedAtMs == nil, truth.isEmpty { convergedAtMs = t }
+    guard let tr = truthAt(t) else {
+        if truth.isEmpty, let e = pf {
+            out.append([String(t), "", "", Fmt.f1(shownPDR.x), Fmt.f1(shownPDR.y), Fmt.f1(e.position.x), Fmt.f1(e.position.y),
+                        "", "", Fmt.f1(e.uncertaintyCm), String(format: "%.2f", e.confidence)].joined(separator: ","))
+        }
+        return
+    }
     let pe = shownPDR.distance(to: tr)
     let fe = pf.map { $0.position.distance(to: tr) }
     if let e = pf, e.converged, convergedAtMs == nil { convergedAtMs = t }
@@ -156,7 +185,7 @@ if useVIO {
     let poses = rows(sessionDir + "/arkit_pose.csv").compactMap { r -> Pose? in
         guard r.count >= 9, let t = Int64(r[0]), let x = Double(r[1]), let z = Double(r[3]) else { return nil }
         return Pose(t: t, a: Point2(x * 100, z * 100), ok: r[8] == "2")
-    }.filter { $0.t >= truth[0].t }
+    }.filter { $0.t >= t0Truth }
     let aligner = VisualOdometryAligner()
     var anchored = false
     var lastA: Point2?
@@ -204,7 +233,8 @@ print("会话 \(sessionDir)，IMU \(imu.count) 个样本，真值 \(truth.count)
 stats(useVIO ? "视觉里程计（无地磁）" : "惯导（通道约束）", pdrErr)
 if localizer != nil {
     stats("地磁粒子滤波  ", pfErr)
-    if cold { print(convergedAtMs.map { "冷启动在第 \(Double($0 - truth[0].t) / 1000) 秒收敛" } ?? "冷启动没有收敛") }
+    let tStart = truth.first?.t ?? imu.first?.tMs ?? 0
+    if cold { print(convergedAtMs.map { "冷启动在第 \(Double($0 - tStart) / 1000) 秒收敛" } ?? "冷启动没有收敛") }
 }
 // 激光雷达横向距离核对：用真值轨迹的行进方向，在地图货架上射线投射，与实测的左右货架距离比
 if let depthPath = arg("--depth"), !storeMap.physicalShelves.isEmpty {
@@ -227,5 +257,6 @@ if let depthPath = arg("--depth"), !storeMap.physicalShelves.isEmpty {
     print("  判读：中位误差在 30 cm 以内，且样本数足够，才适合把「激光雷达」切到「参与定位」；")
     print("        误差很大说明深度换算、货架摆放与地图不一致，先不要打开。")
 }
+print("显示位置跳变（相邻两次 > 2 m）：\(jumps) 次")
 print("磁场可信度：发现系统重新校准 \(trustMon.jumpCount) 次；磁场来源 \(useRaw ? "原始磁力计减偏置" : "iOS 校准后")")
 if let path = arg("--out") { try? out.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8) }

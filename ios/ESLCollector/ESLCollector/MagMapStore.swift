@@ -147,6 +147,15 @@ final class MagMapStore: ObservableObject {
         return used
     }
 
+    /// 启用手机上（SurveyMapBuilder）建出来的磁场图：替换当前磁场数据，来源是原始磁力计减偏置。
+    func applyBuilt(_ f: MagneticFieldMap) {
+        builder.reset()
+        importedField = f
+        magSource = "raw"
+        refreshField()
+        save()
+    }
+
     func clearCalibration() {
         builder.reset()
         importedField = nil

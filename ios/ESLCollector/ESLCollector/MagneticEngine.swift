@@ -163,6 +163,14 @@ final class MagneticEngine: ObservableObject {
     @Published private(set) var vioAligned = false
     @Published private(set) var vioProgress = 0.0
     @Published private(set) var lateralText = ""
+    // 沿通道导航（路径规划）
+    @Published private(set) var navRoute: Route?
+    @Published private(set) var navHint: NavHint?
+    @Published private(set) var navLabel: String?
+    private var nav: NavigationSession?
+    private var navMapKey = ""
+    private static let navArriveCm: Double = 120
+
     /// 实时用的磁场来源（与地图一致）
     @Published private(set) var magSourceText = ""
     /// 地图 → ARKit 的变换（视觉里程计已对齐、且不是冷启动的原始模式时才有），给 AR 叠加用
@@ -708,6 +716,37 @@ final class MagneticEngine: ObservableObject {
         AppLog.i("地磁", "停止定位，验证 \(checks.count) 次")
     }
 
+    /// 沿通道导航到地图上的一个位置（比如货架中心；规划会落到货架旁的通道上）。
+    func navigate(to target: Point2, label: String) {
+        guard let map = StoreDataStore.shared.map, !map.crosses.isEmpty else {
+            lastError = "导航需要门店地图（货架和通道）"
+            return
+        }
+        let key = "\(map.shelves.count)/\(map.crosses.count)"
+        if nav == nil || key != navMapKey {
+            nav = NavigationSession(planner: RoutePlanner(shelves: map.shelves, crosses: map.crosses))
+            navMapKey = key
+        }
+        targetId = nil
+        hint = nil
+        navLabel = label
+        navHint = nav?.start(targets: [target], from: position)
+        navRoute = nav?.route
+        if navRoute == nil {
+            lastError = "规划不出到「\(label)」的路线"
+            navLabel = nil
+        } else {
+            AppLog.i("地磁", "导航到 \(label)：路线 \(Int((navRoute?.length ?? 0) / 100)) m")
+        }
+    }
+
+    func stopNavigation() {
+        nav?.stop()
+        navRoute = nil
+        navHint = nil
+        navLabel = nil
+    }
+
     func setTarget(_ id: String?) {
         targetId = id
         hint = nil
@@ -1117,6 +1156,17 @@ final class MagneticEngine: ObservableObject {
             if trail.count > Self.trailCapacity { trail.removeFirst(trail.count - Self.trailCapacity) }
         }
         refreshHint()
+        if let n = nav, n.isActive, let h = n.onLocation(shown) {
+            navHint = h
+            navRoute = h.route
+            if h.remainingDistance <= Self.navArriveCm {
+                AppLog.i("地磁", "导航到达 \(navLabel ?? "")")
+                n.stop()
+                navRoute = nil
+                navHint = nil
+                navLabel = (navLabel ?? "") + "（已到达）"
+            }
+        }
     }
 
     private func refreshHint() {

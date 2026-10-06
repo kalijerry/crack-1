@@ -24,6 +24,7 @@ struct MagneticView: View {
 
     @StateObject private var engine = MagneticEngine()
     @StateObject private var survey = SurveyEngine()
+    @StateObject private var mapService = SurveyMapService()
     @ObservedObject private var store = MagMapStore.shared
     @ObservedObject private var storeData = StoreDataStore.shared
 
@@ -53,6 +54,7 @@ struct MagneticView: View {
     @State private var arDY = 0.0
     @State private var arNote = ""
     @State private var arSaved = 0
+    @State private var shelfQuery = ""
     @State private var exportURL: URL?
     @State private var exportError: String?
 
@@ -107,7 +109,8 @@ struct MagneticView: View {
             if startId.isEmpty { startId = store.points.first?.id ?? "" }
         }
         .onChange(of: storeData.map?.crosses.count) { _ in store.adopt(map: storeData.map) }
-        .onAppear { survey.coverage.configure(crosses: store.crosses) }
+        .onAppear { survey.coverage.configure(crosses: store.crosses); mapService.refresh() }
+        .onChange(of: survey.isRunning) { running in if !running { mapService.refresh() } }
         .onChange(of: survey.lastSessionDir) { _ in exportURL = nil; exportError = nil }
     }
 
@@ -130,6 +133,7 @@ struct MagneticView: View {
                          position: isSurvey ? survey.position : (showsTrack ? engine.position : nil),
                          headingRad: isSurvey ? survey.headingRad : engine.headingRad,
                          uncertaintyCm: isSurvey ? 0 : engine.uncertaintyCm,
+                         route: step == .live ? engine.navRoute : nil,
                          showFingerprints: false,
                          markPoints: store.points,
                          targetId: showsTrack && !isSurvey ? engine.targetId : nil,
@@ -447,7 +451,7 @@ struct MagneticView: View {
             if let err = survey.lastError { Text(err).font(.footnote).foregroundStyle(.red) }
         } header: { Text("建图采集") } footer: {
             if !survey.isRunning {
-                Text("手机保持竖着、摄像头朝前下方（像 AR 那样）。每走约 30 m，或到路口，长按地图修正一次位置。录制的是全部传感器 + ARKit 位姿，回电脑用 tools/magmap.py 建磁场图。")
+                Text("手机保持竖着、摄像头朝前下方（像 AR 那样）。起点长按定点、设朝向、直走 1.5 m 就行；途中长按修正是可选的（软件会自动把轨迹贴到通道上）。采完在下面「生成磁场图」一键生成。")
             }
         }
 
@@ -471,9 +475,35 @@ struct MagneticView: View {
                 row("修正次数", "\(survey.anchorCount)")
                 if let n = survey.sessionName { row("会话", n).font(.footnote) }
                 if survey.walkedSinceAnchorM > SurveyEngine.anchorEveryM {
-                    Text("已经走了超过 \(Int(SurveyEngine.anchorEveryM)) m，找个路口或已知点长按地图修正。")
-                        .font(.footnote).foregroundStyle(.orange)
+                    Text("已经走了 \(Int(SurveyEngine.anchorEveryM)) m 以上没修正。可以在下一个路口长按修正一次（可选）。")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
+            }
+        }
+
+        if !survey.isRunning {
+            Section {
+                if mapService.items.isEmpty {
+                    Text("还没有建图采集会话。").foregroundStyle(.secondary)
+                }
+                ForEach(mapService.items) { it in
+                    Toggle(isOn: Binding(get: { mapService.selected.contains(it.id) },
+                                         set: { on in if on { mapService.selected.insert(it.id) } else { mapService.selected.remove(it.id) } })) {
+                        VStack(alignment: .leading) {
+                            Text(it.id).font(.footnote.monospaced())
+                            Text(ByteCountFormatter.string(fromByteCount: it.sizeBytes, countStyle: .file) + (it.hasMesh ? " · 含 LiDAR 网格" : ""))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                bigButton(mapService.running ? "正在生成……" : "用选中的会话生成磁场图并启用", name: "建图·手机生成") {
+                    mapService.build(crosses: store.crosses, widthCm: store.widthCm, heightCm: store.heightCm)
+                }
+                .disabled(mapService.running || mapService.selected.isEmpty || !store.usesStoreMap)
+                ForEach(mapService.lines, id: \.self) { Text($0).font(.footnote) }
+                if let e = mapService.lastError { Text(e).font(.footnote).foregroundStyle(.red) }
+            } header: { Text("生成磁场图（手机上）") } footer: {
+                Text("会自动把采集轨迹贴到通道中心线上，途中没长按修正也能用；用原始磁力计减偏置，不受系统重新校准影响。同一块区域多采几次、都选上，地图更完整。电脑上的 tools/magmap.py 仍可用来做质检。")
             }
         }
 
@@ -515,7 +545,7 @@ struct MagneticView: View {
         case .needPosition: return "长按地图：我现在在这里。找一个路口或已知点位站着。"
         case .needHeading: return "点「设朝向」（或双击地图），在地图上点或拖动，让橙色箭头指向你要走的方向，再点「确定朝向」（或再双击）。"
         case .aligning: return "朝箭头方向直线走 1.5 m，App 会自动对齐 ARKit 轨迹。"
-        case .tracking: return "沿通道走。到路口、或约 30 m 一次，长按地图修正位置。要换方向时双击重设朝向。"
+        case .tracking: return "沿通道走。长按修正是可选的：到路口时修一下更准，不修也能建图（会自动贴到通道上）。"
         case .idle: return ""
         }
     }
@@ -673,12 +703,40 @@ struct MagneticView: View {
 
     @ViewBuilder private var navSection: some View {
         Section {
-            Picker("目标", selection: Binding(get: { engine.targetId ?? "" },
+            // 搜货架编号，沿通道导航
+            TextField("货架编号，例如 Shelf-012", text: $shelfQuery)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            ForEach(shelfMatches, id: \.code) { s in
+                Button {
+                    engine.navigate(to: Point2(s.x, s.y), label: s.code)
+                    shelfQuery = ""
+                } label: {
+                    HStack { Text(s.code).font(.callout.monospaced()); Spacer(); Image(systemName: "location.north.line") }
+                }
+            }
+            if let label = engine.navLabel {
+                HStack(spacing: 16) {
+                    Image(systemName: Self.turnSymbol(engine.navHint?.direction))
+                        .font(.system(size: 40, weight: .bold))
+                        .foregroundStyle(engine.navHint == nil ? .green : .blue)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(navText).font(.headline)
+                        Text(label).font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("结束") { engine.stopNavigation() }.buttonStyle(.bordered)
+                }
+            }
+            // 点位导航（直线方向）
+            Picker("到点位（直线方向）", selection: Binding(get: { engine.targetId ?? "" },
                                              set: { engine.setTarget($0.isEmpty ? nil : $0) })) {
                 Text("无").tag("")
                 ForEach(store.points, id: \.id) { Text("点位 \($0.id)").tag($0.id) }
             }
-            Toggle("到达后自动切到下一个点位", isOn: $engine.autoAdvance)
+            if engine.targetId != nil {
+                Toggle("到达后自动切到下一个点位", isOn: $engine.autoAdvance)
+            }
             if let h = engine.hint {
                 HStack(spacing: 16) {
                     Image(systemName: "arrow.up")
@@ -693,7 +751,39 @@ struct MagneticView: View {
                     }
                 }
             }
-        } header: { Text("导航") }
+        } header: { Text("导航") } footer: {
+            Text("搜货架编号会沿通道规划路线（地图上绿线），按转弯提示走；到点位是直线方向，只用来测试。")
+        }
+    }
+
+    private var shelfMatches: [ShelfRect] {
+        let q = shelfQuery.trimmingCharacters(in: .whitespaces).lowercased()
+        guard q.count >= 2, let m = storeData.map else { return [] }
+        return Array(m.shelves.filter { $0.kind == .standard && $0.code.lowercased().contains(q) }.prefix(8))
+    }
+
+    private var navText: String {
+        guard let h = engine.navHint else { return "已到达" }
+        let remain = "还有 \(Fmt.f(h.remainingDistance / 100, 0)) m"
+        guard let turn = h.distanceToNextTurn, h.direction != .straight else { return "直走，" + remain }
+        let dir: String
+        switch h.direction {
+        case .left: dir = "左转"
+        case .right: dir = "右转"
+        case .uturn: dir = "掉头"
+        case .straight: dir = "直走"
+        }
+        return "前方 \(Fmt.f(turn / 100, 0)) m \(dir)，" + remain
+    }
+
+    private static func turnSymbol(_ d: TurnDirection?) -> String {
+        switch d {
+        case .left: return "arrow.turn.up.left"
+        case .right: return "arrow.turn.up.right"
+        case .uturn: return "arrow.uturn.down"
+        case .straight: return "arrow.up"
+        case nil: return "checkmark.circle"
+        }
     }
 
     // MARK: 高级：按点位走一遍建磁场图（地磁校准）

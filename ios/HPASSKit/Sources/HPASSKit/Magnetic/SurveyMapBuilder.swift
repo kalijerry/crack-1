@@ -1,0 +1,348 @@
+import Foundation
+
+/// 一次「建图采集」会话的数据（App 里从会话目录的 csv 读出来）。
+public struct SurveySession {
+    public struct Pose {
+        public var tMs: Int64
+        /// ARKit 平面坐标 (x, z)，cm
+        public var a: Point2
+        public var normal: Bool
+        public init(tMs: Int64, a: Point2, normal: Bool) { self.tMs = tMs; self.a = a; self.normal = normal }
+    }
+
+    public struct Anchor {
+        public var tMs: Int64
+        /// start / reanchor 是真值；heading / end 不是
+        public var kind: String
+        public var map: Point2
+        public var ar: Point2
+        public var heading: Double?
+        public init(tMs: Int64, kind: String, map: Point2, ar: Point2, heading: Double?) {
+            self.tMs = tMs; self.kind = kind; self.map = map; self.ar = ar; self.heading = heading
+        }
+    }
+
+    public var name: String
+    public var imu: [IMUSample]
+    /// 原始磁力计（µT，设备坐标系，未去偏置）。没有时用 imu 里的校准磁场。
+    public var raw: [(tMs: Int64, v: (Double, Double, Double))]
+    public var poses: [Pose]
+    public var anchors: [Anchor]
+
+    public init(name: String, imu: [IMUSample], raw: [(tMs: Int64, v: (Double, Double, Double))],
+                poses: [Pose], anchors: [Anchor]) {
+        self.name = name; self.imu = imu; self.raw = raw; self.poses = poses; self.anchors = anchors
+    }
+}
+
+/// 一次会话的建图结果说明。
+public struct SurveySessionReport {
+    public var name: String
+    public var samplesUsed = 0
+    public var dropped: [String: Int] = [:]
+    public var magSource = "calibrated"
+    public var bias: (Double, Double, Double)?
+    /// 轨迹离最近通道中心线的距离中位数（cm）：自动贴通道之前 / 之后
+    public var corridorResidualBefore: Double?
+    public var corridorResidualAfter: Double?
+    public var warnings: [String] = []
+    /// 对齐后的轨迹（地图坐标，约 10 Hz），给界面画、给回放当真值
+    public var track: [(tMs: Int64, p: Point2)] = []
+}
+
+/// 在手机上把建图采集会话变成磁场图（与 tools/magmap.py 同一套算法，另加「自动贴通道」）。
+///
+/// 1. 锚点分段对齐：ARKit 轨迹 → 地图坐标（起点 + 朝向必需，途中的长按修正可选）；
+/// 2. 自动贴通道：按 10 m 一段，估一个小的旋转 + 平移，让轨迹贴到最近的通道中心线上（通道在地图里是准的），
+///    吸收 ARKit 的累积漂移和朝向误差。所以途中不修正也能建图；
+/// 3. 磁场用「原始磁力计 − 会话偏置中位数」，不受 iOS 重新校准影响；
+/// 4. 丢掉跟踪受限、站着不动的样本，累积进网格。
+/// 非线程安全，放在后台队列里一次性用。
+public final class SurveyMapBuilder {
+    public let field: MagneticFieldBuilder
+    public let crosses: [CrossSegment]
+
+    /// 最后一个真值锚点之后最多信任多长路程（cm）。有自动贴通道时可以放得比较大。
+    public var tailMaxCm: Double = 15_000
+    public var minSpeedCmS: Double = 30
+    /// 自动贴通道：每段长度（cm）、只用离通道这么近的轨迹点（cm）
+    public var snapWindowCm: Double = 1000
+    public var snapMaxDistCm: Double = 200
+    public var snapEnabled = true
+
+    public init(widthCm: Double, heightCm: Double, crosses: [CrossSegment], cellCm: Double = 50) {
+        field = MagneticFieldBuilder(widthCm: widthCm, heightCm: heightCm, cellCm: cellCm)
+        self.crosses = crosses
+    }
+
+    public func build() -> MagneticFieldMap { field.build() }
+
+    // MARK: - 一次会话
+
+    @discardableResult
+    public func add(_ s: SurveySession) -> SurveySessionReport {
+        var rep = SurveySessionReport(name: s.name)
+        let poses = s.poses.sorted { $0.tMs < $1.tMs }
+        guard poses.count > 30 else { rep.warnings.append("ARKit 位姿太少"); return rep }
+        let segs = segments(s.anchors.sorted { $0.tMs < $1.tMs }, poses, &rep)
+        guard !segs.isEmpty else { return rep }
+
+        // 1. 每个位姿换到地图坐标
+        var cum = [0.0]
+        for i in 1..<poses.count { cum.append(cum[i - 1] + poses[i].a.distance(to: poses[i - 1].a)) }
+        var mapped: [(t: Int64, p: Point2, path: Double, ok: Bool)] = []
+        var segIdx = 0
+        for (i, ps) in poses.enumerated() {
+            while segIdx + 1 < segs.count && ps.tMs >= segs[segIdx + 1].t0 { segIdx += 1 }
+            let sg = segs[segIdx]
+            guard ps.tMs >= sg.t0, ps.tMs <= sg.t1 || sg.tail else { continue }
+            if sg.tail, cum[i] - sg.path0 > tailMaxCm { continue }
+            mapped.append((ps.tMs, sg.toMap(ps.a, t: ps.tMs), cum[i], ps.normal))
+        }
+        guard mapped.count > 10 else { rep.warnings.append("对齐后没有可用的轨迹"); return rep }
+
+        // 2. 自动贴通道
+        if snapEnabled && !crosses.isEmpty {
+            let before = mapped.compactMap { $0.ok ? nearestCorridor($0.p)?.dist : nil }
+            rep.corridorResidualBefore = median(before)
+            snapToCorridors(&mapped)
+            let after = mapped.compactMap { $0.ok ? nearestCorridor($0.p)?.dist : nil }
+            rep.corridorResidualAfter = median(after)
+        }
+        var lastT: Int64?
+        for m in mapped where m.ok && (lastT == nil || m.t - lastT! >= 100) { rep.track.append((m.t, m.p)); lastT = m.t }
+
+        // 3. 磁场特征
+        let feats = features(s, &rep)
+
+        // 4. 按时间插值位置，过滤后累积
+        let times = mapped.map { $0.t }
+        func posAt(_ t: Int64) -> (Point2, Bool)? {
+            var lo = 0, hi = times.count - 1
+            guard t >= times[lo], t <= times[hi] else { return nil }
+            while hi - lo > 1 { let m = (lo + hi) / 2; if times[m] <= t { lo = m } else { hi = m } }
+            let a = mapped[lo], b = mapped[hi]
+            guard b.t - a.t <= 200 else { return nil }
+            let f = b.t > a.t ? Double(t - a.t) / Double(b.t - a.t) : 0
+            return (Point2(a.p.x + (b.p.x - a.p.x) * f, a.p.y + (b.p.y - a.p.y) * f), a.ok && b.ok)
+        }
+        for (t, f) in feats {
+            guard let (p, ok) = posAt(t) else { rep.dropped["不在对齐范围内", default: 0] += 1; continue }
+            guard ok else { rep.dropped["ARKit 跟踪受限", default: 0] += 1; continue }
+            guard let (q, _) = posAt(t - 500), p.distance(to: q) / 0.5 >= minSpeedCmS else {
+                rep.dropped["站着不动", default: 0] += 1
+                continue
+            }
+            if field.add(position: p, feature: f) { rep.samplesUsed += 1 }
+        }
+        return rep
+    }
+
+    // MARK: 锚点分段（与 magmap.py 相同）
+
+    private struct Segment {
+        var t0: Int64, t1: Int64
+        var p: Point2, a: Point2
+        var phi: Double
+        var resid: Point2
+        var tail: Bool
+        var path0: Double = 0
+
+        func toMap(_ ar: Point2, t: Int64) -> Point2 {
+            let d = ar - a
+            let c = cos(phi), s = sin(phi)
+            var f = 0.0
+            if !tail, t1 > t0 { f = min(max(Double(t - t0) / Double(t1 - t0), 0), 1) }
+            return Point2(p.x + d.x * c - d.y * s + f * resid.x, p.y + d.x * s + d.y * c + f * resid.y)
+        }
+    }
+
+    private func segments(_ anchors: [SurveySession.Anchor], _ poses: [SurveySession.Pose],
+                          _ rep: inout SurveySessionReport) -> [Segment] {
+        let truth = anchors.filter { $0.kind == "start" || $0.kind == "reanchor" }
+        guard !truth.isEmpty else { rep.warnings.append("没有起点锚点（长按定点）"); return [] }
+        // 首段旋转：设朝向锚点 + 之后走出 1.5 m 的方向
+        var phiPrev: Double?
+        for h in anchors where h.kind == "heading" && h.heading != nil {
+            guard let i0 = poses.firstIndex(where: { $0.tMs >= h.tMs }) else { continue }
+            let a0 = poses[i0].a
+            if let j = poses[i0...].firstIndex(where: { $0.a.distance(to: a0) >= 150 }) {
+                let d = poses[j].a - a0
+                let hd = h.heading!
+                phiPrev = atan2(cos(hd), sin(hd)) - atan2(d.y, d.x)
+                break
+            }
+        }
+        var out: [Segment] = []
+        for (i, a) in truth.enumerated() {
+            if i + 1 < truth.count {
+                let n = truth[i + 1]
+                let dm = n.map - a.map, da = n.ar - a.ar
+                var phi = phiPrev
+                if dm.length >= 500, da.length > 1 {
+                    let scale = dm.length / da.length
+                    if scale >= 0.9 && scale <= 1.1 {
+                        phi = atan2(dm.y, dm.x) - atan2(da.y, da.x)
+                    } else {
+                        rep.warnings.append("锚点间距与 ARKit 位移之比 \(String(format: "%.2f", scale)) 超出范围，这一段的旋转沿用上一段")
+                    }
+                }
+                guard let ph = phi else { rep.warnings.append("缺少朝向，无法对齐第一段"); continue }
+                let c = cos(ph), s = sin(ph)
+                let end = Point2(da.x * c - da.y * s, da.x * s + da.y * c)
+                out.append(Segment(t0: a.tMs, t1: n.tMs, p: a.map, a: a.ar, phi: ph, resid: dm - end, tail: false))
+                phiPrev = ph
+            } else {
+                guard let ph = phiPrev else { rep.warnings.append("缺少朝向（设朝向后要直走 1.5 m）"); continue }
+                out.append(Segment(t0: a.tMs, t1: poses.last!.tMs, p: a.map, a: a.ar, phi: ph, resid: .zero, tail: true))
+            }
+        }
+        // 尾段从哪个路程开始算
+        if let lastIdx = out.indices.last, out[lastIdx].tail {
+            var cum = 0.0
+            for i in 1..<poses.count {
+                if poses[i].tMs > out[lastIdx].t0 { break }
+                cum += poses[i].a.distance(to: poses[i - 1].a)
+            }
+            out[lastIdx].path0 = cum
+        }
+        return out
+    }
+
+    // MARK: 自动贴通道
+
+    private func nearestCorridor(_ p: Point2) -> (dist: Double, foot: Point2, normal: Point2)? {
+        var best: (Double, Point2, Point2)?
+        for c in crosses {
+            let d = c.b - c.a
+            let l2 = d.dot(d)
+            guard l2 > 1 else { continue }
+            let t = min(max((p - c.a).dot(d) / l2, 0), 1)
+            let q = Point2(c.a.x + d.x * t, c.a.y + d.y * t)
+            let dist = p.distance(to: q)
+            if best == nil || dist < best!.0 {
+                let l = l2.squareRoot()
+                best = (dist, q, Point2(-d.y / l, d.x / l))
+            }
+        }
+        return best.map { ($0.0, $0.1, $0.2) }
+    }
+
+    /// 按路程分段，每段估一个小的 (旋转 θ, 平移 tx, ty)，最小化轨迹点到通道中心线的垂直距离；
+    /// 段与段之间按路程线性插值，避免接缝处跳变。沿通道方向的平移看不出来，靠正则项保持不动。
+    private func snapToCorridors(_ mapped: inout [(t: Int64, p: Point2, path: Double, ok: Bool)]) {
+        guard let first = mapped.first, let last = mapped.last else { return }
+        let total = last.path - first.path
+        let nWin = max(Int((total / snapWindowCm).rounded(.up)), 1)
+        var corr: [(center: Double, theta: Double, t: Point2, pivot: Point2)] = []
+        for w in 0..<nWin {
+            let lo = first.path + Double(w) * snapWindowCm, hi = lo + snapWindowCm
+            let idx = mapped.indices.filter { mapped[$0].ok && mapped[$0].path >= lo && mapped[$0].path < hi }
+            guard idx.count >= 10 else { continue }
+            let pivot = idx.reduce(Point2.zero) { $0 + mapped[$1].p } * (1 / Double(idx.count))
+            var theta = 0.0, tr = Point2.zero
+            for _ in 0..<6 {
+                // 正规方程 A x = b，x = (θ, tx, ty)
+                var A = [[Double]](repeating: [0, 0, 0], count: 3), b = [0.0, 0, 0]
+                let lam = [2e5, 0.05, 0.05]               // 正则：旋转很少、平移适度
+                for k in 0..<3 { A[k][k] += lam[k] }
+                for i in idx {
+                    let p0 = mapped[i].p
+                    let rel = p0 - pivot
+                    let c = cos(theta), s = sin(theta)
+                    let p = Point2(pivot.x + rel.x * c - rel.y * s + tr.x, pivot.y + rel.x * s + rel.y * c + tr.y)
+                    guard let nc = nearestCorridor(p), nc.dist <= snapMaxDistCm else { continue }
+                    let n = nc.normal
+                    let e = n.dot(p - nc.foot)                   // 当前残差
+                    let rr = p - pivot
+                    let jt = n.dot(Point2(-rr.y, rr.x))         // ∂e/∂θ
+                    let row = [jt, n.x, n.y]
+                    for r in 0..<3 { for q in 0..<3 { A[r][q] += row[r] * row[q] }; b[r] -= row[r] * e }
+                }
+                guard let dx = solve3(A, b) else { break }
+                theta += dx[0]; tr = tr + Point2(dx[1], dx[2])
+                if abs(dx[0]) < 1e-5 && abs(dx[1]) < 0.1 && abs(dx[2]) < 0.1 { break }
+            }
+            // 太大的修正不可信（可能贴错了通道），截断
+            theta = min(max(theta, -0.17), 0.17)
+            if tr.length > 250 { tr = tr * (250 / tr.length) }
+            corr.append(((lo + hi) / 2, theta, tr, pivot))
+        }
+        guard !corr.isEmpty else { return }
+        for i in mapped.indices {
+            let s = mapped[i].path
+            // 找相邻两段的修正，按路程插值（作用到「点相对各自段中心」的结果上）
+            var j = 0
+            while j + 1 < corr.count && corr[j + 1].center <= s { j += 1 }
+            func apply(_ k: Int) -> Point2 {
+                let c = corr[k], rel = mapped[i].p - c.pivot
+                let co = cos(c.theta), si = sin(c.theta)
+                return Point2(c.pivot.x + rel.x * co - rel.y * si + c.t.x, c.pivot.y + rel.x * si + rel.y * co + c.t.y)
+            }
+            if s <= corr[0].center || corr.count == 1 {
+                mapped[i].p = apply(0)
+            } else if j + 1 >= corr.count {
+                mapped[i].p = apply(corr.count - 1)
+            } else {
+                let f = (s - corr[j].center) / (corr[j + 1].center - corr[j].center)
+                let a = apply(j), b = apply(j + 1)
+                mapped[i].p = Point2(a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f)
+            }
+        }
+    }
+
+    private func solve3(_ A: [[Double]], _ b: [Double]) -> [Double]? {
+        var m = A.enumerated().map { $0.element + [b[$0.offset]] }
+        for c in 0..<3 {
+            guard let piv = (c..<3).max(by: { abs(m[$0][c]) < abs(m[$1][c]) }), abs(m[piv][c]) > 1e-12 else { return nil }
+            m.swapAt(c, piv)
+            for r in 0..<3 where r != c {
+                let f = m[r][c] / m[c][c]
+                for k in c..<4 { m[r][k] -= f * m[c][k] }
+            }
+        }
+        return (0..<3).map { m[$0][3] / m[$0][$0] }
+    }
+
+    // MARK: 磁场特征
+
+    private func features(_ s: SurveySession, _ rep: inout SurveySessionReport) -> [(Int64, MagneticFeature)] {
+        let ex = MagneticFeatureExtractor()
+        var out: [(Int64, MagneticFeature)] = []
+        let imu = s.imu.sorted { $0.tMs < $1.tMs }
+        guard s.raw.count > 100 else {
+            for x in imu { if let f = ex.process(x) { out.append((x.tMs, f)) } }
+            rep.magSource = "calibrated"
+            return out
+        }
+        // 偏置 = 原始 − 校准 的中位数（整次会话）
+        let raw = s.raw.sorted { $0.tMs < $1.tMs }
+        var dx: [Double] = [], dy: [Double] = [], dz: [Double] = []
+        var j = 0
+        for x in imu {
+            while j + 1 < raw.count && raw[j + 1].tMs <= x.tMs { j += 1 }
+            guard abs(raw[j].tMs - x.tMs) <= 20 else { continue }
+            dx.append(raw[j].v.0 - x.mx); dy.append(raw[j].v.1 - x.my); dz.append(raw[j].v.2 - x.mz)
+        }
+        guard let bx = median(dx), let by = median(dy), let bz = median(dz) else {
+            for x in imu { if let f = ex.process(x) { out.append((x.tMs, f)) } }
+            return out
+        }
+        rep.bias = (bx, by, bz)
+        rep.magSource = "raw"
+        // 时间顺序：加速度更新重力方向，原始磁力计逐个出特征
+        var k = 0
+        for r in raw {
+            while k < imu.count && imu[k].tMs <= r.tMs { ex.updateGravity(imu[k]); k += 1 }
+            guard k > 0 else { continue }
+            if let f = ex.process(magnetic: (r.v.0 - bx, r.v.1 - by, r.v.2 - bz), tMs: r.tMs) { out.append((r.tMs, f)) }
+        }
+        return out
+    }
+
+    private func median(_ v: [Double]) -> Double? {
+        guard !v.isEmpty else { return nil }
+        let s = v.sorted()
+        return s[s.count / 2]
+    }
+}

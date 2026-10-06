@@ -82,6 +82,22 @@ final class SurveyCoverage: ObservableObject {
         }
     }
 
+    /// 离 p 最近的没采完的一段：通道编号、直线距离（m）、是不是只差一个方向。
+    func nearestTodo(from p: Point2) -> (code: String, distanceM: Double, oneWay: Bool)? {
+        var best: (String, Double, Bool)?
+        for i in segments.indices {
+            let c = segments[i]
+            let n = forward[i].count
+            for b in 0..<n where !(forward[i][b] && backward[i][b]) {
+                let t = min((Double(b) + 0.5) * Self.binCm / max(lengths[i], 1), 1)
+                let q = Point2(c.a.x + (c.b.x - c.a.x) * t, c.a.y + (c.b.y - c.a.y) * t)
+                let d = q.distance(to: p) / 100
+                if best == nil || d < best!.1 { best = (c.code, d, forward[i][b] || backward[i][b]) }
+            }
+        }
+        return best.map { ($0.0, $0.1, $0.2) }
+    }
+
     /// 每条通道每 1 m 一段：两个方向都走过才算采完。
     var doneBins: [[Bool]] {
         forward.indices.map { i in zip(forward[i], backward[i]).map { $0 && $1 } }
@@ -156,6 +172,13 @@ final class SurveyEngine: ObservableObject {
     @Published private(set) var lastSessionDir: URL?
     @Published private(set) var lastError: String?
     @Published private(set) var lastSnap: String?
+    /// 在线贴通道：沿通道直走时自动把 ARKit 的朝向和横向偏差拉回通道（默认开）
+    @Published var corridorLock = true
+    @Published private(set) var lockFixes = 0
+    /// 最近 2 秒的步行速度（m/s）
+    @Published private(set) var speedMS = 0.0
+    /// 太快的时候不记采集进度（磁场采样跟不上、ARKit 也容易丢）
+    static let maxSpeedMS = 1.6
 
     private let ar = ARKitLogger()
     private var anchorsWriter: CSVWriter?
@@ -169,6 +192,8 @@ final class SurveyEngine: ObservableObject {
     private var latestA: Point2?
     private var lastMapPos: Point2?
     private var lastLogMs: Int64 = 0
+    private var lock: CorridorLock?
+    private var speedRef: (t: Int64, a: Point2)?
 
     init() {
         // 把录制器的变化转发出来，界面只需要观察本对象
@@ -237,6 +262,10 @@ final class SurveyEngine: ObservableObject {
         totalWalkedM = 0
         latestA = nil
         lastMapPos = nil
+        lock = store.crosses.isEmpty ? nil : CorridorLock(crosses: store.crosses)
+        lockFixes = 0
+        speedMS = 0
+        speedRef = nil
         stage = .needPosition
         UIApplication.shared.isIdleTimerDisabled = true
         AppLog.i("建图", "开始建图采集：\(dir.lastPathComponent)")
@@ -266,7 +295,8 @@ final class SurveyEngine: ObservableObject {
         headingEditing = false
         SensorArbiter.shared.release("建图采集")
         UIApplication.shared.isIdleTimerDisabled = false
-        AppLog.i("建图", "结束：走了 \(Fmt.f(totalWalkedM, 0)) m，修正 \(anchorCount) 次")
+        AppLog.i("建图", "结束：走了 \(Fmt.f(totalWalkedM, 0)) m，修正 \(anchorCount) 次，自动贴通道 \(lockFixes) 次"
+                 + (lock.map { "（累计转 \(Fmt.f($0.totalAbsAngle * 180 / Double.pi, 1))°）" } ?? ""))
     }
 
     // MARK: 交互
@@ -298,6 +328,7 @@ final class SurveyEngine: ObservableObject {
             lastMapPos = p
             trail.append(p)
             walkedSinceAnchorM = 0
+            lock?.reset()
             writeAnchor(kind: "reanchor", map: p, ar: a, heading: nil,
                         note: (snapLabel ?? "") + (before.map { " 修正前偏 \(Int($0.distance(to: p))) cm" } ?? ""))
             publishAlignment()
@@ -324,6 +355,7 @@ final class SurveyEngine: ObservableObject {
         pRef = p
         aRef = a
         stage = .aligning
+        lock?.reset()
         publishAlignment()
         writeAnchor(kind: "heading", map: p, ar: a, heading: headingRad, note: "")
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -346,7 +378,10 @@ final class SurveyEngine: ObservableObject {
         guard stage != .idle else { return }
         latestA = a
         if state != trackingState { trackingState = state }
-        guard state == 2 else { return }            // 跟踪受限时不更新位置，也不记覆盖
+        guard state == 2 else { lock?.reset(); return }   // 跟踪受限时不更新位置，也不记覆盖
+        if let r = speedRef {
+            if t - r.t >= 2000 { speedMS = a.distance(to: r.a) / 100 / (Double(t - r.t) / 1000); speedRef = (t, a) }
+        } else { speedRef = (t, a) }
 
         switch stage {
         case .aligning:
@@ -366,14 +401,23 @@ final class SurveyEngine: ObservableObject {
 
         let d = a - aRef
         let c = cos(phi), s = sin(phi)
-        let p = Point2(pRef.x + d.x * c - d.y * s, pRef.y + d.x * s + d.y * c)
+        var p = Point2(pRef.x + d.x * c - d.y * s, pRef.y + d.x * s + d.y * c)
+        if corridorLock, let fix = lock?.update(p) {
+            // 绕当前位置转 dPhi 再平移：map = p' + R(phi + dPhi)(a' − a)
+            phi += fix.dPhi
+            p = p + fix.shift
+            pRef = p
+            aRef = a
+            lockFixes += 1
+            publishAlignment()
+        }
         let step = lastMapPos.map { p - $0 } ?? .zero
         if step.length >= 15 {
             walkedSinceAnchorM += step.length / 100
             totalWalkedM += step.length / 100
             trail.append(p)
             if trail.count > 1500 { trail.removeFirst(trail.count - 1500) }
-            coverage.mark(position: p, moving: step)
+            if speedMS <= Self.maxSpeedMS { coverage.mark(position: p, moving: step) }
             lastMapPos = p
             headingRad = atan2(step.x, step.y)
         }

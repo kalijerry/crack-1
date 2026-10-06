@@ -69,6 +69,8 @@ struct MapCanvas: View {
     var nextTarget: Point2?
     /// 宽通道的建议走线（虚线）
     var laneGuides: [(Point2, Point2)] = []
+    /// 路线规划的下一段（橙色粗线 + 箭头，从 .0 走到 .1）
+    var nextLane: (Point2, Point2)?
     var showHeading = true
     /// 位置已冻结（定位丢失）：画成灰色
     var positionStale = false
@@ -425,8 +427,21 @@ struct MapCanvas: View {
             for (a, b) in laneGuides { lp.move(to: t.toScreen(a)); lp.addLine(to: t.toScreen(b)) }
             ctx.stroke(lp, with: .color(Color.green.opacity(0.8)), style: StrokeStyle(lineWidth: 1.2, dash: [6, 5]))
         }
+        // 路线规划：下一段
+        if case let (a, b)? = nextLane {
+            let sa = t.toScreen(a), sb = t.toScreen(b)
+            var lp = Path(); lp.move(to: sa); lp.addLine(to: sb)
+            ctx.stroke(lp, with: .color(Color.orange.opacity(0.85)), style: StrokeStyle(lineWidth: 5, lineCap: .round))
+            let ang = atan2(sb.y - sa.y, sb.x - sa.x)
+            var head = Path()
+            head.move(to: sb)
+            head.addLine(to: CGPoint(x: sb.x - 12 * cos(ang - 0.45), y: sb.y - 12 * sin(ang - 0.45)))
+            head.move(to: sb)
+            head.addLine(to: CGPoint(x: sb.x - 12 * cos(ang + 0.45), y: sb.y - 12 * sin(ang + 0.45)))
+            ctx.stroke(head, with: .color(.orange), style: StrokeStyle(lineWidth: 4, lineCap: .round))
+        }
         // 最近没涂的地方
-        if let tg = nextTarget {
+        if let tg = nextTarget, nextLane == nil {
             let c = t.toScreen(tg)
             if let pos = position {
                 var lp = Path()

@@ -587,8 +587,9 @@ final class MagneticEngine: ObservableObject {
         queue.sync { pipe.bleMap = m; pipe.bleWindow = []; pipe.lastBleApply = 0 }
         if ble == nil { ble = BLEScanner() }
         ble?.onlyESL = true
+        let whitelist = StoreDataStore.shared.eslIds
         ble?.onReading = { r in
-            guard let id = r.eslId else { return }
+            guard let id = r.eslId, whitelist?.contains(id) ?? true else { return }
             queue.async {
                 pipe.bleWindow.append((r.tMs, id, Double(r.rssi)))
                 if pipe.bleWindow.count > 2000 { pipe.bleWindow.removeFirst(pipe.bleWindow.count - 2000) }

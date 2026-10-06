@@ -177,6 +177,7 @@ struct MagneticView: View {
                          paintRadiusCm: surveying && paintMode ? survey.coverage.paintLayer?.radiusCm : nil,
                          nextTarget: surveying && paintMode ? survey.coverage.nextUnpainted : nil,
                          laneGuides: surveying && paintMode ? survey.coverage.laneGuides : [],
+                         nextLane: surveying && paintMode ? survey.coverage.nextLane.map { ($0.from, $0.to) } : nil,
                          showHeading: isSurvey ? (survey.stage != .needPosition)
                              : (!live || engine.isTracking || engine.headingEditing),
                          positionStale: !isSurvey && engine.locState == .lost,
@@ -665,8 +666,15 @@ struct MagneticView: View {
                         Text("沿地图上的绿色虚线走：去程贴一边、回程贴另一边，把宽度涂满（很宽的通道中间再走一趟）。").font(.caption).foregroundStyle(.green)
                     }
                 }
-                if paintMode, let p = survey.position, let tg = survey.coverage.nextUnpainted {
+                if paintMode, let n = survey.coverage.nextLane, let p = survey.position {
+                    let side = n.lane.side == 0 ? "中间" : (n.lane.side > 0 ? "一侧" : "另一侧")
+                    row("下一段（橙色箭头）", "\(n.lane.corridor) \(side) · 离我 \(Int(p.distance(to: n.from) / 100)) m · 走 \(Int(n.remainingCm / 100)) m")
+                        .font(.footnote)
+                } else if paintMode, let p = survey.position, let tg = survey.coverage.nextUnpainted {
                     row("最近没涂的地方（橙色圈）", "\(Int(p.distance(to: tg) / 100)) m").font(.footnote)
+                }
+                if paintMode, let r = survey.coverage.planRemainingCm {
+                    row("全部走线还剩", "\(Fmt.f(r / 100000, 2)) km · 约 \(Int(r / 100 / 60)) 分钟").font(.footnote)
                 }
                 if !paintMode, let p = survey.position, let todo = survey.coverage.nearestTodo(from: p) {
                     row("最近没采完", "\(todo.code) · \(Int(todo.distanceM)) m" + (todo.oneWay ? " · 差一个方向" : ""))
@@ -693,12 +701,20 @@ struct MagneticView: View {
                                          set: { on in if on { mapService.selected.insert(it.id) } else { mapService.selected.remove(it.id) } })) {
                         VStack(alignment: .leading) {
                             Text(it.id).font(.footnote.monospaced())
-                            Text(ByteCountFormatter.string(fromByteCount: it.sizeBytes, countStyle: .file) + (it.hasMesh ? " · 含 LiDAR 网格" : ""))
+                            Text(ByteCountFormatter.string(fromByteCount: it.sizeBytes, countStyle: .file) + (it.hasMesh ? " · 含 LiDAR 网格" : "")
+                                 + (mapService.included.contains(it.id) ? " · 已在磁场图里" : ""))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
-                bigButton(mapService.running ? "正在生成……" : "用选中的会话生成磁场图并启用", name: "建图·手机生成") {
+                if store.field != nil && !mapService.included.isEmpty {
+                    // 增量：只加新会话，已经在图里的不用再选、删了也不影响
+                    bigButton(mapService.running ? "正在追加……" : "追加新会话（\(mapService.newSelected.count) 个）到当前磁场图", name: "建图·追加") {
+                        mapService.build(crosses: store.crosses, widthCm: store.widthCm, heightCm: store.heightCm, append: true)
+                    }
+                    .disabled(mapService.running || mapService.newSelected.isEmpty || !store.usesStoreMap)
+                }
+                bigButton(mapService.running ? "正在生成……" : "用选中的会话从头生成磁场图", name: "建图·手机生成") {
                     mapService.build(crosses: store.crosses, widthCm: store.widthCm, heightCm: store.heightCm)
                 }
                 .disabled(mapService.running || mapService.selected.isEmpty || !store.usesStoreMap)

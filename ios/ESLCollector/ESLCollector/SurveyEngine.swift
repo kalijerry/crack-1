@@ -31,6 +31,10 @@ final class SurveyCoverage: ObservableObject {
     @Published private(set) var currentCorridorPaint: (code: String, fraction: Double, widthCm: Double)?
     /// 离我最近的还没涂的地方（找 30 m 以内），地图上画个橙色圈指过去
     @Published private(set) var nextUnpainted: Point2?
+    /// 路线规划：下一段该走的走线（地图上画橙色粗箭头），全部走线还剩多少（cm）
+    @Published private(set) var nextLane: SurveyPlanner.Next?
+    @Published private(set) var planRemainingCm: Double?
+    private var planner: SurveyPlanner?
     /// 通道（> 1 m 宽）的建议走线：去程贴一边、回程贴另一边（地图坐标线段）
     @Published private(set) var laneGuides: [(Point2, Point2)] = []
     /// 比这个宽的通道，走中间一趟涂不满（圆圈直径 80 cm），要分两边走
@@ -57,6 +61,7 @@ final class SurveyCoverage: ObservableObject {
                zip(q.crosses, crosses).allSatisfy({ $0.a == $1.a && $0.b == $1.b }) { return }
             p = CoveragePaint(crosses: crosses, widthCm: widthCm, heightCm: heightCm)
         }
+        planner = crosses.isEmpty ? nil : SurveyPlanner(crosses: crosses, radiusCm: p.radiusCm)
         if let d = try? Data(contentsOf: Self.paintURL) { p.load(d) }
         paintGrid = p
         rebuildPaintImage()
@@ -72,6 +77,10 @@ final class SurveyCoverage: ObservableObject {
             let ci = pt.corridorIndex(at: p)
             currentCorridorPaint = ci.map { (pt.crosses[$0].code, pt.fraction(corridor: $0), pt.crosses[$0].lineWidth) }
             nextUnpainted = pt.nearestUnpainted(from: p, maxCm: 3000)
+            if let pl = planner {
+                nextLane = pl.next(from: p, paint: pt)
+                planRemainingCm = pl.remainingCm(pt)
+            }
             laneGuides = ci.map { Self.lanes(pt.crosses[$0], radiusCm: pt.radiusCm) } ?? []
         }
     }
@@ -81,6 +90,7 @@ final class SurveyCoverage: ObservableObject {
     /// 不在采集时清掉引导
     func clearGuides() {
         nextUnpainted = nil
+        nextLane = nil
         laneGuides = []
         currentCorridorPaint = nil
     }

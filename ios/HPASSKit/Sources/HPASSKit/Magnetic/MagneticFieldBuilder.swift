@@ -182,3 +182,15 @@ extension MagneticFieldMap {
 
     private func round3(_ v: Double) -> Double { (v * 1000).rounded() / 1000 }
 }
+
+/// 一张地图的建图累积状态：磁场每格统计 + 蓝牙指纹累积 + 已经加进去的会话。
+/// 增量建图时存盘，新会话只往上追加；旧会话删掉也不影响地图。
+public struct MapBuildState: Codable {
+    public var field: MagneticFieldBuilder.Snapshot
+    public var ble: BLEFingerprintBuilder.State
+    public var sessions: [String]
+
+    public init(field: MagneticFieldBuilder.Snapshot, ble: BLEFingerprintBuilder.State, sessions: [String]) {
+        self.field = field; self.ble = ble; self.sessions = sessions
+    }
+}

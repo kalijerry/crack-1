@@ -220,9 +220,10 @@ final class MagMapStore: ObservableObject {
         importedField = nil
         setFieldSource(nil)
         setBLE(nil)
+        try? FileManager.default.removeItem(at: SurveyMapService.stateURL)
         refreshField()
         save()
-        AppLog.w("地磁", "已删除磁场图（连同蓝牙指纹）")
+        AppLog.w("地磁", "已删除磁场图（连同蓝牙指纹和累积统计）")
     }
 
     private func setFieldSource(_ s: String?) {

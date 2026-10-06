@@ -34,7 +34,7 @@ final class MapLibrary: ObservableObject {
     }
     private static var docs: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0] }
     /// 工作区文件（都在 Documents 根目录，按地图收放）
-    private static let workspaceFiles = ["magmap.json", "survey-coverage.json", "survey-paint.bin", "ble-fingerprint.json"]
+    private static let workspaceFiles = ["magmap.json", "survey-coverage.json", "survey-paint.bin", "ble-fingerprint.json", "build-state.json"]
     private static let fieldSourceKey = "magFieldSource"
     private static let activeKey = "mapLibraryActive"
 

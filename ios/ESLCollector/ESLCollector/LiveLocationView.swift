@@ -34,7 +34,7 @@ struct LiveLocationView: View {
         // 本页是 TabView 的根，自己带 NavigationStack（商品 / 指纹点选择要用 NavigationLink）
         NavigationStack {
             content
-                .navigationTitle("实时定位")
+                .navigationTitle("蓝牙定位")
         }
         // 生命周期挂在 NavigationStack 上：挂在内容上的话，push 子页面时也会触发 onDisappear
         .onAppear {

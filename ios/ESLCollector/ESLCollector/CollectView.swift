@@ -31,6 +31,7 @@ struct CollectView: View {
                 row("唯一价签 / 秒", "\(rec.uniqueTagsPerSec)")
                 row("IMU 频率", "\(rec.imuHz) Hz")
                 row("磁场精度", Self.magText(rec.magAccuracy))
+                row("原始磁力计", "\(rec.magRawHz) Hz · \(rec.magRawRows) 行")
                 row("已写入", "BLE \(rec.bleRows) 行 · IMU \(rec.imuRows) 行 · 打点 \(rec.markCount)")
             }
             if let err = rec.lastError {
@@ -43,6 +44,9 @@ struct CollectView: View {
         Section {
             TextField("设备标签（如 16pro）", text: $rec.deviceLabel)
                 .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .disabled(rec.isRecording)
+            TextField("备注：保护壳/MagSafe/姿态", text: $rec.setupNote)
                 .autocorrectionDisabled()
                 .disabled(rec.isRecording)
             Toggle("仅记录价签广播（公司ID 13）", isOn: $rec.onlyESL)

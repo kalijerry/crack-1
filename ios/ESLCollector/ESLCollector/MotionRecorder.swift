@@ -16,7 +16,8 @@ final class MotionRecorder {
     static let g = 9.80665
 
     var onSample: (@Sendable (IMUSample) -> Void)?
-    private let manager = CMMotionManager()
+    /// 全 App 只用这一个实例（Apple 的要求），SensorLogger 也从这里取。
+    let manager = CMMotionManager()
     private let queue: OperationQueue = {
         let q = OperationQueue()
         q.name = "imu"

@@ -174,6 +174,23 @@ public final class FusionEngine {
         }
     }
 
+    /// 手动设定当前航向（弧度，地图系，0 = +y 轴）。
+    ///
+    /// 同时用当前罗盘读数反推 `magneticDeclinationDeg`，让之后的罗盘修正与手动航向一致；
+    /// 罗盘读数不可用时磁偏角保持不变。可在运行中随时调用。
+    public func setHeading(_ h: Double) {
+        guard h.isFinite else { return }
+        let hh = FusionMath.wrapTwoPi(h)
+        if let psi = attitude.lastMagBearing {
+            config.magneticDeclinationDeg = FusionMath.degrees(FusionMath.wrapTwoPi(hh + psi))
+        }
+        initialHeadingHint = hh
+        attitude.setHeading(hh)
+        ekf.setHeading(hh, sigmaRad: FusionEngine.initHeadSigmaHint)
+        attitudeRef = attitude.theta
+        headingSeeded = true
+    }
+
     /// 送入一次外部绝对定位（**厘米**，confidence 0...1）。
     /// 噪声 1σ = `fixNoiseCm / max(confidence, 0.1)`，即置信度越低越不被信任（最多放大 10 倍）。
     public func updateFix(position: Point2, confidence: Double, tMs: Int64) {
@@ -235,11 +252,12 @@ public final class FusionEngine {
             attitude.update(sample: s,
                             dt: dt,
                             declinationRad: FusionMath.radians(config.magneticDeclinationDeg),
-                            fallbackHeading: initialHeadingHint)
+                            fallbackHeading: initialHeadingHint,
+                            useMagnetic: config.useMagneticHeading)
         }
 
         // --- 步伐检测（与是否初始化无关，先把滤波器状态推起来）---
-        let event = stepper.update(sample: s,
+        var event = stepper.update(sample: s,
                                    dt: max(dt, 1e-3),
                                    minStepIntervalMs: config.minStepIntervalMs,
                                    maxStepLengthM: config.maxStepLengthM)
@@ -257,6 +275,10 @@ public final class FusionEngine {
         if dt > 0 { interpolate(dt: dt, tMs: s.tMs) }
 
         // --- 检出脚步 → EKF 步进推算 ---
+        if var e = event, abs(config.stepLengthScale - 1) > 1e-9 {
+            e.lengthM = FusionMath.clamp(e.lengthM * config.stepLengthScale, 0.2, config.maxStepLengthM * 1.5)
+            event = e
+        }
         if let event = event {
             syncHeading()
             stepCountValue += 1

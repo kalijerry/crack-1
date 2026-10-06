@@ -50,11 +50,35 @@ struct MapCanvas: View {
     /// 点击地图回调，参数是地图坐标（cm）
     var onTap: ((Point2) -> Void)?
 
+    // 地磁页用到的附加层和手势
+    /// 手动定的点位
+    var markPoints: [MarkPoint] = []
+    var targetId: String?
+    var highlightId: String?
+    /// 画 1 m 方格（没有货架的小测试区用）
+    var gridCm: Double?
+    /// 建图采集进度：每条通道每 `crossBinCm` 一段（数量须与 map.crosses 一致）。
+    /// 采过的段都带一条半透明绿带：中间是绿色实线 = 还是孤立的一段；黑色虚线 = 已经和别的路段关联起来。
+    var crossStates: [[CoverageState]] = []
+    var crossBinCm: Double = 100
+    var showHeading = true
+    /// 位置已冻结（定位丢失）：画成灰色
+    var positionStale = false
+    /// 设朝向中：箭头画长、橙色；拖动 / 点击不再平移，而是把方向交给 onHeadingPoint
+    var headingEditing = false
+    var onLongPress: ((Point2) -> Void)?
+    var onDoubleTap: (() -> Void)?
+    var onHeadingPoint: ((Point2) -> Void)?
+
     @State private var zoom: CGFloat = 1
     @State private var pinch: CGFloat = 1
     @State private var pan: CGSize = .zero
     @State private var dragOffset: CGSize = .zero
     @State private var dragMoved = false
+    // 长按 / 双击都在同一个拖动手势里判断，不另外加手势，免得挡住双指缩放
+    @State private var touchStart: Date?
+    @State private var lastTapTime: Date?
+    @State private var lastTapLoc: CGPoint = .zero
 
     /// 画布留白（点）
     private let padding: CGFloat = 12
@@ -116,16 +140,54 @@ struct MapCanvas: View {
     private func dragGesture(extent: CGRect, size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { v in
+                if touchStart == nil { touchStart = Date() }
+                if headingEditing, let onHeadingPoint {
+                    onHeadingPoint(transform(extent: extent, size: size).toMap(v.location))
+                    return
+                }
                 if abs(v.translation.width) > 10 || abs(v.translation.height) > 10 { dragMoved = true }
                 if dragMoved { dragOffset = v.translation }
             }
             .onEnded { v in
+                let held = touchStart.map { Date().timeIntervalSince($0) } ?? 0
+                touchStart = nil
+                if headingEditing {
+                    // 设朝向中：拖动 / 点击只用来指方向；但「再双击」要能被识别，用来确定
+                    let moved = hypot(v.translation.width, v.translation.height) > 12
+                    let now = Date()
+                    if !moved, let onDoubleTap, let last = lastTapTime,
+                       now.timeIntervalSince(last) < 0.5,
+                       hypot(v.startLocation.x - lastTapLoc.x, v.startLocation.y - lastTapLoc.y) < 40 {
+                        lastTapTime = nil
+                        onDoubleTap()
+                    } else {
+                        lastTapTime = moved ? nil : now
+                        lastTapLoc = v.startLocation
+                    }
+                    dragOffset = .zero
+                    dragMoved = false
+                    return
+                }
                 if dragMoved {
                     pan.width += v.translation.width
                     pan.height += v.translation.height
-                } else if let onTap {
+                } else {
                     let t = transform(extent: extent, size: size)
-                    onTap(t.toMap(v.startLocation))
+                    let now = Date()
+                    if held >= 0.5, let onLongPress {
+                        // 长按：按住不动 0.5 s 以上，松手时生效
+                        onLongPress(t.toMap(v.startLocation))
+                        lastTapTime = nil
+                    } else if let onDoubleTap, let last = lastTapTime,
+                              now.timeIntervalSince(last) < 0.4,
+                              hypot(v.startLocation.x - lastTapLoc.x, v.startLocation.y - lastTapLoc.y) < 30 {
+                        lastTapTime = nil
+                        onDoubleTap()
+                    } else {
+                        lastTapTime = now
+                        lastTapLoc = v.startLocation
+                        onTap?(t.toMap(v.startLocation))
+                    }
                 }
                 dragOffset = .zero
                 dragMoved = false
@@ -198,29 +260,49 @@ struct MapCanvas: View {
     private func draw(ctx: GraphicsContext, t: MapTransform) {
         guard let m = map else { return }
 
+        if let g = gridCm, g > 0, m.width > 0, m.height > 0 {
+            var grid = Path()
+            var x = 0.0
+            while x <= m.width + 0.5 {
+                grid.move(to: t.toScreen(Point2(x, 0)))
+                grid.addLine(to: t.toScreen(Point2(x, m.height)))
+                x += g
+            }
+            var y = 0.0
+            while y <= m.height + 0.5 {
+                grid.move(to: t.toScreen(Point2(0, y)))
+                grid.addLine(to: t.toScreen(Point2(m.width, y)))
+                y += g
+            }
+            ctx.stroke(grid, with: .color(.secondary.opacity(0.25)), lineWidth: 0.8)
+        }
+
         // 通道：半透明粗线
-        for c in m.crosses {
+        let coloring = crossStates.count == m.crosses.count && !crossStates.isEmpty
+        for (i, c) in m.crosses.enumerated() {
+            if coloring {
+                drawCoverage(ctx: ctx, t: t, cross: c, states: crossStates[i])
+                continue
+            }
             var p = Path()
             p.move(to: t.toScreen(c.a))
             p.addLine(to: t.toScreen(c.b))
             let w = Swift.max(t.len(c.lineWidth), 1.5)
-            ctx.stroke(p, with: .color(.blue.opacity(0.14)),
+            ctx.stroke(p, with: .color(Color.blue.opacity(0.14)),
                        style: StrokeStyle(lineWidth: w, lineCap: .round))
-            ctx.stroke(p, with: .color(.blue.opacity(0.35)), lineWidth: 0.6)
+            ctx.stroke(p, with: .color(Color.blue.opacity(0.35)), lineWidth: 0.6)
         }
 
-        // 其他元素（柱子等）：浅浅画一下
-        for o in m.others {
-            let path = Self.rectPath(cx: o.x, cy: o.y, w: o.width, h: o.height, rotation: o.rotation, t: t)
-            ctx.fill(path, with: .color(.gray.opacity(0.18)))
-        }
-
-        // 货架：旋转矩形
-        for s in m.shelves {
-            let path = Self.rectPath(cx: s.x, cy: s.y, w: s.width, h: s.height, rotation: s.rotation, t: t)
-            ctx.fill(path, with: .color(.gray.opacity(0.35)))
-            ctx.stroke(path, with: .color(.gray.opacity(0.7)), lineWidth: 0.6)
-        }
+        // 其他元素和货架：几千个矩形预先合成三条路径（地图坐标，缓存），每帧只做一次缩放平移再画，
+        // 不再逐个画几千次（拖动大图时这是主要开销）
+        let cached = ShelfPathCache.shared.paths(for: m)
+        var mc = ctx
+        mc.concatenate(CGAffineTransform(a: CGFloat(t.scale), b: 0, c: 0, d: CGFloat(t.scale), tx: t.origin.x, ty: t.origin.y))
+        let px = 1 / CGFloat(Swift.max(t.scale, 1e-6))          // 1 屏幕点对应的地图长度
+        mc.fill(cached.others, with: .color(.gray.opacity(0.18)))
+        mc.fill(cached.standard, with: .color(.gray.opacity(0.35)))
+        mc.stroke(cached.standard, with: .color(.gray.opacity(0.7)), lineWidth: 0.6 * px)
+        mc.stroke(cached.nonStandard, with: .color(.gray.opacity(0.25)), lineWidth: 0.4 * px)
 
         // 指纹点
         if showFingerprints {
@@ -258,6 +340,28 @@ struct MapCanvas: View {
                        style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
         }
 
+        // 手动定的点位
+        if !markPoints.isEmpty {
+            if markPoints.count > 1 {
+                var line = Path()
+                for (i, p) in markPoints.enumerated() {
+                    i == 0 ? line.move(to: t.toScreen(p.position)) : line.addLine(to: t.toScreen(p.position))
+                }
+                ctx.stroke(line, with: .color(.secondary.opacity(0.5)),
+                           style: StrokeStyle(lineWidth: 1.2, dash: [5, 4]))
+            }
+            for p in markPoints {
+                let c = t.toScreen(p.position)
+                if p.id == targetId || p.id == highlightId {
+                    let ring = CGRect(x: c.x - 15, y: c.y - 15, width: 30, height: 30)
+                    ctx.stroke(Path(ellipseIn: ring), with: .color(p.id == targetId ? .green : .blue), lineWidth: 3)
+                }
+                ctx.fill(Path(ellipseIn: CGRect(x: c.x - 9, y: c.y - 9, width: 18, height: 18)), with: .color(.orange))
+                ctx.draw(Text(p.id).font(.system(size: 10, weight: .semibold)).foregroundColor(.black),
+                         at: c, anchor: .center)
+            }
+        }
+
         // 原始指纹结果（与显示位置明显不同时画空心圈）
         if let raw = rawEstimate,
            position == nil || raw.distance(to: position ?? raw) > rawMarkerThresholdCm {
@@ -276,14 +380,15 @@ struct MapCanvas: View {
                 ctx.stroke(Path(ellipseIn: rect), with: .color(.accentColor.opacity(0.4)), lineWidth: 0.8)
             }
             // 航向：dx = L·sinθ，dy = L·cosθ（地图系，y 向下）
-            if headingRad.isFinite {
-                let L: CGFloat = 26
+            if headingRad.isFinite && showHeading {
+                let L: CGFloat = headingEditing ? 70 : 26
+                let arrowColor: Color = headingEditing ? .orange : .accentColor
                 let tip = CGPoint(x: c.x + L * CGFloat(sin(headingRad)),
                                   y: c.y + L * CGFloat(cos(headingRad)))
                 var arrow = Path()
                 arrow.move(to: c)
                 arrow.addLine(to: tip)
-                ctx.stroke(arrow, with: .color(.accentColor),
+                ctx.stroke(arrow, with: .color(arrowColor),
                            style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                 // 箭头两翼
                 let back = headingRad + .pi
@@ -293,13 +398,46 @@ struct MapCanvas: View {
                     wing.move(to: tip)
                     wing.addLine(to: CGPoint(x: tip.x + 8 * CGFloat(sin(a)),
                                              y: tip.y + 8 * CGFloat(cos(a))))
-                    ctx.stroke(wing, with: .color(.accentColor),
+                    ctx.stroke(wing, with: .color(arrowColor),
                                style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                 }
             }
             let rect = CGRect(x: c.x - 6, y: c.y - 6, width: 12, height: 12)
-            ctx.fill(Path(ellipseIn: rect), with: .color(.accentColor))
+            ctx.fill(Path(ellipseIn: rect), with: .color(positionStale ? .gray : .accentColor))
             ctx.stroke(Path(ellipseIn: rect), with: .color(.white), lineWidth: 1.5)
+        }
+    }
+
+    /// 一条通道的采集进度。采过的段带一条半透明绿带；带中间的线：
+    /// 绿色实线 = 孤立的一段，黑色虚线 = 已经和别的路段关联起来。没采完的段只画一条淡淡的细线。
+    private func drawCoverage(ctx: GraphicsContext, t: MapTransform, cross c: CrossSegment, states: [CoverageState]) {
+        let len = c.a.distance(to: c.b)
+        guard len > 1, !states.isEmpty else { return }
+        func point(_ s: Double) -> CGPoint {
+            let f = Swift.min(Swift.max(s / len, 0), 1)
+            return t.toScreen(Point2(c.a.x + (c.b.x - c.a.x) * f, c.a.y + (c.b.y - c.a.y) * f))
+        }
+        let band = Swift.max(t.len(c.lineWidth), 3)
+        var k = 0
+        while k < states.count {
+            let state = states[k]
+            var e = k
+            while e + 1 < states.count && states[e + 1] == state { e += 1 }
+            var p = Path()
+            p.move(to: point(Double(k) * crossBinCm))
+            p.addLine(to: point(Swift.min(Double(e + 1) * crossBinCm, len)))
+            switch state {
+            case .none:
+                ctx.stroke(p, with: .color(Color.secondary.opacity(0.35)), style: StrokeStyle(lineWidth: 0.8, lineCap: .butt))
+            case .isolated:
+                ctx.stroke(p, with: .color(Color.green.opacity(0.28)), style: StrokeStyle(lineWidth: band, lineCap: .butt))
+                ctx.stroke(p, with: .color(Color.green), style: StrokeStyle(lineWidth: 1.8, lineCap: .butt))
+            case .linked:
+                ctx.stroke(p, with: .color(Color.green.opacity(0.28)), style: StrokeStyle(lineWidth: band, lineCap: .butt))
+                ctx.stroke(p, with: .color(Color.primary.opacity(0.9)),
+                           style: StrokeStyle(lineWidth: 1.4, lineCap: .butt, dash: [5, 4]))
+            }
+            k = e + 1
         }
     }
 
@@ -325,5 +463,30 @@ struct MapCanvas: View {
         for c in corners.dropFirst() { path.addLine(to: t.toScreen(c)) }
         path.closeSubpath()
         return path
+    }
+}
+
+
+/// 把地图里几千个矩形合成三条路径（地图坐标，cm），按地图缓存。
+final class ShelfPathCache {
+    static let shared = ShelfPathCache()
+    private var key = ""
+    private var cached = (standard: Path(), nonStandard: Path(), others: Path())
+
+    func paths(for m: StoreMap) -> (standard: Path, nonStandard: Path, others: Path) {
+        let k = "\(Int(m.width))x\(Int(m.height))/\(m.shelves.count)/\(m.others.count)/\(m.shelves.first?.x ?? 0)"
+        if k == key { return cached }
+        let id = MapTransform(scale: 1, origin: .zero)
+        var std = Path(), non = Path(), oth = Path()
+        for s in m.shelves {
+            let p = MapCanvas.rectPath(cx: s.x, cy: s.y, w: s.width, h: s.height, rotation: s.rotation, t: id)
+            if s.kind == .standard { std.addPath(p) } else { non.addPath(p) }
+        }
+        for o in m.others {
+            oth.addPath(MapCanvas.rectPath(cx: o.x, cy: o.y, w: o.width, h: o.height, rotation: o.rotation, t: id))
+        }
+        cached = (std, non, oth)
+        key = k
+        return cached
     }
 }

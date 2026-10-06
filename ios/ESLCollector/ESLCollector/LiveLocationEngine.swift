@@ -241,6 +241,7 @@ final class LiveLocationEngine: ObservableObject {
         t.activate()
 
         isRunning = true
+        SensorArbiter.shared.claim("蓝牙定位") { [weak self] in self?.stop() }
         AppLog.i("实时定位", "开始：\(fpCount) 个指纹点，\(eslCount) 个价签，"
                  + "offset \(Fmt.f(rssiOffset, 1)) / scale \(Fmt.f(rssiScale, 2))，"
                  + "IMU \(useIMU ? "开" : "关")，平滑 \(useGraphSmoothing ? "开" : "关")")
@@ -255,6 +256,7 @@ final class LiveLocationEngine: ObservableObject {
         tickTimer?.cancel()
         tickTimer = nil
         isRunning = false
+        SensorArbiter.shared.release("蓝牙定位")
         stopTrackRecording()
         if let pipe = pipeline {
             queue.async {

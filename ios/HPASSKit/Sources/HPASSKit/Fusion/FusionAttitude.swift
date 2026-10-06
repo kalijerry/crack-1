@@ -118,7 +118,9 @@ final class FusionAttitudeFilter {
     ///   - dt: 距上一样本的时间（s），已由调用方限幅。
     ///   - declinationRad: 地图 +y 轴的磁罗盘方位角（rad）。
     ///   - fallbackHeading: 磁场长期不可信时的兜底航向（rad）；nil 则用 0。
-    func update(sample s: IMUSample, dt: Double, declinationRad: Double, fallbackHeading: Double?) {
+    ///   - useMagnetic: false 时航向只靠陀螺积分，罗盘只用于「尚未初始化」时的自动初始化。
+    func update(sample s: IMUSample, dt: Double, declinationRad: Double, fallbackHeading: Double?,
+                useMagnetic: Bool = true) {
         let a = FusionVec3(s.ax, s.ay, s.az)
         let m = FusionVec3(s.mx, s.my, s.mz)
         let gRaw = FusionVec3(s.gx, s.gy, s.gz)
@@ -175,10 +177,12 @@ final class FusionAttitudeFilter {
         lastMagBearing = psi
         if let psi = psi {
             if headingReady {
-                let target = declinationRad - psi
-                let kp = abs(omegaUp) > turnRateThresh ? kpMagTurning : kpMag
-                let err = FusionMath.wrapPi(target - theta)
-                theta = FusionMath.wrapTwoPi(theta + min(kp * dt, 0.5) * err)
+                if useMagnetic {
+                    let target = declinationRad - psi
+                    let kp = abs(omegaUp) > turnRateThresh ? kpMagTurning : kpMag
+                    let err = FusionMath.wrapPi(target - theta)
+                    theta = FusionMath.wrapTwoPi(theta + min(kp * dt, 0.5) * err)
+                }
             } else {
                 initCos += cos(psi)
                 initSin += sin(psi)

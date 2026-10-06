@@ -169,7 +169,8 @@ struct MagneticView: View {
                          gridCm: storeData.map == nil ? 100 : nil,
                          crossStates: isSurvey && !paintMode ? survey.coverage.states : [],
                          crossBinCm: SurveyCoverage.binCm,
-                         paintLayer: isSurvey && paintMode ? survey.coverage.paintLayer : nil,
+                         // 定位页也画涂色：绿色 = 采集过、能自动定位的地方
+                         paintLayer: (isSurvey && paintMode) || step == .live ? survey.coverage.paintLayer : nil,
                          paintRadiusCm: surveying && paintMode ? survey.coverage.paintLayer?.radiusCm : nil,
                          nextTarget: surveying && paintMode ? survey.coverage.nextUnpainted : nil,
                          laneGuides: surveying && paintMode ? survey.coverage.laneGuides : [],
@@ -860,8 +861,13 @@ struct MagneticView: View {
             }
 
             Section {
-                if !engine.isTracking && store.field != nil && store.usesStoreMap && engine.position == nil {
-                    bigButton("自动定位（不知道我在哪）", name: "实时·自动定位") { engine.startColdSearch() }
+                if !engine.isTracking && (store.field != nil || engine.visualAvailable) && store.usesStoreMap && engine.position == nil {
+                    bigButton(engine.visualAvailable ? (store.field != nil ? "自动定位（视觉 + 地磁）" : "自动定位（视觉认房间）")
+                                                     : "自动定位（不知道我在哪）",
+                              name: "实时·自动定位") { engine.startColdSearch() }
+                }
+                if engine.visualFixes > 0 {
+                    row("视觉定位", "成功 \(engine.visualFixes) 次").font(.footnote)
                 }
                 Text(liveInstruction).font(.callout)
                 if let t = engine.locStateText {

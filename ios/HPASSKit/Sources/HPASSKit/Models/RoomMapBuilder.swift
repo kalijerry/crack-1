@@ -114,6 +114,8 @@ public enum RoomMapBuilder {
             "width": r1((maxX - minX) * 100 + 2 * m), "height": r1((maxY - minY) * 100 + 2 * m),
             "floorName": name, "source": "roomplan", "rotatedDeg": r1(theta * 180 / Double.pi),
             "mapElementList": elements, "floorPolygons": polys,
+            // ARKit (x, z) cm → 地图：map = pRef + R(φ)·a，φ = −θ，pRef = 留白 − 范围起点
+            "arAlign": ["phi": -theta, "pRefX": m - minX * 100, "pRefY": m - minY * 100, "aRefX": 0, "aRefY": 0],
         ]
         let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
         return (data, try StoreDataLoader.loadMap(data))

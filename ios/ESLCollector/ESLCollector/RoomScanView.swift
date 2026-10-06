@@ -100,9 +100,21 @@ final class RoomScanModel: ObservableObject {
     /// 扫完：停下来，RoomPlan 会先处理（几秒），处理完回调 didPresent
     func finish() {
         guard phase == .scanning else { return }
-        captureView.captureSession.stop()
         phase = .processing
+        pendingWorldMap = nil
+        // 先存视觉特征地图（定位时用来认出这个房间），再停扫描
+        captureView.captureSession.arSession.getCurrentWorldMap { [weak self] map, err in
+            let data = map.flatMap { try? NSKeyedArchiver.archivedData(withRootObject: $0, requiringSecureCoding: true) }
+            Task { @MainActor in
+                guard let self else { return }
+                self.pendingWorldMap = data
+                if data == nil { AppLog.w("房间扫描", "没拿到视觉特征地图：\(err?.localizedDescription ?? "未知原因")，视觉定位不可用") }
+                self.captureView.captureSession.stop()
+            }
+        }
     }
+
+    private var pendingWorldMap: Data?
 
     func cancel() {
         if phase == .scanning || phase == .processing { captureView.captureSession.stop() }
@@ -129,6 +141,7 @@ final class RoomScanModel: ObservableObject {
             try json.write(to: dir.appendingPathComponent("map.json"))
             try? room.export(to: dir.appendingPathComponent("room.usdz"))
             if let raw = try? JSONEncoder().encode(room) { try? raw.write(to: dir.appendingPathComponent("captured_room.json")) }
+            if let wm = pendingWorldMap { try? wm.write(to: dir.appendingPathComponent(MapLibrary.worldMapFile)) }
             result = map
             resultItem = RoomScanItem(dir: dir)
             // 直接加进地图库并切换过去：到「地磁定位」页就是这个房间
@@ -137,7 +150,8 @@ final class RoomScanModel: ObservableObject {
                 .map { "\(RoomCategory.label($0.key)) \($0.value.count)" }.sorted().joined(separator: "、")
             let area = WalkableMap(floor: map.floor, obstacles: map.physicalShelves, widthCm: map.width, heightCm: map.height).walkableAreaM2
             summary = "墙 \(input.walls.count) 面、门 \(input.doors.count)、窗 \(input.windows.count)；家具：\(furniture.isEmpty ? "无" : furniture)；"
-                + "可走 \(Fmt.f(area, 1)) m²；地图 \(Fmt.f(map.width / 100, 1)) × \(Fmt.f(map.height / 100, 1)) m"
+                + "可走 \(Fmt.f(area, 1)) m²；地图 \(Fmt.f(map.width / 100, 1)) × \(Fmt.f(map.height / 100, 1)) m；"
+            + (pendingWorldMap != nil ? "视觉定位可用" : "没有视觉特征地图（视觉定位不可用）")
             phase = .done
             refresh()
             AppLog.i("房间扫描", "完成：\(dir.lastPathComponent)，\(summary)")
@@ -158,7 +172,9 @@ final class RoomScanModel: ObservableObject {
             } else {
                 let d = try Data(contentsOf: it.mapURL)
                 let n = name ?? (try? StoreDataLoader.loadMap(d))?.floorName ?? it.id
-                let e = try lib.importAndActivate(data: d, name: n, kind: "room")
+                let wm = it.dir.appendingPathComponent(MapLibrary.worldMapFile)
+                let extra = FileManager.default.fileExists(atPath: wm.path) ? [wm] : []
+                let e = try lib.importAndActivate(data: d, name: n, kind: "room", extraFiles: extra)
                 try? Data(e.id.utf8).write(to: it.dir.appendingPathComponent("library_id.txt"))
             }
             libraryMessage = "已加入地图库并切换到这个房间。到「地磁定位」页建图采集、定位。"

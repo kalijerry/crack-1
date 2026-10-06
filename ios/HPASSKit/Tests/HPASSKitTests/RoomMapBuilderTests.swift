@@ -50,4 +50,15 @@ final class RoomMapBuilderTests: XCTestCase {
         paint.paint(at: Point2(400, 250))
         XCTAssertGreaterThan(paint.paintedCells, 0)
     }
+
+    /// 地图里存的 ARKit → 地图变换：床的 ARKit 中心换过去应该正好是地图上床的中心
+    func testARAlignMapsScanCoordinates() throws {
+        let inp = room()
+        let (_, map) = try RoomMapBuilder.build(inp, name: "x")
+        let t = try XCTUnwrap(map.arAlign)
+        let bed = inp.objects[0].center
+        let p = t.toMap(Point2(bed.x * 100, bed.y * 100))
+        XCTAssertEqual(p.x, map.physicalShelves[0].x, accuracy: 1)
+        XCTAssertEqual(p.y, map.physicalShelves[0].y, accuracy: 1)
+    }
 }

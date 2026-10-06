@@ -55,6 +55,8 @@ public struct StoreMap {
     public var others: [(shapeType: String, x: Double, y: Double, width: Double, height: Double, rotation: Double)]
     /// 能走的地面（多边形，cm）。房间扫描的地图没有通道，用它当可走区域；门店地图为空。
     public var floor: [[Point2]] = []
+    /// 房间扫描的地图：ARKit 世界坐标（扫描时的、也是视觉特征地图的）→ 地图坐标。视觉重定位后直接用它算位置。
+    public var arAlign: MapARTransform?
 
     public init(mapId: Int? = nil, floorId: Int? = nil, floorName: String? = nil,
                 width: Double, height: Double, shelves: [ShelfRect], crosses: [CrossSegment],
@@ -243,6 +245,9 @@ public enum StoreDataLoader {
                 let v = arr.compactMap(num)
                 return stride(from: 0, to: v.count - 1, by: 2).map { Point2(v[$0], v[$0 + 1]) }
             }.filter { $0.count >= 3 }
+        }
+        if let a = root["arAlign"] as? [String: Any], let phi = num(a["phi"]), let x = num(a["pRefX"]), let y = num(a["pRefY"]) {
+            map.arAlign = MapARTransform(pRef: Point2(x, y), aRef: Point2(num(a["aRefX"]) ?? 0, num(a["aRefY"]) ?? 0), phi: phi)
         }
         return map
     }

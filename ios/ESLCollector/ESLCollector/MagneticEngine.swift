@@ -148,6 +148,15 @@ final class MagneticEngine: ObservableObject {
     /// 定位状态：没把握的时候不画位置（搜索中），或冻结在最后一个可信的位置（丢失）。
     enum LocState: Equatable { case idle, searching, tracking, lost }
     @Published private(set) var locState: LocState = .idle
+    /// 开始自动定位的时间（找太久给提示）
+    @Published private(set) var searchStarted: Date?
+    /// 这次视觉定位成功过几次（跟丢再认出来也算）
+    @Published private(set) var visualFixes = 0
+
+    /// 当前地图有视觉特征地图（房间扫描时存的）和 ARKit → 地图的变换：可以视觉定位
+    var visualAvailable: Bool {
+        MapLibrary.shared.activeWorldMapURL != nil && StoreDataStore.shared.map?.arAlign != nil && ARKitLogger.isSupported
+    }
     @Published private(set) var uncertaintyCm: Double = 0
     /// 用磁罗盘持续修正航向。钢货架附近罗盘常偏，默认关，只靠陀螺。
     @Published var useCompassHeading = false
@@ -225,6 +234,9 @@ final class MagneticEngine: ObservableObject {
         }
         ar.onFloor = { [weak self] y in
             Task { @MainActor in self?.arFloorY = y }
+        }
+        ar.onRelocalized = { [weak self] cam in
+            Task { @MainActor in self?.applyVisualFix(camera: cam) }
         }
         ar.onError = { [weak self] msg in
             Task { @MainActor in
@@ -375,6 +387,7 @@ final class MagneticEngine: ObservableObject {
         }
         isTracking = false
         searching = false
+        searchStarted = nil
         headingEditing = false
         AppLog.i("地磁", "实时定位停止，修正 \(checks.count) 次")
     }
@@ -441,8 +454,22 @@ final class MagneticEngine: ObservableObject {
     func startColdSearch() {
         guard phase == .live, !isTracking else { return }
         let store = MagMapStore.shared
+        searchStarted = Date()
         guard let field = store.field else {
-            lastError = "还没有磁场地图，无法自动定位"
+            // 没有磁场图，但有视觉特征地图：只靠视觉认房间
+            guard visualAvailable else {
+                lastError = "还没有磁场地图，无法自动定位"
+                searchStarted = nil
+                return
+            }
+            lastError = nil
+            startVisualOdometry()
+            searching = true
+            isTracking = true
+            locState = .searching
+            position = nil
+            trail = []
+            AppLog.i("地磁", "自动定位：只用视觉（这张地图还没有磁场图）")
             return
         }
         lastError = nil
@@ -541,6 +568,41 @@ final class MagneticEngine: ObservableObject {
         return loc
     }
 
+    /// 视觉重定位成功：ARKit 认出了房间，此刻相机位姿就在扫描时的坐标里，换到地图上就是精确位置和朝向。
+    private func applyVisualFix(camera cam: simd_float4x4) {
+        guard phase == .live, isTracking || searching, let t = StoreDataStore.shared.map?.arAlign else { return }
+        let a = Point2(Double(cam.columns.3.x) * 100, Double(cam.columns.3.z) * 100)
+        let p = t.toMap(a)
+        // 相机朝前 = −z 轴；转到地图系，朝向 0 = +y
+        let f = Point2(-Double(cam.columns.2.x), -Double(cam.columns.2.z))
+        let c = cos(t.phi), s = sin(t.phi)
+        let d = Point2(f.x * c - f.y * s, f.x * s + f.y * c)
+        let h = d.length > 0.1 ? atan2(d.x, d.y) : headingRad
+        let wasTracking = locState == .tracking
+        let before = position
+        restartTracking(at: p, heading: h, checkLabel: "视觉定位", isCorrection: wasTracking)
+        queue.sync {
+            pipe.aligner.set(t, ar: a)
+            pipe.vioPending = nil
+            pipe.vioRaw = false
+            pipe.vioActive = true
+            pipe.pos = p
+            pipe.lastShown = p
+            pipe.shownA = a
+            pipe.lastConverged = true
+        }
+        searching = false
+        isTracking = true
+        locState = .tracking
+        position = p
+        headingRad = h
+        if wasTracking { trail.append(p) } else { trail = [p] }
+        visualFixes += 1
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        AppLog.i("地磁", "视觉定位成功：\(p)，朝向 \(Int(h * 180 / Double.pi))°"
+                 + (before.map { "，修正前偏 \(Int($0.distance(to: p))) cm" } ?? ""))
+    }
+
     /// 在 p 以朝向 heading 重新开始推算（换一个新引擎，步数累加）。
     private func restartTracking(at p: Point2, heading: Double, checkLabel: String?, isCorrection: Bool) {
         let fusion = makeFusion(at: p, heading: heading)
@@ -598,8 +660,10 @@ final class MagneticEngine: ObservableObject {
             queue.sync { pipe.imuWriter = imuW; pipe.rawWriter = rawW }
         }
         do {
-            try ar.start(dir: dir, wantsDepth: depthMode != .off, lateralFile: lateralFile)
+            let wm = visualAvailable ? MapLibrary.shared.activeWorldMapURL.flatMap(ARKitLogger.loadWorldMap) : nil
+            try ar.start(dir: dir, wantsDepth: depthMode != .off, lateralFile: lateralFile, worldMap: wm)
             arRunning = true
+            if wm != nil { AppLog.i("地磁", "已载入视觉特征地图：对着房间转一圈就能认出位置") }
             queue.sync { pipe.vioEnabled = true; pipe.lateralMode = depthMode }
             AppLog.i("地磁", "视觉里程计已启动，LiDAR 深度 \(ARKitLogger.supportsLiDAR ? depthMode.title : "不支持")")
         } catch {
@@ -805,7 +869,15 @@ final class MagneticEngine: ObservableObject {
     /// 给界面显示的定位状态说明；正常跟踪时为 nil。
     var locStateText: String? {
         switch locState {
-        case .searching: return "定位中：还没有把握，先不显示位置。请沿通道正常往前走 10～20 米。"
+        case .searching:
+            if visualAvailable && arRunning {
+                return "正在认房间：拿着手机对着墙和家具慢慢转一圈（视觉定位，一般几秒）。" +
+                    (MagMapStore.shared.field != nil ? "同时也在用地磁找。" : "")
+            }
+            if let s = searchStarted, Date().timeIntervalSince(s) > 45 {
+                return "找了 \(Int(Date().timeIntervalSince(s))) 秒还没定到：可能不在采集过的区域（地图上绿色涂过的地方才能自动定位），或这里磁场太平。可以走到采集过的通道再走一段，或者长按地图手动定点。"
+            }
+            return "定位中：还没有把握，先不显示位置。请在采集过的通道（地图上绿色）里正常往前走 10～20 米。"
         case .lost: return "定位丢失：灰点是最后一个可信的位置，已冻结。走回采集过的通道会自动恢复，也可以长按地图手动定点。"
         default: return nil
         }

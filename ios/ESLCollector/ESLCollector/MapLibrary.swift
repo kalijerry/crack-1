@@ -40,6 +40,13 @@ final class MapLibrary: ObservableObject {
 
     private func dir(_ id: String) -> URL { Self.root.appendingPathComponent(id, isDirectory: true) }
     func mapURL(_ id: String) -> URL { dir(id).appendingPathComponent("map.json") }
+    static let worldMapFile = "worldmap.arexperience"
+    /// 这张地图的视觉特征地图（房间扫描时存的）；没有为 nil
+    func worldMapURL(_ id: String) -> URL? {
+        let u = dir(id).appendingPathComponent(Self.worldMapFile)
+        return FileManager.default.fileExists(atPath: u.path) ? u : nil
+    }
+    var activeWorldMapURL: URL? { activeId.flatMap(worldMapURL) }
 
     private init() {
         load()
@@ -75,7 +82,7 @@ final class MapLibrary: ObservableObject {
 
     /// 加一张地图（不切换）。
     @discardableResult
-    func add(data: Data, name: String, kind: String) throws -> Entry {
+    func add(data: Data, name: String, kind: String, extraFiles: [URL] = []) throws -> Entry {
         _ = try StoreDataLoader.loadMap(data)            // 先确认能解析
         let df = DateFormatter()
         df.dateFormat = "yyyyMMdd_HHmmss"
@@ -84,6 +91,7 @@ final class MapLibrary: ObservableObject {
         let e = Entry(id: id, name: name, kind: kind, created: Date())
         try FileManager.default.createDirectory(at: dir(id), withIntermediateDirectories: true)
         try data.write(to: mapURL(id))
+        for f in extraFiles { try? FileManager.default.copyItem(at: f, to: dir(id).appendingPathComponent(f.lastPathComponent)) }
         try writeMeta(e)
         entries.append(e)
         AppLog.i("地图库", "加入地图：\(name)（\(kind == "room" ? "房间" : "门店")）")
@@ -92,8 +100,8 @@ final class MapLibrary: ObservableObject {
 
     /// 加一张地图并切换过去。
     @discardableResult
-    func importAndActivate(data: Data, name: String, kind: String) throws -> Entry {
-        let e = try add(data: data, name: name, kind: kind)
+    func importAndActivate(data: Data, name: String, kind: String, extraFiles: [URL] = []) throws -> Entry {
+        let e = try add(data: data, name: name, kind: kind, extraFiles: extraFiles)
         try activate(e.id)
         return e
     }

@@ -181,7 +181,7 @@ def to_map(seg, pose_xy, t):
 
 
 def session_samples(dir_, report_sessions):
-    """一个会话 → [(x_cm, y_cm, |B|, Bz, Bh)]。"""
+    """一个会话 → [(x_cm, y_cm, |B|, Bz, Bh, t_ms)]。"""
     rep = {"name": dir_.name, "segments": [], "warnings": [], "samples": 0, "dropped": {}}
     report_sessions.append(rep)
     for f in ("arkit_pose.csv", "anchors.csv", "imu.csv"):
@@ -244,7 +244,7 @@ def session_samples(dir_, report_sessions):
         if q and math.hypot(p[0] - q[0], p[1] - q[1]) / 0.5 < MIN_SPEED_CM_S:
             drop["站着不动"] = drop.get("站着不动", 0) + 1
             continue
-        out.append((xy[0], xy[1], f[0], f[1], f[2]))
+        out.append((xy[0], xy[1], f[0], f[1], f[2], ti))
     rep["samples"] = len(out)
     return out
 
@@ -393,14 +393,26 @@ def discriminability(grid, cells, sigmas, crosses, window_m=10.0, min_len_m=20.0
 
 # ---------------------------------------------------------------- 主流程
 
-def run(map_path, session_paths, out_path=None, cell=50.0, points_path=None, report_path=None, do_disc=True):
+def run(map_path, session_paths, out_path=None, cell=50.0, points_path=None, report_path=None, do_disc=True,
+        truth_dir=None):
     width, height, crosses = load_map(map_path)
     grid = Grid(width, height, cell)
     report = {"map": {"width_cm": width, "height_cm": height, "crosses": len(crosses)}, "sessions": [], "warnings": []}
     for sp in session_paths:
         d = resolve_session_dir(Path(sp))
-        for x, y, b, bz, bh in session_samples(d, report["sessions"]):
+        samples = session_samples(d, report["sessions"])
+        for x, y, b, bz, bh, _ in samples:
             grid.add(x, y, (b, bz, bh))
+        if truth_dir and samples:
+            # 导出对齐后的位置真值（约 10 Hz），给 hpass-replay 离线回放用
+            td = Path(truth_dir)
+            td.mkdir(parents=True, exist_ok=True)
+            lines, last = ["t_ms,x_cm,y_cm"], None
+            for x, y, _, _, _, t in samples:
+                if last is None or t - last >= 100:
+                    lines.append(f"{t},{x:.1f},{y:.1f}")
+                    last = t
+            (td / f"{d.name}.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
     total = sum(grid.n)
     cells, sigmas = grid.build()
     valid = sum(1 for n in grid.n if n >= MIN_SAMPLES)
@@ -466,9 +478,10 @@ def main():
     ap.add_argument("--points", help="带 markPoints 的地图 JSON，点位会写进输出")
     ap.add_argument("--cell", type=float, default=50.0, help="磁场格子边长 cm（默认 50）")
     ap.add_argument("--report", type=Path, help="质检报告 JSON")
+    ap.add_argument("--truth-dir", type=Path, help="把对齐后的位置真值导出到这个目录（每个会话一个 csv）")
     ap.add_argument("--no-discriminability", action="store_true", help="跳过平行通道相似度分析（大地图较慢）")
     a = ap.parse_args()
-    rep, _ = run(a.map, a.sessions, a.out, a.cell, a.points, a.report, not a.no_discriminability)
+    rep, _ = run(a.map, a.sessions, a.out, a.cell, a.points, a.report, not a.no_discriminability, a.truth_dir)
     print_report(rep)
     print(f"\n已写入 {a.out}")
 

@@ -158,6 +158,16 @@ class MagmapTest(unittest.TestCase):
         self.assertEqual((w1, h1, len(c1)), (w2, h2, len(c2)))
         self.assertEqual(len(c1), 5)
 
+    def test_truth_export(self):
+        s = make_session(self.tmp, "s5")
+        magmap.run(self.tmp / "map.json", [s], None, do_disc=False, truth_dir=self.tmp / "truth")
+        lines = (self.tmp / "truth" / "s5.csv").read_text().splitlines()
+        self.assertEqual(lines[0], "t_ms,x_cm,y_cm")
+        self.assertGreater(len(lines), 100)
+        t, x, y = (float(v) for v in lines[50].split(","))
+        self.assertGreaterEqual(x, 400)
+        self.assertLessEqual(x, 1300)
+
     def test_similar_pairs_are_ranked(self):
         s = make_session(self.tmp, "s4")
         rep, _ = magmap.run(self.tmp / "map.json", [s], None, do_disc=True)

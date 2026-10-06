@@ -76,3 +76,32 @@ point_id,x_cm,y_cm,t_start_ms,t_end_ms,note
 | `device.csv` | `t_ms,battery,battery_state,thermal,low_power,brightness` | 1 Hz | `thermal`：0 正常 1 偏热 2 严重 3 危急 |
 
 尚未包含：ARKit 位姿（阶段 1 后续，建图真值用）。
+
+---
+
+# 格式 v3：建图采集会话（仅 iOS，`meta.json` 里 `survey: true`）
+
+在 v2 的基础上多两个文件。`meta.json` 另有 `map_width_cm`、`map_height_cm`、`arkit: true`。
+
+| 文件 | 列 | 频率 | 说明 |
+|---|---|---|---|
+| `arkit_pose.csv` | `t_ms,x_m,y_m,z_m,qx,qy,qz,qw,tracking,limited_reason` | ≈30 Hz | ARKit 世界跟踪位姿。世界系重力对齐，x 右、y 上、z 朝向观察者；俯视时 (x, z) 与地图 (x, y) 手性相同。`tracking`：0 不可用、1 受限、2 正常；`limited_reason`：1 初始化、2 运动过快、3 特征不足、4 重定位、9 其他 |
+| `anchors.csv` | `t_ms,kind,map_x_cm,map_y_cm,ar_x_cm,ar_z_cm,heading_rad,note` | 事件 | 操作者在 App 里长按地图记下的已知位置。`kind`：`start` 起点；`reanchor` 走动中的修正；`heading` 设朝向（记的是当时的估计位置，**不是真值**）；`end` 结束时的估计位置（**不是真值**）。`ar_*` 是同一时刻 ARKit 的 (x, z)，单位 cm |
+
+离线建图时只把 `start` 和 `reanchor` 当真值：相邻两个锚点之间，用它们拟合「旋转 + 平移」把 ARKit 轨迹对到地图上，终点残差按时间线性摊回去；最后一个锚点之后沿用上一段的旋转，且最多信任 30 m。
+
+## 位置真值导出（`tools/magmap.py --truth-dir`）
+
+`<会话名>.csv`，列 `t_ms,x_cm,y_cm`，约 10 Hz，是对齐后的地图坐标。给 `hpass-replay` 离线回放用。
+
+## 磁场图（`magmap.json`）
+
+`tools/magmap.py` 的输出，也是 App「地磁定位」页导入的格式：
+
+```json
+{ "width": 19606, "height": 9206, "mapElementList": [], "markPoints": [{"id":"1","x":100,"y":200}],
+  "magField": { "cellCm": 50, "cols": 393, "rows": 185,
+                "cells": [[|B|, Bz, Bh] 或 null, …], "sigma": [[…] 或 null, …], "counts": [n, …] } }
+```
+
+数组按行优先，下标 = row × cols + col；单位 µT。`counts` 是每格真实样本数（补齐的格子为 0），只用于质检。

@@ -429,9 +429,13 @@ def run(map_path, session_paths, out_path=None, cell=50.0, points_path=None, rep
         report["similar_pairs"] = discriminability(grid, cells, sigmas, crosses)[:15]
 
     markpoints = []
-    if points_path:
-        root = unwrap(json.loads(Path(points_path).read_text(encoding="utf-8")))
+    for src in (points_path, map_path):
+        if not src:
+            continue
+        root = unwrap(json.loads(Path(src).read_text(encoding="utf-8")))
         markpoints = root.get("markPoints", [])
+        if markpoints:
+            break
     r3 = lambda v: [round(x, 2) for x in v] if v else None  # noqa: E731
     out = {
         "mapId": 1, "floorId": 1, "floorName": "地磁地图",

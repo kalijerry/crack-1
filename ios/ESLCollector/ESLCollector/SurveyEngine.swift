@@ -131,6 +131,8 @@ final class SurveyEngine: ObservableObject {
     @Published private(set) var walkedSinceAnchorM = 0.0
     @Published private(set) var totalWalkedM = 0.0
     @Published private(set) var sessionName: String?
+    /// 上一次建图采集的会话目录（结束之后用来导出）
+    @Published private(set) var lastSessionDir: URL?
     @Published private(set) var lastError: String?
     @Published private(set) var lastSnap: String?
 
@@ -198,6 +200,7 @@ final class SurveyEngine: ObservableObject {
             return
         }
         sessionName = dir.lastPathComponent
+        lastSessionDir = dir
         position = nil
         trail = []
         anchorCount = 0

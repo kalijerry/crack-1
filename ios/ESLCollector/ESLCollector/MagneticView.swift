@@ -27,6 +27,8 @@ struct MagneticView: View {
     @State private var confirmClearCal = false
     @State private var confirmResetCoverage = false
     @State private var surveyNote = ""
+    @State private var exportURL: URL?
+    @State private var exportError: String?
 
     var body: some View {
         NavigationStack {
@@ -70,6 +72,7 @@ struct MagneticView: View {
         }
         .onChange(of: storeData.map?.crosses.count) { _ in store.adopt(map: storeData.map) }
         .onAppear { survey.coverage.configure(crosses: store.crosses) }
+        .onChange(of: survey.lastSessionDir) { _ in exportURL = nil; exportError = nil }
     }
 
     // MARK: 画布
@@ -232,6 +235,23 @@ struct MagneticView: View {
                     Text("已经走了超过 \(Int(SurveyEngine.anchorEveryM)) m，找个路口或已知点长按地图修正。")
                         .font(.footnote).foregroundStyle(.orange)
                 }
+            }
+        }
+
+        if !survey.isRunning, let dir = survey.lastSessionDir {
+            Section {
+                Text(dir.lastPathComponent).font(.footnote.monospaced())
+                if let url = exportURL {
+                    ShareLink("导出这次会话（zip）", item: url)
+                } else {
+                    bigButton("打包上次采集的会话", name: "建图·打包") {
+                        do { exportURL = try SessionsView.zip(dir); exportError = nil }
+                        catch { exportError = "打包失败：\(error.localizedDescription)" }
+                    }
+                }
+                if let e = exportError { Text(e).font(.footnote).foregroundStyle(.red) }
+            } header: { Text("导出给电脑建图") } footer: {
+                Text("导出的 zip 用隔空投送或「文件」发到电脑，在电脑上运行 tools/magmap.py，生成磁场图后再导入这里。也可以在「采集 → 历史会话」里找到所有会话。")
             }
         }
 

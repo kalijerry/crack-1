@@ -159,7 +159,10 @@ final class MagMapStore: ObservableObject {
 
     /// 导入地图 JSON（网页编辑器导出的，或本 App 导出的）。
     func importMap(_ data: Data) throws {
+        let oldPoints = points
         try load(data)
+        // 电脑上建出来的磁场图（magmap.json）通常不带点位；这时保留 App 里已经放好的点位，别清空
+        if points.isEmpty && !oldPoints.isEmpty { points = oldPoints }
         save()
         AppLog.i("地磁", "导入地图：\(points.count) 个点位，" + (field == nil ? "无磁场数据" : "含磁场数据 \(validCells) 格"))
     }

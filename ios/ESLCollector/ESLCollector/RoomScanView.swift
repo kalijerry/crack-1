@@ -1,5 +1,6 @@
 import HPASSKit
 import RoomPlan
+import simd
 import SwiftUI
 
 /// 家具类别的中文名（RoomPlan 的类别英文名 → 中文）
@@ -158,10 +159,12 @@ final class RoomScanModel: ObservableObject {
 
     static func input(from room: CapturedRoom) -> RoomMapBuilder.Input {
         func item(_ cat: String, _ t: simd_float4x4, _ d: simd_float3) -> RoomMapBuilder.Item {
-            let c = t.columns.3, x = t.columns.0
-            return .init(category: cat, center: Point2(Double(c.x), Double(c.z)),
-                         width: Double(d.x), depth: Double(d.z), height: Double(d.y),
-                         yaw: atan2(Double(x.z), Double(x.x)))
+            let c: simd_float4 = t.columns.3
+            let x: simd_float4 = t.columns.0
+            let center = Point2(Double(c.x), Double(c.z))
+            let yaw: Double = atan2(Double(x.z), Double(x.x))
+            let w = Double(d.x), dep = Double(d.z), h = Double(d.y)
+            return RoomMapBuilder.Item(category: cat, center: center, width: w, depth: dep, height: h, yaw: yaw)
         }
         var inp = RoomMapBuilder.Input()
         inp.walls = room.walls.map { item("wall", $0.transform, $0.dimensions) }
@@ -171,8 +174,9 @@ final class RoomScanModel: ObservableObject {
         inp.objects = room.objects.map { item(String(describing: $0.category), $0.transform, $0.dimensions) }
         if #available(iOS 17.0, *) {
             inp.floors = room.floors.map { f in
-                f.polygonCorners.map { pc in
-                    let w = f.transform * simd_float4(pc.x, pc.y, pc.z, 1)
+                f.polygonCorners.map { (pc: simd_float3) -> Point2 in
+                    let local = simd_float4(pc.x, pc.y, pc.z, 1)
+                    let w: simd_float4 = f.transform * local
                     return Point2(Double(w.x), Double(w.z))
                 }
             }.filter { $0.count >= 3 }

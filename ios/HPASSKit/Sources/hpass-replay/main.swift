@@ -119,8 +119,8 @@ if localizer != nil {
     if cold { print(convergedAtMs.map { "冷启动在第 \(Double($0 - truth[0].t) / 1000) 秒收敛" } ?? "冷启动没有收敛") }
 }
 // 激光雷达横向距离核对：用真值轨迹的行进方向，在地图货架上射线投射，与实测的左右货架距离比
-if let depthPath = arg("--depth"), !storeMap.shelves.isEmpty {
-    let rc = ShelfRaycaster(shelves: storeMap.shelves, widthCm: storeMap.width, heightCm: storeMap.height)
+if let depthPath = arg("--depth"), !storeMap.physicalShelves.isEmpty {
+    let rc = ShelfRaycaster(shelves: storeMap.physicalShelves, widthCm: storeMap.width, heightCm: storeMap.height)
     var errL: [Double] = [], errR: [Double] = [], gapMeasured: [Double] = [], gapPredicted: [Double] = []
     for r in rows(depthPath) {
         guard r.count >= 5, let t = Int64(r[0]), let p = truthAt(t),

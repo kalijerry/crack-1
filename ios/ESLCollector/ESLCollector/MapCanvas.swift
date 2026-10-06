@@ -297,11 +297,15 @@ struct MapCanvas: View {
             ctx.fill(path, with: .color(.gray.opacity(0.18)))
         }
 
-        // 货架：旋转矩形
+        // 货架：旋转矩形。标准货架（实物）实心；虚拟货架和非标准编码只画很淡的轮廓
         for s in m.shelves {
             let path = Self.rectPath(cx: s.x, cy: s.y, w: s.width, h: s.height, rotation: s.rotation, t: t)
-            ctx.fill(path, with: .color(.gray.opacity(0.35)))
-            ctx.stroke(path, with: .color(.gray.opacity(0.7)), lineWidth: 0.6)
+            if s.kind == .standard {
+                ctx.fill(path, with: .color(.gray.opacity(0.35)))
+                ctx.stroke(path, with: .color(.gray.opacity(0.7)), lineWidth: 0.6)
+            } else {
+                ctx.stroke(path, with: .color(.gray.opacity(0.25)), lineWidth: 0.4)
+            }
         }
 
         // 指纹点

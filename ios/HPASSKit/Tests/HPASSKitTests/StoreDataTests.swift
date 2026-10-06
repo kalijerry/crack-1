@@ -65,3 +65,27 @@ final class StoreDataTests: XCTestCase {
         XCTAssertEqual(table.y, 310, accuracy: 1e-6)
     }
 }
+
+final class ShelfClassifierTests: XCTestCase {
+    func testKinds() {
+        for c in ["Shelf-001-08", "Shelf-085-02", "Shelf-010-3", "Shelf-100-1", "Shelf-26-14", "Shelf-73-08"] {
+            XCTAssertEqual(ShelfClassifier.kind(code: c), .standard, c)
+        }
+        for c in ["Virtual-Shelf-4-19682-1", "virtual-Shelf-4-1", "VirtualShelf-3-2", "Virtual-TableFeature-1-2"] {
+            XCTAssertEqual(ShelfClassifier.kind(code: c), .virtual, c)
+        }
+        for c in ["Shelf-107-3-1", "Shelf-401-02", "Shelf-403-04A", "Shelf-4-1284", "Shelf-101-1", "Shelf-", "Foo-001-1", ""] {
+            XCTAssertEqual(ShelfClassifier.kind(code: c), .other, c)
+        }
+    }
+
+    func testPhysicalShelvesOnlyStandard() {
+        let map = StoreMap(width: 100, height: 100, shelves: [
+            ShelfRect(code: "Shelf-001-1", x: 0, y: 0, width: 10, height: 10, rotation: 0),
+            ShelfRect(code: "Virtual-Shelf-4-1-1", x: 0, y: 0, width: 10, height: 10, rotation: 0),
+            ShelfRect(code: "Shelf-107-3-1", x: 0, y: 0, width: 10, height: 10, rotation: 0),
+        ], crosses: [])
+        XCTAssertEqual(map.physicalShelves.count, 1)
+        XCTAssertEqual(map.physicalShelves[0].code, "Shelf-001-1")
+    }
+}

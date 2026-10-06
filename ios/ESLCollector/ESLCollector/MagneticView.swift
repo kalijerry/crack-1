@@ -380,6 +380,9 @@ struct MagneticView: View {
             }
             Text("地图上方指向的罗盘方位（0 = 北，90 = 东）。填了之后，自动定位会先按这个方向猜，更快找到你；不填也能用，只是慢一些。")
                 .font(.footnote).foregroundStyle(.secondary)
+            NavigationLink { DataManagerView() } label: {
+                Label("数据管理（会话、轨迹、网格、AR 记录）", systemImage: "externaldrive")
+            }
             LoggedButton(name: "实验功能", detail: "进入") { step = .advanced } label: {
                 Label("实验功能：按点位建图 / 只用计步定位", systemImage: "flask")
             }
@@ -555,19 +558,25 @@ struct MagneticView: View {
     @ViewBuilder private var livePanel: some View {
         if engine.phase != .live {
             Section {
-                Text("1. 打开传感器，拿手机在空中画 8 字，直到磁场精度变成「高」。\n2. 长按地图：我现在在这里。\n3. 双击地图开始设朝向，在地图上点或拖动让箭头指向你面朝的方向，再双击确定。\n4. 走起来，看地图上的点跟着动。")
+                Text("1. 打开传感器（手机竖着拿，摄像头朝前）。\n2. 不知道在哪：点「自动定位」，沿通道走 10～20 米。\n   知道在哪：长按地图定点，点「设朝向」让箭头指向前方再确定。\n3. 走起来，蓝点跟着动；没把握时不显示，丢了会变灰冻结。")
                     .font(.footnote).foregroundStyle(.secondary)
-                Toggle("视觉里程计（摄像头 + ARKit，取代计步）", isOn: $engine.useVisualOdometry)
-                Picker("激光雷达测货架距离", selection: $engine.depthMode) {
-                    ForEach(DepthMode.allCases) { Text($0.title).tag($0) }
-                }
-                .disabled(!ARKitLogger.supportsLiDAR)
-                Toggle("用计步器的距离校正步长", isOn: $engine.usePedometerScale)
-                Toggle("用罗盘修正航向", isOn: $engine.useCompassHeading)
-                Toggle("地磁纠偏（需要已有磁场数据）", isOn: $engine.useMagCorrection)
-                    .disabled(store.field == nil)
                 bigButton("打开传感器，开始", name: "实时·开始") { engine.startLive() }
                     .disabled(engine.phase != .idle)
+                DisclosureGroup("设置（默认就能用）") {
+                    Toggle("视觉里程计（摄像头 + ARKit，取代计步）", isOn: $engine.useVisualOdometry)
+                    Toggle("地磁纠偏（需要已有磁场数据）", isOn: $engine.useMagCorrection)
+                        .disabled(store.field == nil)
+                    Picker("激光雷达测货架距离", selection: $engine.depthMode) {
+                        ForEach(DepthMode.allCases) { Text($0.title).tag($0) }
+                    }
+                    .disabled(!ARKitLogger.supportsLiDAR)
+                    Toggle("用计步器的距离校正步长", isOn: $engine.usePedometerScale)
+                    Toggle("用罗盘修正航向", isOn: $engine.useCompassHeading)
+                }
+                if store.field == nil {
+                    Text("还没有磁场图：只能靠视觉里程计推算，没有地磁纠偏。先去「采集」页采集并生成磁场图。")
+                        .font(.footnote).foregroundStyle(.orange)
+                }
                 if store.field != nil && store.usesStoreMap {
                     Text("已有磁场地图：打开传感器后，可以用「自动定位」，不用手动定点。")
                         .font(.footnote).foregroundStyle(.secondary)

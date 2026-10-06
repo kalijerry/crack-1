@@ -14,13 +14,19 @@
 
 ---
 
-## iOS App 的四个页面
+## 地磁定位（新）
+
+「地磁定位」标签页：采集（ARKit + 全部传感器，可选 LiDAR 网格）→ 手机上一键生成磁场图（自动贴通道、原始磁力计减偏置）→ 定位（视觉里程计 + 地磁粒子滤波，冷启动、丢失冻结）→ 按货架编号沿通道导航；另有 2D / 3D / AR 校对视图。
+操作流程见 [docs/survey-and-localization-guide.md](docs/survey-and-localization-guide.md)，规划与进度见 [docs/oriient-benchmark-plan.md](docs/oriient-benchmark-plan.md)，离线工具：`tools/magmap.py`（建图质检）、`tools/meshcheck.py`（LiDAR 货架高度与偏移）、`swift run hpass-replay`（离线回放）。
+
+## iOS App 的页面
 
 | 页面 | 用途 |
 |---|---|
 | 采集 | 录制价签广播和 IMU，按点位打点，导出会话 |
 | 门店数据 | 从服务器下载或本地导入地图、指纹、价签；数据自检 |
-| 实时定位 | 地图上实时显示定位、轨迹、导航路线；现场标定 RSSI 偏移 |
+| 蓝牙定位 | 地图上实时显示定位、轨迹、导航路线；现场标定 RSSI 偏移 |
+| 地磁定位 | 采集、手机上建磁场图、地磁定位与导航、3D / AR 视图（见上） |
 | 日志 | App 内日志，含每次按钮操作；可筛选、搜索、导出 |
 
 ### 门店数据页

@@ -53,6 +53,16 @@ public final class VisualOdometryAligner {
 
     public func setHeadingHint(_ h: Double) { headingHint = h }
 
+    /// 直接给出完整的对齐（视觉重定位后已知 ARKit → 地图的变换），不用再走 1.5 m 对齐。
+    public func set(_ t: MapARTransform, ar a: Point2) {
+        pRef = t.pRef
+        aRef = t.aRef
+        phi = t.phi
+        lastMap = t.toMap(a)
+        lastA = a
+        wasNormal = true
+    }
+
     /// 保持旋转不变、只把位置拉到 p（长按修正位置）。
     public func reanchorKeepingRotation(map p: Point2, ar a: Point2) {
         pRef = p

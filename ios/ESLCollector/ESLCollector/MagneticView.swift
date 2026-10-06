@@ -68,6 +68,13 @@ struct MagneticView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                HStack {
+                    Text("地图").font(.footnote).foregroundStyle(.secondary)
+                    MapPickerMenu(disabled: engine.phase != .idle || survey.isRunning)
+                    Spacer()
+                }
+                .padding(.horizontal)
+                .padding(.top, 4)
                 Picker("步骤", selection: $step) {
                     ForEach(Step.main) { Text($0.rawValue).tag($0) }
                 }
@@ -115,10 +122,20 @@ struct MagneticView: View {
             if mapUpText.isEmpty, let v = store.mapUpBearingDeg { mapUpText = Fmt.f(v, 0) }
             if startId.isEmpty { startId = store.points.first?.id ?? "" }
         }
-        .onChange(of: storeData.map?.crosses.count) { _ in store.adopt(map: storeData.map) }
+        .onChange(of: storeData.mapSignature) { _ in
+            survey.coverage.invalidate()
+            store.adopt(map: storeData.map)
+            mapService.refresh()
+            mapUpText = store.mapUpBearingDeg.map { Fmt.f($0, 0) } ?? ""
+            startId = store.points.first?.id ?? ""
+            survey.coverage.configure(crosses: store.crosses)
+            survey.coverage.configurePaint(crosses: store.crosses, widthCm: store.widthCm, heightCm: store.heightCm,
+                                           walkable: store.walkableMap())
+        }
         .onAppear {
             survey.coverage.configure(crosses: store.crosses)
-            survey.coverage.configurePaint(crosses: store.crosses, widthCm: store.widthCm, heightCm: store.heightCm)
+            survey.coverage.configurePaint(crosses: store.crosses, widthCm: store.widthCm, heightCm: store.heightCm,
+                                           walkable: store.walkableMap())
             mapService.refresh()
         }
         .onChange(of: survey.isRunning) { running in if !running { mapService.refresh() } }
@@ -144,6 +161,8 @@ struct MagneticView: View {
                          position: isSurvey ? survey.position : (showsTrack ? engine.position : nil),
                          headingRad: isSurvey ? survey.headingRad : engine.headingRad,
                          uncertaintyCm: isSurvey ? 0 : engine.uncertaintyCm,
+                         // 蓝牙粗定位：和显示位置差得远时画橙色空心圈
+                         rawEstimate: step == .live ? engine.bleEstimate : nil,
                          route: step == .live ? engine.navRoute : nil,
                          showFingerprints: false,
                          markPoints: store.points,
@@ -152,7 +171,8 @@ struct MagneticView: View {
                          gridCm: storeData.map == nil ? 100 : nil,
                          crossStates: isSurvey && !paintMode ? survey.coverage.states : [],
                          crossBinCm: SurveyCoverage.binCm,
-                         paintLayer: isSurvey && paintMode ? survey.coverage.paintLayer : nil,
+                         // 定位页也画涂色：绿色 = 采集过、能自动定位的地方
+                         paintLayer: (isSurvey && paintMode) || step == .live ? survey.coverage.paintLayer : nil,
                          paintRadiusCm: surveying && paintMode ? survey.coverage.paintLayer?.radiusCm : nil,
                          nextTarget: surveying && paintMode ? survey.coverage.nextUnpainted : nil,
                          laneGuides: surveying && paintMode ? survey.coverage.laneGuides : [],
@@ -442,6 +462,7 @@ struct MagneticView: View {
         Section {
             if store.field != nil {
                 row("格子数", "\(store.validCells)")
+                row("蓝牙指纹", store.bleMap.map { "\($0.tags.count) 个价签" } ?? "没有（采集时录到的价签太少，或旧版本生成的）")
                 Text(store.fieldSource ?? "来源未记录（旧版本生成或导入的）").font(.caption).foregroundStyle(.secondary)
                 Button(role: .destructive) { confirmDeleteField = true } label: {
                     Label("删除当前磁场图", systemImage: "trash")
@@ -843,8 +864,16 @@ struct MagneticView: View {
             }
 
             Section {
-                if !engine.isTracking && store.field != nil && store.usesStoreMap && engine.position == nil {
-                    bigButton("自动定位（不知道我在哪）", name: "实时·自动定位") { engine.startColdSearch() }
+                if !engine.isTracking && (store.field != nil || engine.visualAvailable) && store.usesStoreMap && engine.position == nil {
+                    bigButton(engine.visualAvailable ? (store.field != nil ? "自动定位（视觉 + 地磁）" : "自动定位（视觉认房间）")
+                                                     : "自动定位（不知道我在哪）",
+                              name: "实时·自动定位") { engine.startColdSearch() }
+                }
+                if engine.phase == .live && store.bleMap != nil {
+                    row("蓝牙粗定位", engine.bleEstimate == nil ? "等价签信号…" : "听到 \(engine.bleTagsHeard) 个价签（橙色圈）").font(.footnote)
+                }
+                if engine.visualFixes > 0 {
+                    row("视觉定位", "成功 \(engine.visualFixes) 次").font(.footnote)
                 }
                 Text(liveInstruction).font(.callout)
                 if let t = engine.locStateText {

@@ -22,7 +22,18 @@ final class SurveyMapService: ObservableObject {
     func refresh() {
         let fm = FileManager.default
         let dirs = (try? fm.contentsOfDirectory(at: Recorder.sessionsRoot, includingPropertiesForKeys: nil)) ?? []
-        items = dirs.filter { $0.hasDirectoryPath && SurveySessionLoader.isSurvey($0) }
+        let store = MagMapStore.shared
+        let active = MapLibrary.shared.activeId
+        // 只列当前地图的会话：会话里记了地图编号就按编号；旧会话没记，就按地图尺寸对
+        func belongs(_ d: URL) -> Bool {
+            guard let data = try? Data(contentsOf: d.appendingPathComponent("meta.json")),
+                  let meta = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return true }
+            if let id = meta["map_id"] as? String, !id.isEmpty { return id == active }
+            let w = meta["map_width_cm"] as? Double, h = meta["map_height_cm"] as? Double
+            guard let w, let h else { return true }
+            return abs(w - store.widthCm) < 1 && abs(h - store.heightCm) < 1
+        }
+        items = dirs.filter { $0.hasDirectoryPath && SurveySessionLoader.isSurvey($0) && belongs($0) }
             .sorted { $0.lastPathComponent > $1.lastPathComponent }
             .map { Item(url: $0, sizeBytes: SessionsView.dirSize($0),
                         hasMesh: fm.fileExists(atPath: $0.appendingPathComponent("mesh.ply").path)) }
@@ -42,6 +53,8 @@ final class SurveyMapService: ObservableObject {
         AppLog.i("建图", "手机上生成磁场图：\(urls.count) 个会话")
         Task.detached(priority: .userInitiated) {
             let b = SurveyMapBuilder(widthCm: widthCm, heightCm: heightCm, crosses: crosses)
+            let bb = BLEFingerprintBuilder(widthCm: widthCm, heightCm: heightCm)
+            var bleUsed = 0
             var out: [String] = []
             var total = 0
             for u in urls {
@@ -49,6 +62,8 @@ final class SurveyMapService: ObservableObject {
                     let s = try SurveySessionLoader.load(u)
                     let r = b.add(s)
                     total += r.samplesUsed
+                    // 蓝牙自动指纹：价签读数按时间放到对齐好的轨迹上
+                    bleUsed += bb.add(samples: SurveySessionLoader.loadBLE(u), track: r.track)
                     var line = "\(u.lastPathComponent)：\(r.samplesUsed) 个样本"
                     if let a = r.corridorResidualBefore, let c = r.corridorResidualAfter {
                         line += "，离通道中心 \(Int(a)) → \(Int(c)) cm"
@@ -61,6 +76,9 @@ final class SurveyMapService: ObservableObject {
                 }
             }
             let field = total > 0 ? b.build() : nil
+            let bleMap = bb.build()
+            let ble: BLEFingerprintMap? = bleMap.tags.count >= 20 ? bleMap : nil
+            out.append(ble.map { "蓝牙指纹：\($0.tags.count) 个价签，\(bleUsed) 条读数" } ?? "蓝牙指纹：价签读数太少（\(bleUsed) 条），不启用")
             let valid = b.field.validCells()
             await MainActor.run {
                 self.running = false
@@ -73,7 +91,7 @@ final class SurveyMapService: ObservableObject {
                 let df = DateFormatter()
                 df.dateFormat = "MM-dd HH:mm"
                 let names = urls.map { $0.lastPathComponent.replacingOccurrences(of: "ios_survey_", with: "") }
-                MagMapStore.shared.applyBuilt(f, source: "\(urls.count) 个会话（\(names.joined(separator: "、"))），\(df.string(from: Date())) 生成")
+                MagMapStore.shared.applyBuilt(f, source: "\(urls.count) 个会话（\(names.joined(separator: "、"))），\(df.string(from: Date())) 生成", ble: ble)
                 self.lines.append("完成：有数据的格子 \(valid) 个（补齐后 \(f.coveredCells)），已启用")
                 AppLog.i("建图", "手机上生成磁场图完成：样本 \(total)，有效格 \(valid)，补齐后 \(f.coveredCells)")
             }

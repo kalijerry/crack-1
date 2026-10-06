@@ -28,6 +28,11 @@ final class ARKitLogger: NSObject, ARSessionDelegate {
     var onError: (@Sendable (String) -> Void)?
     /// 地面高度（ARKit 世界 y，米）变化时回调。
     var onFloor: (@Sendable (Double) -> Void)?
+    /// 带视觉特征地图启动后，ARKit 认出了这个地方（从「重定位中」变成正常）时回调：此刻相机的位姿。
+    /// 之后 ARKit 的世界坐标就是特征地图保存时的坐标。跟丢再认出来会再回调。
+    var onRelocalized: (@Sendable (simd_float4x4) -> Void)?
+    private var usingWorldMap = false
+    private var relocalizing = false
 
     /// 给 AR 叠加画面共用的会话（ARSCNView.session = 它）。
     let session = ARSession()
@@ -63,7 +68,8 @@ final class ARKitLogger: NSObject, ARSessionDelegate {
     ///   - lateralFileURL: 写深度横向距离的 csv；nil 不写。
     ///   - wantsDepth: 是否取 LiDAR 深度（设备不支持时静默忽略）。
     /// - Parameter wantsMesh: 打开 LiDAR 场景重建（网格），结束时可以用 `exportMesh` 导出。
-    func start(dir: URL?, wantsDepth: Bool = false, lateralFile: URL? = nil, wantsMesh: Bool = false) throws {
+    func start(dir: URL?, wantsDepth: Bool = false, lateralFile: URL? = nil, wantsMesh: Bool = false,
+               worldMap: ARWorldMap? = nil) throws {
         floorY = nil
         self.wantsMesh = wantsMesh && Self.supportsMesh
         if let dir {
@@ -82,6 +88,9 @@ final class ARKitLogger: NSObject, ARSessionDelegate {
         if self.wantsMesh { cfg.sceneReconstruction = .mesh }
         cfg.environmentTexturing = .none
         if self.wantsDepth { cfg.frameSemantics = .sceneDepth }
+        cfg.initialWorldMap = worldMap
+        usingWorldMap = worldMap != nil
+        relocalizing = worldMap != nil
         session.run(cfg, options: [.resetTracking, .removeExistingAnchors])
     }
 
@@ -96,6 +105,27 @@ final class ARKitLogger: NSObject, ARSessionDelegate {
     }
 
     // MARK: ARSessionDelegate
+
+    func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
+        guard usingWorldMap else { return }
+        switch camera.trackingState {
+        case .limited(.relocalizing):
+            relocalizing = true
+        case .normal:
+            if relocalizing {
+                relocalizing = false
+                onRelocalized?(camera.transform)
+            }
+        default:
+            break
+        }
+    }
+
+    /// 读视觉特征地图文件
+    static func loadWorldMap(_ url: URL) -> ARWorldMap? {
+        guard let d = try? Data(contentsOf: url) else { return nil }
+        return try? NSKeyedUnarchiver.unarchivedObject(ofClass: ARWorldMap.self, from: d)
+    }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         frameCounter += 1

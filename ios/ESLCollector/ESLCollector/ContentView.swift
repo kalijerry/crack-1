@@ -10,7 +10,7 @@ struct ContentView: View {
     @State private var tab = Features.bluetooth ? Tab.collect : Tab.magnetic
 
     enum Tab: Hashable {
-        case collect, storeData, live, magnetic, log
+        case collect, storeData, live, magnetic, scan, log
     }
 
     var body: some View {
@@ -35,6 +35,10 @@ struct ContentView: View {
                 .tabItem { Label("地磁定位", systemImage: "scope") }
                 .tag(Tab.magnetic)
 
+            RoomScanView()
+                .tabItem { Label("房间扫描", systemImage: "cube.transparent") }
+                .tag(Tab.scan)
+
             LogView()
                 .tabItem { Label("日志", systemImage: "list.bullet.rectangle") }
                 .tag(Tab.log)
@@ -44,6 +48,7 @@ struct ContentView: View {
         }
         .onAppear {
             AppLog.i("应用", "启动")
+            _ = MapLibrary.shared          // 第一次用：把现在的地图收进地图库
         }
     }
 
@@ -53,6 +58,7 @@ struct ContentView: View {
         case .storeData: return "门店数据"
         case .live: return "蓝牙定位"
         case .magnetic: return "地磁定位"
+        case .scan: return "房间扫描"
         case .log: return "日志"
         }
     }

@@ -18,6 +18,7 @@ public enum ShelfClassifier {
     public static func kind(code: String) -> ShelfKind {
         let lower = code.lowercased()
         if lower.hasPrefix("virtual") { return .virtual }
+        if lower.hasPrefix("room-") { return .standard }     // 房间扫描出来的家具都是实物
         let parts = code.split(separator: "-", omittingEmptySubsequences: false)
         guard parts.count >= 2, parts[0] == "Shelf",
               parts[1].allSatisfy({ $0.isASCII && $0.isNumber }), let n = Int(parts[1]) else { return .other }

@@ -244,6 +244,36 @@ public final class MagneticLocalizer {
         hasConverged = !coldStart
     }
 
+    /// 是否已经收敛（有把握）
+    public var isConverged: Bool { hasConverged }
+
+    /// 外部给的「粗位置」（蓝牙指纹）：每个粒子按离 `center` 的距离加权（高斯，σ = sigmaCm）。
+    /// 还没收敛时再把权重最低的一部分粒子换成撒在 `center` 附近的新粒子（朝向全方向），冷启动几秒就能圈到对的区域。
+    /// - Parameter weight: 0...1，收敛后应该给小一点（只当约束，不抢地磁的主导）。
+    public func applyPositionPrior(_ center: Point2, sigmaCm: Double, weight: Double, injectFraction: Double = 0) {
+        guard !xs.isEmpty, sigmaCm > 0, weight > 0 else { return }
+        let s2 = 2 * sigmaCm * sigmaCm
+        for i in 0..<xs.count {
+            let dx = xs[i] - center.x, dy = ys[i] - center.y
+            logw[i] += weight * -(dx * dx + dy * dy) / s2
+        }
+        if !hasConverged && injectFraction > 0 {
+            let m = Int(Double(xs.count) * min(injectFraction, 0.5))
+            let order = logw.indices.sorted { logw[$0] < logw[$1] }
+            let floorW = logw.max() ?? 0
+            for k in order.prefix(m) {
+                var p = Point2(center.x + rng.normal() * sigmaCm, center.y + rng.normal() * sigmaCm)
+                if let w = walkable, !w.isWalkable(p) { p = w.nearestWalkable(to: p, radiusCm: 300) ?? p }
+                xs[k] = min(max(p.x, 0), field.widthCm)
+                ys[k] = min(max(p.y, 0), field.heightCm)
+                bias[k] = headingUnknown ? (rng.uniform() * 2 - 1) * Double.pi : rng.normal() * config.initialHeadingBiasSigmaDeg * Double.pi / 180
+                scale[k] = 1 + rng.normal() * config.initialScaleSigma
+                logw[k] = floorW - 2          // 新粒子先给一个中等偏低的权重，靠后面的地磁观测说话
+            }
+        }
+        normalize()
+    }
+
     /// 送入一次惯导位移增量（cm，地图系）和这段时间内最新的磁场特征，返回当前估计。
     ///
     /// - Parameter trust: 这一刻磁场读数可信度 0...1（见 `MagneticTrustMonitor`）。

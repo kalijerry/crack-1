@@ -38,6 +38,7 @@ struct StoreDataView: View {
 
     var body: some View {
         Form {
+            MapLibrarySection()
             statusSection
             if Features.bluetooth { selfCheckSection }
             serverSection

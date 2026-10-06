@@ -44,11 +44,19 @@ final class SurveyCoverage: ObservableObject {
     }
 
     /// 地图尺寸 / 通道变了才重建涂色网格，并读回存盘的涂色。
-    func configurePaint(crosses: [CrossSegment], widthCm: Double, heightCm: Double) {
-        guard !crosses.isEmpty, widthCm > 0, heightCm > 0 else { return }
-        if let p = paintGrid, p.cols == Int((widthCm / p.cellCm).rounded(.up)), p.crosses.count == crosses.count,
-           zip(p.crosses, crosses).allSatisfy({ $0.a == $1.a && $0.b == $1.b }) { return }
-        let p = CoveragePaint(crosses: crosses, widthCm: widthCm, heightCm: heightCm)
+    func configurePaint(crosses: [CrossSegment], widthCm: Double, heightCm: Double, walkable: WalkableMap? = nil) {
+        guard widthCm > 0, heightCm > 0 else { return }
+        let p: CoveragePaint
+        if crosses.isEmpty {
+            // 房间：涂色范围 = 可走区域
+            guard let w = walkable else { return }
+            if let q = paintGrid, q.crosses.isEmpty, q.cols == w.cols, q.rows == w.rows, q.walkableCells == w.walkableCellCount { return }
+            p = CoveragePaint(walkable: w)
+        } else {
+            if let q = paintGrid, q.cols == Int((widthCm / q.cellCm).rounded(.up)), q.crosses.count == crosses.count,
+               zip(q.crosses, crosses).allSatisfy({ $0.a == $1.a && $0.b == $1.b }) { return }
+            p = CoveragePaint(crosses: crosses, widthCm: widthCm, heightCm: heightCm)
+        }
         if let d = try? Data(contentsOf: Self.paintURL) { p.load(d) }
         paintGrid = p
         rebuildPaintImage()
@@ -97,6 +105,18 @@ final class SurveyCoverage: ObservableObject {
         paintDirty = false
         lastPaintImage = Date()
         paintLayer = paintGrid.flatMap(PaintLayer.make)
+    }
+
+    /// 换了地图：下次 configure / configurePaint 一定重建并从（新地图的）文件读
+    func invalidate() {
+        segments = []
+        lengths = []
+        forward = []
+        backward = []
+        paintGrid = nil
+        paintLayer = nil
+        clearGuides()
+        revision += 1
     }
 
     func configure(crosses: [CrossSegment]) {
@@ -342,17 +362,19 @@ final class SurveyEngine: ObservableObject {
         }
         let store = MagMapStore.shared
         coverage.configure(crosses: store.crosses)
-        coverage.configurePaint(crosses: store.crosses, widthCm: store.widthCm, heightCm: store.heightCm)
+        coverage.configurePaint(crosses: store.crosses, widthCm: store.widthCm, heightCm: store.heightCm,
+                                walkable: store.walkableMap())
         coverage.breakPaintStroke()
         lastError = nil
         recorder.deviceLabel = "survey"
-        recorder.recordBLE = Features.bluetooth
+        recorder.recordBLE = true          // 价签广播顺便录下来，生成磁场图时自动做成蓝牙指纹
         recorder.arbiterName = ""
         SensorArbiter.shared.claim("建图采集") { [weak self] in self?.stop() }
         recorder.setupNote = note
         recorder.extraMeta = [
             "survey": true,
             "map_width_cm": store.widthCm, "map_height_cm": store.heightCm,
+            "map_id": MapLibrary.shared.activeId ?? "",
             "arkit": true,
             "arkit_frame": "gravity-aligned, x right, y up, z toward viewer; map = pRef + R(phi)(a - aRef), a = (x, z) cm",
         ]

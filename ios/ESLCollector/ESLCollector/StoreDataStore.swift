@@ -64,6 +64,15 @@ final class StoreDataStore: ObservableObject {
 
     var eslToShelf: [String: String] { StoreDataLoader.eslToShelf(eslItems) }
 
+    /// 地图变了没有（尺寸、货架、通道、地面）。换成房间地图时通道数可能不变（都是 0），所以不能只看通道数。
+    var mapSignature: String {
+        guard let m = map else { return "" }
+        return "\(Int(m.width))x\(Int(m.height))/\(m.shelves.count)/\(m.crosses.count)/\(m.floor.count)/\(m.floorName ?? "")"
+    }
+
+    /// 当前地图是不是房间扫描生成的
+    var currentMapIsRoom: Bool { map.map { $0.crosses.isEmpty && !$0.floor.isEmpty } ?? false }
+
     static var rootURL: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return docs.appendingPathComponent("store-data", isDirectory: true)
@@ -100,6 +109,7 @@ final class StoreDataStore: ObservableObject {
     func save(_ data: Data, as kind: FileKind) throws {
         try FileManager.default.createDirectory(at: Self.rootURL, withIntermediateDirectories: true)
         try data.write(to: url(for: kind), options: .atomic)
+        if kind == .map { MapLibrary.shared.syncActive(data) }
         AppLog.i("门店数据", "已保存 \(kind.title)：\(ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file))")
         reload()
     }
@@ -109,7 +119,15 @@ final class StoreDataStore: ObservableObject {
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
         let data = try Data(contentsOf: source)
-        try save(data, as: kind)
+        if kind == .map {
+            // 地图导入成地图库里的一张新地图并切换过去，不覆盖现在这张
+            let m = try StoreDataLoader.loadMap(data)
+            let isRoom = m.crosses.isEmpty && !m.floor.isEmpty
+            let name = m.floorName ?? source.deletingPathExtension().lastPathComponent
+            try MapLibrary.shared.importAndActivate(data: data, name: name, kind: isRoom ? "room" : "store")
+        } else {
+            try save(data, as: kind)
+        }
     }
 
     func delete(_ kind: FileKind) {

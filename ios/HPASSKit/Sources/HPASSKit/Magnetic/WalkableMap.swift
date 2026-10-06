@@ -67,6 +67,32 @@ public struct WalkableMap {
         for k in 0..<state.count where state[k] != 0 { walkableIndices.append(k) }
     }
 
+    /// 房间：地面多边形以内、家具（四周放宽 marginCm）以外都能走，没有通道走向。
+    public init(floor: [[Point2]], obstacles: [ShelfRect], widthCm: Double, heightCm: Double,
+                cellCm: Double = 25, marginCm: Double = 15) {
+        precondition(widthCm > 0 && heightCm > 0 && cellCm > 0)
+        self.widthCm = widthCm
+        self.heightCm = heightCm
+        self.cellCm = cellCm
+        cols = Int((widthCm / cellCm).rounded(.up))
+        rows = Int((heightCm / cellCm).rounded(.up))
+        state = [UInt8](repeating: 0, count: cols * rows)
+        axis = [Float](repeating: 0, count: cols * rows)
+        for j in 0..<rows {
+            for i in 0..<cols {
+                let p = Point2((Double(i) + 0.5) * cellCm, (Double(j) + 0.5) * cellCm)
+                guard floor.contains(where: { pointInPolygon(p, $0) }) else { continue }
+                if obstacles.contains(where: { pointInRotatedRect(p, center: Point2($0.x, $0.y), width: $0.width, height: $0.height,
+                                                                   rotationDeg: $0.rotation, margin: marginCm) }) { continue }
+                state[j * cols + i] = 1
+            }
+        }
+        for k in 0..<state.count where state[k] != 0 { walkableIndices.append(k) }
+    }
+
+    /// 第 k 格能不能走（k = 行 × cols + 列）
+    public func isWalkable(index k: Int) -> Bool { k >= 0 && k < state.count && state[k] != 0 }
+
     public var walkableCellCount: Int { walkableIndices.count }
     /// 可走面积（m²）。
     public var walkableAreaM2: Double { Double(walkableIndices.count) * cellCm * cellCm / 10_000 }

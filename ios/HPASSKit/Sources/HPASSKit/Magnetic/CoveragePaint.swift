@@ -37,6 +37,28 @@ public final class CoveragePaint {
     /// 改过就加一，界面据此决定要不要重画
     public private(set) var revision = 0
 
+    /// 房间（没有通道）：用可走区域的格子当涂色范围，整个房间算一条「通道」。网格与 walkable 一致。
+    public init(walkable w: WalkableMap) {
+        cellCm = w.cellCm
+        cols = w.cols
+        rows = w.rows
+        crosses = []
+        var mask = [Bool](repeating: false, count: cols * rows)
+        var bi0 = Int.max, bj0 = Int.max, bi1 = -1, bj1 = -1
+        for k in 0..<(cols * rows) where w.isWalkable(index: k) {
+            mask[k] = true
+            let i = k % cols, j = k / cols
+            bi0 = min(bi0, i); bi1 = max(bi1, i); bj0 = min(bj0, j); bj1 = max(bj1, j)
+        }
+        self.mask = mask
+        corridorCells = []
+        walkableCells = mask.reduce(0) { $0 + ($1 ? 1 : 0) }
+        counts = [UInt8](repeating: 0, count: cols * rows)
+        lastPaintPath = [Float](repeating: -1e9, count: cols * rows)
+        painted = []
+        bbox = bi1 >= 0 ? (bi0, bj0, bi1, bj1) : (0, 0, cols - 1, rows - 1)
+    }
+
     public init(crosses: [CrossSegment], widthCm: Double, heightCm: Double, cellCm: Double = 25) {
         self.cellCm = cellCm
         self.crosses = crosses
@@ -126,7 +148,7 @@ public final class CoveragePaint {
     /// p 所在的通道（通道宽度以内，取离中心线最近的）
     public func corridorIndex(at p: Point2) -> Int? {
         var best: (Int, Double)?
-        for (i, c) in crosses.enumerated() where !corridorCells[i].isEmpty {
+        for (i, c) in crosses.enumerated() where corridorCells.indices.contains(i) && !corridorCells[i].isEmpty {
             let d = c.b - c.a
             let l2 = d.dot(d)
             let t = min(max((p - c.a).dot(d) / l2, 0), 1)

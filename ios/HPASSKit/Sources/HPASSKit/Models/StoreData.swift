@@ -11,8 +11,12 @@ public struct ShelfRect: Hashable {
     public var height: Double
     public var rotation: Double
     public var subsection: Int
+    /// 实物高度（cm）。门店地图里没有（nil，3D 用统一的货架高度）；房间扫描出来的家具有。
+    public var heightCm: Double?
 
-    public init(code: String, x: Double, y: Double, width: Double, height: Double, rotation: Double, subsection: Int = 1) {
+    public init(code: String, x: Double, y: Double, width: Double, height: Double, rotation: Double, subsection: Int = 1,
+                heightCm: Double? = nil) {
+        self.heightCm = heightCm
         self.code = code
         self.x = x
         self.y = y
@@ -49,6 +53,10 @@ public struct StoreMap {
     public var crosses: [CrossSegment]
     /// 其他元素（MapPillar 等）仅用于绘制：shapeType + 外接矩形
     public var others: [(shapeType: String, x: Double, y: Double, width: Double, height: Double, rotation: Double)]
+    /// 能走的地面（多边形，cm）。房间扫描的地图没有通道，用它当可走区域；门店地图为空。
+    public var floor: [[Point2]] = []
+    /// 房间扫描的地图：ARKit 世界坐标（扫描时的、也是视觉特征地图的）→ 地图坐标。视觉重定位后直接用它算位置。
+    public var arAlign: MapARTransform?
 
     public init(mapId: Int? = nil, floorId: Int? = nil, floorName: String? = nil,
                 width: Double, height: Double, shelves: [ShelfRect], crosses: [CrossSegment],
@@ -207,7 +215,8 @@ public enum StoreDataLoader {
                 if rectAnchor == .topLeft { c = centerOfRect(x: c.x, y: c.y, width: w, height: h, rotationDeg: rot) }
                 shelves.append(ShelfRect(code: e["code"] as? String ?? "",
                                          x: c.x, y: c.y, width: w, height: h, rotation: rot,
-                                         subsection: Int(num(e["subsection"]) ?? 1)))
+                                         subsection: Int(num(e["subsection"]) ?? 1),
+                                         heightCm: num(e["heightCm"])))
             case "MapCross":
                 let pts = (e["points"] as? [Any] ?? []).compactMap(num)
                 guard pts.count >= 4 else { continue }
@@ -225,11 +234,22 @@ public enum StoreDataLoader {
                 }
             }
         }
-        return StoreMap(mapId: (num(root["mapId"])).map { Int($0) },
-                        floorId: (num(root["floorId"])).map { Int($0) },
-                        floorName: root["floorName"] as? String,
-                        width: num(root["width"]) ?? 0, height: num(root["height"]) ?? 0,
-                        shelves: shelves, crosses: crosses, others: others)
+        var map = StoreMap(mapId: (num(root["mapId"])).map { Int($0) },
+                           floorId: (num(root["floorId"])).map { Int($0) },
+                           floorName: root["floorName"] as? String,
+                           width: num(root["width"]) ?? 0, height: num(root["height"]) ?? 0,
+                           shelves: shelves, crosses: crosses, others: others)
+        // 房间扫描生成的地图：floorPolygons = [[x0, y0, x1, y1, …], …]（cm）
+        if let polys = root["floorPolygons"] as? [[Any]] {
+            map.floor = polys.map { arr in
+                let v = arr.compactMap(num)
+                return stride(from: 0, to: v.count - 1, by: 2).map { Point2(v[$0], v[$0 + 1]) }
+            }.filter { $0.count >= 3 }
+        }
+        if let a = root["arAlign"] as? [String: Any], let phi = num(a["phi"]), let x = num(a["pRefX"]), let y = num(a["pRefY"]) {
+            map.arAlign = MapARTransform(pRef: Point2(x, y), aRef: Point2(num(a["aRefX"]) ?? 0, num(a["aRefY"]) ?? 0), phi: phi)
+        }
+        return map
     }
 
     // MARK: 指纹

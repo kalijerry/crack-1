@@ -61,6 +61,10 @@ struct MapCanvas: View {
     /// 采过的段都带一条半透明绿带：中间是绿色实线 = 还是孤立的一段；黑色虚线 = 已经和别的路段关联起来。
     var crossStates: [[CoverageState]] = []
     var crossBinCm: Double = 100
+    /// 涂色图层（有它时画涂色，通道只画淡淡的底）
+    var paintLayer: PaintLayer?
+    /// 当前位置画一个涂色圆圈（cm）；nil 不画
+    var paintRadiusCm: Double?
     var showHeading = true
     /// 位置已冻结（定位丢失）：画成灰色
     var positionStale = false
@@ -277,6 +281,13 @@ struct MapCanvas: View {
             ctx.stroke(grid, with: .color(.secondary.opacity(0.25)), lineWidth: 0.8)
         }
 
+        // 涂色图层：每格一个像素，按地图范围缩放，不插值
+        if let pl = paintLayer {
+            let o = t.toScreen(Point2(Double(pl.rect.minX), Double(pl.rect.minY)))
+            let r = CGRect(x: o.x, y: o.y, width: t.len(Double(pl.rect.width)), height: t.len(Double(pl.rect.height)))
+            ctx.draw(Image(decorative: pl.image, scale: 1).interpolation(.none), in: r)
+        }
+
         // 通道：半透明粗线
         let coloring = crossStates.count == m.crosses.count && !crossStates.isEmpty
         for (i, c) in m.crosses.enumerated() {
@@ -288,8 +299,10 @@ struct MapCanvas: View {
             p.move(to: t.toScreen(c.a))
             p.addLine(to: t.toScreen(c.b))
             let w = Swift.max(t.len(c.lineWidth), 1.5)
-            ctx.stroke(p, with: .color(Color.blue.opacity(0.14)),
-                       style: StrokeStyle(lineWidth: w, lineCap: .round))
+            if paintLayer == nil {          // 有涂色时通道宽度已经由涂色图层表示
+                ctx.stroke(p, with: .color(Color.blue.opacity(0.14)),
+                           style: StrokeStyle(lineWidth: w, lineCap: .round))
+            }
             ctx.stroke(p, with: .color(Color.blue.opacity(0.35)), lineWidth: 0.6)
         }
 
@@ -373,6 +386,13 @@ struct MapCanvas: View {
         // 当前位置：不确定度圆 + 实心点 + 航向箭头
         if let pos = position {
             let c = t.toScreen(pos)
+            if let pr = paintRadiusCm {
+                // 涂色圆圈：走过的地方按这个圈涂
+                let r = Swift.max(t.len(pr), 3)
+                let rect = CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)
+                ctx.fill(Path(ellipseIn: rect), with: .color(Color.green.opacity(0.18)))
+                ctx.stroke(Path(ellipseIn: rect), with: .color(Color.green), lineWidth: 1.5)
+            }
             if uncertaintyCm > 0 {
                 let r = Swift.max(t.len(uncertaintyCm), 4)
                 let rect = CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)

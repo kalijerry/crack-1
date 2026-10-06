@@ -36,6 +36,10 @@ struct MagneticView: View {
     @State private var checkId = ""
     @State private var confirmClearPoints = false
     @State private var confirmClearCal = false
+    @State private var confirmDeleteField = false
+    /// 采集进度怎么显示：涂色（Oriient 式，看通道宽度涂没涂满）/ 方向（每 1 m 两个方向走没走）
+    @AppStorage("coverageLayer") private var coverageLayer = "paint"
+    private var paintMode: Bool { coverageLayer == "paint" }
     @State private var confirmResetCoverage = false
     @State private var surveyNote = ""
     enum Camera3D: String, CaseIterable, Identifiable {
@@ -112,7 +116,11 @@ struct MagneticView: View {
             if startId.isEmpty { startId = store.points.first?.id ?? "" }
         }
         .onChange(of: storeData.map?.crosses.count) { _ in store.adopt(map: storeData.map) }
-        .onAppear { survey.coverage.configure(crosses: store.crosses); mapService.refresh() }
+        .onAppear {
+            survey.coverage.configure(crosses: store.crosses)
+            survey.coverage.configurePaint(crosses: store.crosses, widthCm: store.widthCm, heightCm: store.heightCm)
+            mapService.refresh()
+        }
         .onChange(of: survey.isRunning) { running in if !running { mapService.refresh() } }
         .onChange(of: survey.lastSessionDir) { _ in exportURL = nil; exportError = nil }
     }
@@ -142,8 +150,10 @@ struct MagneticView: View {
                          targetId: showsTrack && !isSurvey ? engine.targetId : nil,
                          highlightId: calibrationHighlight,
                          gridCm: storeData.map == nil ? 100 : nil,
-                         crossStates: isSurvey ? survey.coverage.states : [],
+                         crossStates: isSurvey && !paintMode ? survey.coverage.states : [],
                          crossBinCm: SurveyCoverage.binCm,
+                         paintLayer: isSurvey && paintMode ? survey.coverage.paintLayer : nil,
+                         paintRadiusCm: surveying && paintMode ? survey.coverage.paintLayer?.radiusCm : nil,
                          showHeading: isSurvey ? (survey.stage != .needPosition)
                              : (!live || engine.isTracking || engine.headingEditing),
                          positionStale: !isSurvey && engine.locState == .lost,
@@ -256,6 +266,8 @@ struct MagneticView: View {
         .onChange(of: survey.position) { _ in sync3D(full: false) }
         .onChange(of: engine.trail.count) { _ in sync3D(full: false) }
         .onChange(of: survey.coverage.revision) { _ in sync3D(full: false) }
+        .onChange(of: survey.coverage.paintLayer.map(ObjectIdentifier.init)) { _ in sync3D(full: false) }
+        .onChange(of: coverageLayer) { _ in sync3D(full: true) }
         .onChange(of: store.points) { _ in sync3D(full: true) }
         .onChange(of: store.sampleCount) { _ in sync3D(full: true) }
         .onChange(of: step) { _ in sync3D(full: true) }
@@ -398,7 +410,17 @@ struct MagneticView: View {
             model3D.updateField(store.field, signature: store.sampleCount &* 31 &+ store.validCells)
         }
         // 采集进度：建图采集页看；实时定位页也画上，能看出哪里有磁场数据
-        if step != .map { model3D.updateCoverage(crosses: store.crosses, coverage: survey.coverage, force: full) }
+        if step != .map {
+            if paintMode {
+                model3D.clearCoverage()
+                model3D.updatePaint(survey.coverage.paintLayer)
+            } else {
+                model3D.updatePaint(nil)
+                model3D.updateCoverage(crosses: store.crosses, coverage: survey.coverage, force: full)
+            }
+        } else {
+            model3D.updatePaint(nil)
+        }
         s.setShelfHeight(shelfHeight3D)
         s.setShelfOffset(storeData.shelfOffset)
         if camera3D == .follow { s.followAvatar() }
@@ -570,7 +592,10 @@ struct MagneticView: View {
                     }
                 }
                 Toggle("自动贴通道（实时）", isOn: $survey.corridorLock)
-                if let p = survey.position, let todo = survey.coverage.nearestTodo(from: p) {
+                if paintMode, let c = survey.coverage.currentCorridorPaint {
+                    row("当前通道涂色", "\(c.code) · \(Int(c.fraction * 100))%").font(.footnote)
+                }
+                if !paintMode, let p = survey.position, let todo = survey.coverage.nearestTodo(from: p) {
                     row("最近没采完", "\(todo.code) · \(Int(todo.distanceM)) m" + (todo.oneWay ? " · 差一个方向" : ""))
                         .font(.footnote)
                 }
@@ -584,6 +609,19 @@ struct MagneticView: View {
 
         if !survey.isRunning {
             Section {
+                if store.field != nil {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("当前在用的磁场图：\(store.validCells) 格").font(.footnote.bold())
+                        Text(store.fieldSource ?? "来源未记录（旧版本生成或导入的）").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Button("删除当前磁场图", role: .destructive) { confirmDeleteField = true }
+                        .confirmationDialog("删除手机上的磁场图？采集会话和点位都保留，可以重新生成。",
+                                            isPresented: $confirmDeleteField, titleVisibility: .visible) {
+                            Button("删除", role: .destructive) { store.deleteField() }
+                        }
+                } else {
+                    Text("现在没有磁场图：选会话生成一张。").font(.footnote).foregroundStyle(.secondary)
+                }
                 if mapService.items.isEmpty {
                     Text("还没有建图采集会话。").foregroundStyle(.secondary)
                 }
@@ -604,7 +642,7 @@ struct MagneticView: View {
                 ForEach(mapService.lines, id: \.self) { Text($0).font(.footnote) }
                 if let e = mapService.lastError { Text(e).font(.footnote).foregroundStyle(.red) }
             } header: { Text("生成磁场图（手机上）") } footer: {
-                Text("会自动把采集轨迹贴到通道中心线上，途中没长按修正也能用；用原始磁力计减偏置，不受系统重新校准影响。同一块区域多采几次、都选上，地图更完整。电脑上的 tools/magmap.py 仍可用来做质检。")
+                Text("下面勾选的会话只决定「下次生成」用哪些；已经在用的磁场图要点「删除当前磁场图」才会去掉。会自动把采集轨迹贴到通道上，途中没长按修正也能用；用原始磁力计减偏置，不受系统重新校准影响。同一块区域多采几次、都选上，地图更完整。电脑上的 tools/magmap.py 仍可用来做质检。")
             }
         }
 
@@ -626,6 +664,25 @@ struct MagneticView: View {
         }
 
         Section {
+            Picker("显示", selection: $coverageLayer) {
+                Text("涂色（看通道宽度）").tag("paint")
+                Text("方向（每米双向）").tag("dir")
+            }
+            .pickerStyle(.segmented)
+            if let p = survey.coverage.paintGrid {
+                row("涂色：全场", "\(Int(p.paintedAreaM2)) / \(Int(p.walkableAreaM2)) m² · \(String(format: "%.1f", p.fraction * 100))%")
+                ProgressView(value: p.fraction).tint(.green)
+            }
+            if paintMode {
+                VStack(alignment: .leading, spacing: 6) {
+                    paintLegend(Color(white: 0.6).opacity(0.35), "淡灰：通道里还没涂到的地方")
+                    paintLegend(Color.green.opacity(0.5), "浅绿：走过一趟")
+                    paintLegend(Color(red: 0.1, green: 0.55, blue: 0.22), "深绿：走过两趟以上")
+                    Text("采集时以你为圆心画一个 40 cm 的圈，走过的地方涂上颜色。宽通道（超过 1.5 m）贴左右两边各走一趟，把整条通道涂满：靠近货架的磁场横向差别很大，只走中间，顾客贴边走时就对不上。走太快、采样率低时不涂。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .font(.footnote)
+            }
             let total = survey.coverage.totalMeters
             let done = survey.coverage.coveredMeters
             row("已覆盖（双向算满）", "\(Int(done)) / \(Int(total)) m")
@@ -634,13 +691,13 @@ struct MagneticView: View {
             if oneWay > 0 {
                 row("只走了一个方向", "\(Int(oneWay)) m").foregroundStyle(.orange)
             }
-            VStack(alignment: .leading, spacing: 6) {
+            if !paintMode { VStack(alignment: .leading, spacing: 6) {
                 legendRow(color: .secondary.opacity(0.5), dashed: false, band: false, text: "淡灰细线：还没走")
                 legendRow(color: .orange, dashed: false, band: true, text: "橙色：只走了一个方向，要反方向再走一遍")
                 legendRow(color: .green, dashed: false, band: true, text: "绿带 + 绿色实线：双向采完，还是孤立的一段")
                 legendRow(color: .primary, dashed: true, band: true, text: "绿带 + 黑色虚线：双向采完，已和别的路段关联")
             }
-            .font(.footnote)
+            .font(.footnote) }
             if !survey.isRunning {
                 Button("清空采集进度", role: .destructive) { confirmResetCoverage = true }
                     .confirmationDialog("清空采集进度？已录的会话文件不受影响。", isPresented: $confirmResetCoverage, titleVisibility: .visible) {
@@ -648,6 +705,13 @@ struct MagneticView: View {
                     }
             }
         } header: { Text("采集进度") }
+    }
+
+    private func paintLegend(_ c: Color, _ text: String) -> some View {
+        HStack(spacing: 8) {
+            RoundedRectangle(cornerRadius: 2).fill(c).frame(width: 34, height: 10)
+            Text(text).foregroundStyle(.secondary)
+        }
     }
 
     /// 采集进度图例的一行：一小段示意线 + 说明。

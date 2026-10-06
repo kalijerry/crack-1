@@ -26,6 +26,7 @@ final class Store3DScene {
     private let pointsNode = SCNNode()
     private let trailNode = SCNNode()
     private let fieldNode = SCNNode()
+    private let paintNode = SCNNode()
     private let avatarRoot = SCNNode()
     private let ringNode = SCNNode()
 
@@ -56,7 +57,7 @@ final class Store3DScene {
         content = (max(minX, 0) / 100, max(minZ, 0) / 100, min(maxX, map.width) / 100, min(maxZ, map.height) / 100)
 
         scene.rootNode.addChildNode(world)
-        for n in [shelvesNode, coverageNode, pointsNode, trailNode, fieldNode, avatarRoot] { world.addChildNode(n) }
+        for n in [shelvesNode, coverageNode, pointsNode, trailNode, fieldNode, paintNode, avatarRoot] { world.addChildNode(n) }
         scene.background.contents = S3Color(white: 0.94, alpha: 1)
 
         buildFloor()
@@ -210,6 +211,25 @@ final class Store3DScene {
     // MARK: 磁场热力图
 
     /// 把磁场地图（|B|）画成贴在地板上的彩色图：蓝 = 弱，红 = 强。只画有数据的格子。
+    /// 涂色图层：平铺在地面上（比磁场热力图略高一点）。nil 清掉。
+    func setPaint(_ layer: PaintLayer?) {
+        paintNode.childNodes.forEach { $0.removeFromParentNode() }
+        guard let l = layer else { return }
+        let w = Double(l.rect.width) / 100, h = Double(l.rect.height) / 100
+        let plane = SCNPlane(width: w, height: h)
+        let m = SCNMaterial()
+        m.diffuse.contents = l.image
+        m.diffuse.magnificationFilter = .nearest
+        m.lightingModel = .constant
+        m.isDoubleSided = true
+        m.writesToDepthBuffer = false
+        plane.firstMaterial = m
+        let n = SCNNode(geometry: plane)
+        n.position = SCNVector3(Double(l.rect.minX) / 100 + w / 2, 0.035, Double(l.rect.minY) / 100 + h / 2)
+        n.eulerAngles = SCNVector3(-Double.pi / 2, 0, 0)       // 平放；图片顶边对应地图 y 小的一侧
+        paintNode.addChildNode(n)
+    }
+
     func setField(_ f: MagneticFieldMap?) {
         fieldNode.childNodes.forEach { $0.removeFromParentNode() }
         guard let f, f.coveredCells > 0, let img = Self.heatImage(f) else { return }

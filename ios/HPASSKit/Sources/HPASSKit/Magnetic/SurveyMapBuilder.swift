@@ -69,6 +69,11 @@ public final class SurveyMapBuilder {
     public var snapWindowCm: Double = 1000
     public var snapMaxDistCm: Double = 200
     public var snapEnabled = true
+    /// 贴通道之前先按时间顺序跑一遍在线贴通道（和采集时手机上一样）。默认关：
+    /// 离线已经有分段贴通道，两个叠在一起在漂移小的时候反而更差（合成真值回放：中位 10 → 29 cm）；
+    /// 只有 ARKit 朝向漂得很厉害（≥10°/分钟）时才有帮助。
+    public var lockEnabled = false
+    public var lockLateralGain = 0.3
 
     public init(widthCm: Double, heightCm: Double, crosses: [CrossSegment], cellCm: Double = 50) {
         field = MagneticFieldBuilder(widthCm: widthCm, heightCm: heightCm, cellCm: cellCm)
@@ -105,6 +110,7 @@ public final class SurveyMapBuilder {
         if snapEnabled && !crosses.isEmpty {
             let before = mapped.compactMap { $0.ok ? nearestCorridor($0.p)?.dist : nil }
             rep.corridorResidualBefore = median(before)
+            if lockEnabled { lockToCorridors(&mapped) }
             snapToCorridors(&mapped)
             let after = mapped.compactMap { $0.ok ? nearestCorridor($0.p)?.dist : nil }
             rep.corridorResidualAfter = median(after)
@@ -210,6 +216,31 @@ public final class SurveyMapBuilder {
     }
 
     // MARK: 自动贴通道
+
+    /// 按时间顺序用 CorridorLock 修正轨迹：累积一个刚体变换，每次修正绕当前点转一点、平移一点。
+    private func lockToCorridors(_ mapped: inout [(t: Int64, p: Point2, path: Double, ok: Bool)]) {
+        let lock = CorridorLock(crosses: crosses)
+        lock.lateralGain = lockLateralGain
+        var th = 0.0, tr = Point2.zero          // 当前变换：p' = R(th) p + tr
+        for i in mapped.indices {
+            let p0 = mapped[i].p
+            var p = Point2(p0.x * cos(th) - p0.y * sin(th) + tr.x, p0.x * sin(th) + p0.y * cos(th) + tr.y)
+            if mapped[i].ok {
+                if let fix = lock.update(p) {
+                    // 新变换 = 绕 p 转 dPhi，再平移 shift
+                    let c = cos(fix.dPhi), s = sin(fix.dPhi)
+                    func f(_ q: Point2) -> Point2 { let r = q - p; return Point2(p.x + r.x * c - r.y * s, p.y + r.x * s + r.y * c) + fix.shift }
+                    let newTr = f(tr)
+                    th += fix.dPhi
+                    tr = newTr
+                    p = p + fix.shift
+                }
+            } else {
+                lock.reset()
+            }
+            mapped[i].p = p
+        }
+    }
 
     private func nearestCorridor(_ p: Point2) -> (dist: Double, foot: Point2, normal: Point2)? {
         var best: (Double, Point2, Point2)?

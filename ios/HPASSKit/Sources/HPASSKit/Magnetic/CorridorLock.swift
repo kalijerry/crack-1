@@ -31,8 +31,9 @@ public final class CorridorLock {
     public var maxStraightRmsCm = 30.0
     /// 窗口中心离通道中心线超过 半宽 + 这个（cm）就不认这条通道
     public var maxOutsideCm = 80.0
-    /// 横向偏差小于这个（cm）不修：人本来就不一定走正中
-    public var lateralDeadbandCm = 25.0
+    /// 横向：人不一定走正中，所以只在轨迹跑出通道（离中心线超过 半宽 − 这个，cm）时才往回拉。
+    /// 拉中心线会带来偏差（回放实测：拉中心线中位误差 29 cm，只拉出界的 23 cm）
+    public var lateralMarginCm = 30.0
     public var angleGain = 0.5
     public var lateralGain = 0.3
 
@@ -103,8 +104,9 @@ public final class CorridorLock {
         let nrm = Point2(-d.y / len, d.x / len)
         let off = nrm.dot(c2 - b.cross.a)
         var shift = Point2.zero
-        if abs(off) > lateralDeadbandCm {
-            let excess = off - (off > 0 ? lateralDeadbandCm : -lateralDeadbandCm)
+        let band = max(b.cross.lineWidth / 2 - lateralMarginCm, 20)
+        if abs(off) > band {
+            let excess = off - (off > 0 ? band : -band)
             shift = nrm * (-lateralGain * excess)
         }
         for i in pts.indices { pts[i].p = turn(pts[i].p) + shift }

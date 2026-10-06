@@ -215,6 +215,13 @@ final class SurveyEngine: ObservableObject {
 
     var isRunning: Bool { stage != .idle }
 
+    /// IMU / 磁力计采样率太低（后台被系统限流、传感器被别的功能占用）时的提示
+    var lowSampleRate: Bool { recorder.imuHz > 0 && recorder.imuHz < Self.minImuHz }
+    static let minImuHz = 50
+
+    /// 这一刻采到的数据能不能算进度：速度正常、采样率正常
+    private var sampleQualityOK: Bool { speedMS <= Self.maxSpeedMS && !lowSampleRate }
+
     // MARK: 开始 / 结束
 
     func start(note: String) {
@@ -417,7 +424,7 @@ final class SurveyEngine: ObservableObject {
             totalWalkedM += step.length / 100
             trail.append(p)
             if trail.count > 1500 { trail.removeFirst(trail.count - 1500) }
-            if speedMS <= Self.maxSpeedMS { coverage.mark(position: p, moving: step) }
+            if sampleQualityOK { coverage.mark(position: p, moving: step) }
             lastMapPos = p
             headingRad = atan2(step.x, step.y)
         }

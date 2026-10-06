@@ -546,6 +546,10 @@ struct MagneticView: View {
                     Text("\(Fmt.f(survey.speedMS, 1)) m/s").fontWeight(.semibold)
                         .foregroundStyle(survey.speedMS > SurveyEngine.maxSpeedMS ? .red : .primary)
                 }
+                if survey.lowSampleRate {
+                    Text("传感器采样率只有 \(rec.imuHz) Hz（要 \(SurveyEngine.minImuHz) Hz 以上），这段不算采集进度。保持 App 在前台、别开别的定位功能。")
+                        .font(.footnote).foregroundStyle(.red)
+                }
                 if survey.speedMS > SurveyEngine.maxSpeedMS {
                     Text("走太快了，这段不算采集进度。正常步速（约 1 m/s）就好。").font(.footnote).foregroundStyle(.red)
                 }

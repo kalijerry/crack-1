@@ -42,7 +42,7 @@ struct MagneticView: View {
 
                 canvas
                     .padding(.horizontal)
-                    .frame(maxHeight: 340)
+                    .frame(height: min(max(UIScreen.main.bounds.height * 0.42, 260), 420))
 
                 Form {
                     if let err = engine.lastError ?? store.lastError {
@@ -135,8 +135,15 @@ struct MagneticView: View {
 
     @ViewBuilder private var mapPanel: some View {
         Section {
+            if let m = storeData.map {
+                row("地图尺寸", "\(Fmt.f(m.width / 100, 1)) × \(Fmt.f(m.height / 100, 1)) m")
+                row("货架 / 通道", "\(m.shelves.count) / \(m.crosses.count)")
+            } else {
+                row("地图尺寸", "\(Fmt.f(store.widthCm / 100, 1)) × \(Fmt.f(store.heightCm / 100, 1)) m（没有货架数据）")
+                Text("还没有货架和通道。在这里导入完整的门店地图 JSON，或到「门店数据」页导入。").font(.footnote).foregroundStyle(.orange)
+            }
             Text(store.usesStoreMap
-                 ? "地图来自「门店数据」页。长按地图空白处放点，点位用作起点、目标和路线建图的锚点。"
+                 ? "地图来自「门店数据」页。长按地图空白处放点（按住不动约半秒再松手），点位用作起点、目标和路线建图的锚点。双指可缩放、单指拖动平移。"
                  : "还没有门店地图，现在是 10×10 m 测试区。长按方格图空白处放点，点位按编号连线。")
                 .font(.footnote).foregroundStyle(.secondary)
             LoggedButton(name: "导入地图", detail: "JSON") { showImporter = true } label: {
@@ -524,9 +531,17 @@ struct MagneticView: View {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             do {
-                try store.importMap(Data(contentsOf: url))
+                let data = try Data(contentsOf: url)
+                try store.importMap(data)
+                // 导入的是完整门店地图（有货架或通道）时，同时作为门店数据的地图，画面上才有货架
+                var withShelves = ""
+                if let m = try? StoreDataLoader.loadMap(data), !(m.shelves.isEmpty && m.crosses.isEmpty) {
+                    try storeData.save(data, as: .map)
+                    store.adopt(map: storeData.map)
+                    withShelves = "，货架 \(m.shelves.count)、通道 \(m.crosses.count)"
+                }
                 startId = store.points.first?.id ?? ""
-                importMessage = "已导入 \(store.points.count) 个点位" + (store.field == nil ? "" : "，含磁场数据")
+                importMessage = "已导入 \(store.points.count) 个点位" + withShelves + (store.field == nil ? "" : "，含磁场数据")
             } catch {
                 importMessage = "导入失败：\(error)"
                 AppLog.e("地磁", "导入失败：\(error)")

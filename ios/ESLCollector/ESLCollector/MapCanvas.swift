@@ -71,6 +71,10 @@ struct MapCanvas: View {
     @State private var pan: CGSize = .zero
     @State private var dragOffset: CGSize = .zero
     @State private var dragMoved = false
+    // 长按 / 双击都在同一个拖动手势里判断，不另外加手势，免得挡住双指缩放
+    @State private var touchStart: Date?
+    @State private var lastTapTime: Date?
+    @State private var lastTapLoc: CGPoint = .zero
 
     /// 画布留白（点）
     private let padding: CGFloat = 12
@@ -88,19 +92,6 @@ struct MapCanvas: View {
                 .background(Color(.secondarySystemBackground))
                 .contentShape(Rectangle())
                 .gesture(dragGesture(extent: extent, size: geo.size))
-                .simultaneousGesture(
-                    LongPressGesture(minimumDuration: 0.5)
-                        .sequenced(before: DragGesture(minimumDistance: 0))
-                        .onEnded { value in
-                            guard let onLongPress, !headingEditing else { return }
-                            if case .second(true, let drag?) = value {
-                                onLongPress(transform(extent: extent, size: geo.size).toMap(drag.location))
-                            }
-                        }
-                )
-                .simultaneousGesture(
-                    SpatialTapGesture(count: 2).onEnded { _ in onDoubleTap?() }
-                )
                 .simultaneousGesture(
                     MagnificationGesture()
                         .onChanged { v in pinch = v }
@@ -145,6 +136,7 @@ struct MapCanvas: View {
     private func dragGesture(extent: CGRect, size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { v in
+                if touchStart == nil { touchStart = Date() }
                 if headingEditing, let onHeadingPoint {
                     onHeadingPoint(transform(extent: extent, size: size).toMap(v.location))
                     return
@@ -153,6 +145,8 @@ struct MapCanvas: View {
                 if dragMoved { dragOffset = v.translation }
             }
             .onEnded { v in
+                let held = touchStart.map { Date().timeIntervalSince($0) } ?? 0
+                touchStart = nil
                 if headingEditing {
                     dragOffset = .zero
                     dragMoved = false
@@ -161,9 +155,23 @@ struct MapCanvas: View {
                 if dragMoved {
                     pan.width += v.translation.width
                     pan.height += v.translation.height
-                } else if let onTap {
+                } else {
                     let t = transform(extent: extent, size: size)
-                    onTap(t.toMap(v.startLocation))
+                    let now = Date()
+                    if held >= 0.5, let onLongPress {
+                        // 长按：按住不动 0.5 s 以上，松手时生效
+                        onLongPress(t.toMap(v.startLocation))
+                        lastTapTime = nil
+                    } else if let onDoubleTap, let last = lastTapTime,
+                              now.timeIntervalSince(last) < 0.4,
+                              hypot(v.startLocation.x - lastTapLoc.x, v.startLocation.y - lastTapLoc.y) < 30 {
+                        lastTapTime = nil
+                        onDoubleTap()
+                    } else {
+                        lastTapTime = now
+                        lastTapLoc = v.startLocation
+                        onTap?(t.toMap(v.startLocation))
+                    }
                 }
                 dragOffset = .zero
                 dragMoved = false

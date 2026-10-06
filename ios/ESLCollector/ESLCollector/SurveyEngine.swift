@@ -367,7 +367,7 @@ final class SurveyEngine: ObservableObject {
         coverage.breakPaintStroke()
         lastError = nil
         recorder.deviceLabel = "survey"
-        recorder.recordBLE = Features.bluetooth
+        recorder.recordBLE = true          // 价签广播顺便录下来，生成磁场图时自动做成蓝牙指纹
         recorder.arbiterName = ""
         SensorArbiter.shared.claim("建图采集") { [weak self] in self?.stop() }
         recorder.setupNote = note

@@ -93,6 +93,10 @@ private final class MagPipeline {
     var shownA: Point2?
     /// 地磁滤波器当前是否有把握（没用地磁时为 true）
     var lastConverged = true
+    /// 蓝牙粗定位：价签指纹、最近几秒的读数、上次用的时间
+    var bleMap: BLEFingerprintMap?
+    var bleWindow: [(t: Int64, id: String, rssi: Double)] = []
+    var lastBleApply: Int64 = 0
     var rawLastA: Point2?
 
     // 磁场来源：地图用「原始磁力计减偏置」建的，实时也必须一样
@@ -201,6 +205,11 @@ final class MagneticEngine: ObservableObject {
 
     private let motion = MotionRecorder()
     private let ar = ARKitLogger()
+    /// 蓝牙扫描（有蓝牙指纹时才建，第一次用会问蓝牙权限）
+    private var ble: BLEScanner?
+    /// 蓝牙粗定位的位置（地图上画橙色空心圈）
+    @Published private(set) var bleEstimate: Point2?
+    @Published private(set) var bleTagsHeard = 0
     private var arRunning = false
     private let pedometer = CMPedometer()
     private let activityManager = CMMotionActivityManager()
@@ -374,6 +383,7 @@ final class MagneticEngine: ObservableObject {
         startMotion(mode: .live)
         startPedometerAndActivity()
         AppLog.i("地磁", "实时定位：打开传感器，视觉里程计 \(useVisualOdometry ? "开" : "关")，深度 \(depthMode.title)，罗盘修正 \(useCompassHeading ? "开" : "关")，地磁纠偏 \(useMagCorrection ? "开" : "关")")
+        startBLE()
     }
 
     func stopLive() {
@@ -386,6 +396,7 @@ final class MagneticEngine: ObservableObject {
             pipe.tracking = false
         }
         isTracking = false
+        stopBLE()
         searching = false
         searchStarted = nil
         headingEditing = false
@@ -566,6 +577,49 @@ final class MagneticEngine: ObservableObject {
         loc.raycaster = MagMapStore.shared.raycaster()
         loc.reset(start: start, spreadCm: 50, headingUnknown: headingUnknown, priorFraction: priorFraction)
         return loc
+    }
+
+    // MARK: 蓝牙粗定位
+
+    private func startBLE() {
+        guard let m = MagMapStore.shared.bleMap, !m.tags.isEmpty else { return }
+        let pipe = self.pipe, queue = self.queue
+        queue.sync { pipe.bleMap = m; pipe.bleWindow = []; pipe.lastBleApply = 0 }
+        if ble == nil { ble = BLEScanner() }
+        ble?.onlyESL = true
+        ble?.onReading = { r in
+            guard let id = r.eslId else { return }
+            queue.async {
+                pipe.bleWindow.append((r.tMs, id, Double(r.rssi)))
+                if pipe.bleWindow.count > 2000 { pipe.bleWindow.removeFirst(pipe.bleWindow.count - 2000) }
+            }
+        }
+        ble?.start()
+        AppLog.i("地磁", "蓝牙粗定位：已开，指纹 \(m.tags.count) 个价签")
+    }
+
+    private func stopBLE() {
+        ble?.stop()
+        ble?.onReading = nil
+        queue.async { [pipe] in pipe.bleMap = nil; pipe.bleWindow = [] }
+        bleEstimate = nil
+    }
+
+    /// 每秒一次：最近 2.5 秒听到的价签 → 粗位置 → 拉一下粒子（还没定到时多撒一些粒子过去）。在引擎队列上调用。
+    private nonisolated func bleTick(pipe: MagPipeline, tMs: Int64, loc: MagneticLocalizer) {
+        guard let m = pipe.bleMap, tMs - pipe.lastBleApply >= 1000 else { return }
+        pipe.lastBleApply = tMs
+        pipe.bleWindow.removeAll { $0.t < tMs - 2500 }
+        var acc: [String: (Double, Int)] = [:]
+        for r in pipe.bleWindow { let a = acc[r.id] ?? (0, 0); acc[r.id] = (a.0 + r.rssi, a.1 + 1) }
+        let obs = acc.mapValues { $0.0 / Double($0.1) }
+        guard let e = m.estimateByTags(obs) else { return }
+        let conv = loc.isConverged
+        // 实测（价签位置法，留一半读数检验）：中位 2.5～3.7 m，P90 约 7 m
+        loc.applyPositionPrior(e.position, sigmaCm: max(e.spreadCm, conv ? 500 : 400),
+                               weight: conv ? 0.3 : 1, injectFraction: conv ? 0 : 0.2)
+        let n = obs.count
+        Task { @MainActor in self.bleEstimate = e.position; self.bleTagsHeard = n }
     }
 
     /// 视觉重定位成功：ARKit 认出了房间，此刻相机位姿就在扫描时的坐标里，换到地图上就是精确位置和朝向。
@@ -1031,6 +1085,7 @@ final class MagneticEngine: ObservableObject {
             var unc = out.uncertaintyCm
             var est: MagneticEstimate?
             if let loc = pipe.localizer {
+                bleTick(pipe: pipe, tMs: s.tMs, loc: loc)
                 let e = loc.step(delta: delta, feature: feat, trust: pipe.trustNow)
                 est = e
                 shown = e.position
@@ -1052,6 +1107,7 @@ final class MagneticEngine: ObservableObject {
                 publishLive(pipe: pipe, tMs: s.tMs)
                 return
             }
+            bleTick(pipe: pipe, tMs: s.tMs, loc: loc)
             let est = loc.step(delta: delta, feature: feat, trust: pipe.trustNow)
             pipe.estimate = est
             emit(pipe: pipe, tMs: out.tMs, shown: est.position, unc: est.uncertaintyCm, est: est,
@@ -1117,6 +1173,7 @@ final class MagneticEngine: ObservableObject {
             guard pipe.vioAccum.length >= 20, let loc = pipe.localizer else { return }
             let step = pipe.vioAccum
             pipe.vioAccum = .zero
+            bleTick(pipe: pipe, tMs: t, loc: loc)
             let e = loc.step(delta: step, feature: pipe.latest, trust: pipe.trustNow)
             // 朝向：用地图上显示位置的移动方向（ARKit 自己的方向和地图差一个未知旋转）
             if let ls = pipe.lastShown {
@@ -1179,6 +1236,7 @@ final class MagneticEngine: ObservableObject {
             if let loc = pipe.localizer {
                 let lat = pipe.pendingLateral
                 pipe.pendingLateral = nil
+                bleTick(pipe: pipe, tMs: t, loc: loc)
                 let e = loc.step(delta: step, feature: pipe.latest, trust: pipe.trustNow, lateral: lat)
                 est = e
                 shown = e.position

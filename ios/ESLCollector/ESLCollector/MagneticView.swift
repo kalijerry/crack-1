@@ -161,6 +161,8 @@ struct MagneticView: View {
                          position: isSurvey ? survey.position : (showsTrack ? engine.position : nil),
                          headingRad: isSurvey ? survey.headingRad : engine.headingRad,
                          uncertaintyCm: isSurvey ? 0 : engine.uncertaintyCm,
+                         // 蓝牙粗定位：和显示位置差得远时画橙色空心圈
+                         rawEstimate: step == .live ? engine.bleEstimate : nil,
                          route: step == .live ? engine.navRoute : nil,
                          showFingerprints: false,
                          markPoints: store.points,
@@ -460,6 +462,7 @@ struct MagneticView: View {
         Section {
             if store.field != nil {
                 row("格子数", "\(store.validCells)")
+                row("蓝牙指纹", store.bleMap.map { "\($0.tags.count) 个价签" } ?? "没有（采集时录到的价签太少，或旧版本生成的）")
                 Text(store.fieldSource ?? "来源未记录（旧版本生成或导入的）").font(.caption).foregroundStyle(.secondary)
                 Button(role: .destructive) { confirmDeleteField = true } label: {
                     Label("删除当前磁场图", systemImage: "trash")
@@ -865,6 +868,9 @@ struct MagneticView: View {
                     bigButton(engine.visualAvailable ? (store.field != nil ? "自动定位（视觉 + 地磁）" : "自动定位（视觉认房间）")
                                                      : "自动定位（不知道我在哪）",
                               name: "实时·自动定位") { engine.startColdSearch() }
+                }
+                if engine.phase == .live && store.bleMap != nil {
+                    row("蓝牙粗定位", engine.bleEstimate == nil ? "等价签信号…" : "听到 \(engine.bleTagsHeard) 个价签（橙色圈）").font(.footnote)
                 }
                 if engine.visualFixes > 0 {
                     row("视觉定位", "成功 \(engine.visualFixes) 次").font(.footnote)

@@ -53,6 +53,8 @@ final class SurveyMapService: ObservableObject {
         AppLog.i("建图", "手机上生成磁场图：\(urls.count) 个会话")
         Task.detached(priority: .userInitiated) {
             let b = SurveyMapBuilder(widthCm: widthCm, heightCm: heightCm, crosses: crosses)
+            let bb = BLEFingerprintBuilder(widthCm: widthCm, heightCm: heightCm)
+            var bleUsed = 0
             var out: [String] = []
             var total = 0
             for u in urls {
@@ -60,6 +62,8 @@ final class SurveyMapService: ObservableObject {
                     let s = try SurveySessionLoader.load(u)
                     let r = b.add(s)
                     total += r.samplesUsed
+                    // 蓝牙自动指纹：价签读数按时间放到对齐好的轨迹上
+                    bleUsed += bb.add(samples: SurveySessionLoader.loadBLE(u), track: r.track)
                     var line = "\(u.lastPathComponent)：\(r.samplesUsed) 个样本"
                     if let a = r.corridorResidualBefore, let c = r.corridorResidualAfter {
                         line += "，离通道中心 \(Int(a)) → \(Int(c)) cm"
@@ -72,6 +76,9 @@ final class SurveyMapService: ObservableObject {
                 }
             }
             let field = total > 0 ? b.build() : nil
+            let bleMap = bb.build()
+            let ble: BLEFingerprintMap? = bleMap.tags.count >= 20 ? bleMap : nil
+            out.append(ble.map { "蓝牙指纹：\($0.tags.count) 个价签，\(bleUsed) 条读数" } ?? "蓝牙指纹：价签读数太少（\(bleUsed) 条），不启用")
             let valid = b.field.validCells()
             await MainActor.run {
                 self.running = false
@@ -84,7 +91,7 @@ final class SurveyMapService: ObservableObject {
                 let df = DateFormatter()
                 df.dateFormat = "MM-dd HH:mm"
                 let names = urls.map { $0.lastPathComponent.replacingOccurrences(of: "ios_survey_", with: "") }
-                MagMapStore.shared.applyBuilt(f, source: "\(urls.count) 个会话（\(names.joined(separator: "、"))），\(df.string(from: Date())) 生成")
+                MagMapStore.shared.applyBuilt(f, source: "\(urls.count) 个会话（\(names.joined(separator: "、"))），\(df.string(from: Date())) 生成", ble: ble)
                 self.lines.append("完成：有数据的格子 \(valid) 个（补齐后 \(f.coveredCells)），已启用")
                 AppLog.i("建图", "手机上生成磁场图完成：样本 \(total)，有效格 \(valid)，补齐后 \(f.coveredCells)")
             }

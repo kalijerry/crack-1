@@ -16,6 +16,24 @@ final class MagMapStore: ObservableObject {
     @Published private(set) var field: MagneticFieldMap?
     /// 当前磁场图从哪来（例如「2 个会话：…，10-06 16:20」），界面上显示，删除时清掉
     @Published private(set) var fieldSource: String? = UserDefaults.standard.string(forKey: "magFieldSource")
+    /// 蓝牙自动指纹（建图采集时顺便录的价签信号，和磁场图一起生成）；定位时当粗定位
+    @Published private(set) var bleMap: BLEFingerprintMap? = MagMapStore.loadBLE()
+
+    nonisolated static var bleURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ble-fingerprint.json")
+    }
+
+    private static func loadBLE() -> BLEFingerprintMap? {
+        guard let d = try? Data(contentsOf: bleURL) else { return nil }
+        return try? JSONDecoder().decode(BLEFingerprintMap.self, from: d)
+    }
+
+    private func setBLE(_ m: BLEFingerprintMap?) {
+        bleMap = m
+        if let m, let d = try? JSONEncoder().encode(m) { try? d.write(to: Self.bleURL, options: .atomic) }
+        else { try? FileManager.default.removeItem(at: Self.bleURL) }
+    }
     @Published private(set) var sampleCount = 0
     @Published private(set) var validCells = 0
     @Published private(set) var lastError: String?
@@ -127,6 +145,7 @@ final class MagMapStore: ObservableObject {
             refreshField()
         }
         fieldSource = UserDefaults.standard.string(forKey: "magFieldSource")
+        bleMap = Self.loadBLE()
     }
 
     func setMapUpBearing(_ deg: Double?) {
@@ -185,11 +204,12 @@ final class MagMapStore: ObservableObject {
     }
 
     /// 启用手机上（SurveyMapBuilder）建出来的磁场图：替换当前磁场数据，来源是原始磁力计减偏置。
-    func applyBuilt(_ f: MagneticFieldMap, source: String? = nil) {
+    func applyBuilt(_ f: MagneticFieldMap, source: String? = nil, ble: BLEFingerprintMap? = nil) {
         builder.reset()
         importedField = f
         magSource = "raw"
         setFieldSource(source)
+        setBLE(ble)
         refreshField()
         save()
     }
@@ -199,9 +219,10 @@ final class MagMapStore: ObservableObject {
         builder.reset()
         importedField = nil
         setFieldSource(nil)
+        setBLE(nil)
         refreshField()
         save()
-        AppLog.w("地磁", "已删除磁场图")
+        AppLog.w("地磁", "已删除磁场图（连同蓝牙指纹）")
     }
 
     private func setFieldSource(_ s: String?) {

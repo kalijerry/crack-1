@@ -16,8 +16,10 @@ import UniformTypeIdentifiers
 @MainActor
 struct MagneticView: View {
     enum Step: String, CaseIterable, Identifiable {
-        case map = "地图点位", live = "实时定位", survey = "建图采集", advanced = "高级"
+        case map = "地图", survey = "采集", live = "定位", advanced = "实验功能"
         var id: String { rawValue }
+        /// 顶部分段只放主流程；「实验功能」从地图页进入
+        static var main: [Step] { [.map, .survey, .live] }
     }
 
     @StateObject private var engine = MagneticEngine()
@@ -58,7 +60,7 @@ struct MagneticView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 Picker("步骤", selection: $step) {
-                    ForEach(Step.allCases) { Text($0.rawValue).tag($0) }
+                    ForEach(Step.main) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
@@ -83,6 +85,11 @@ struct MagneticView: View {
                         arSection
                         surveyPanel
                     case .advanced:
+                        Section {
+                            Button("返回地图") { step = .map }
+                            Text("这里是早期的对照功能：按点位走一遍建磁场图，以及只用计步的定位（误差大）。日常请用「采集」和「定位」。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
                         calibratePanel
                         locatePanel
                     }
@@ -360,10 +367,18 @@ struct MagneticView: View {
                     .multilineTextAlignment(.trailing)
                     .frame(width: 90)
                     .onSubmit { store.setMapUpBearing(Double(mapUpText.trimmingCharacters(in: .whitespaces))) }
+                    .onChange(of: mapUpText) { t in
+                        // 输入即保存：不用非得按键盘上的完成
+                        let v = Double(t.trimmingCharacters(in: .whitespaces))
+                        if let v, v >= 0, v < 360 { store.setMapUpBearing(v) } else if t.isEmpty { store.setMapUpBearing(nil) }
+                    }
                 Text("°")
             }
             Text("地图上方指向的罗盘方位（0 = 北，90 = 东）。填了之后，自动定位会先按这个方向猜，更快找到你；不填也能用，只是慢一些。")
                 .font(.footnote).foregroundStyle(.secondary)
+            LoggedButton(name: "实验功能", detail: "进入") { step = .advanced } label: {
+                Label("实验功能：按点位建图 / 只用计步定位", systemImage: "flask")
+            }
             Stepper("3D 货架高度 \(Fmt.f(shelfHeight3D, 1)) m", value: $shelfHeight3D, in: 0.8...3.0, step: 0.2)
                 .onChange(of: shelfHeight3D) { _ in sync3D(full: false) }
             Text("右上角的「3D」按钮切换立体视图：单指转、双指缩放和平移。立体视图里不能定点，回到 2D 操作。")

@@ -143,8 +143,8 @@ final class MagneticEngine: ObservableObject {
     @Published private(set) var uncertaintyCm: Double = 0
     /// 用磁罗盘持续修正航向。钢货架附近罗盘常偏，默认关，只靠陀螺。
     @Published var useCompassHeading = false
-    /// 有磁场地图时，用地磁粒子滤波纠偏。
-    @Published var useMagCorrection = false
+    /// 有磁场地图时，用地磁粒子滤波纠偏。默认打开（没有磁场图时自然不生效）。
+    @Published var useMagCorrection = true
     /// 用摄像头 + ARKit 视觉里程计做运动模型（取代计步）。丢跟踪时自动退回计步。
     @Published var useVisualOdometry = true
     /// 激光雷达测左右货架距离：关 / 只记录（用来核对）/ 参与定位。
@@ -757,6 +757,15 @@ final class MagneticEngine: ObservableObject {
             guard let self else { return }
             self.queue.async { self.handleIMU(s, pipe: pipe) }
         }
+        SensorArbiter.shared.claim("地磁定位") { [weak self] in
+            guard let self else { return }
+            switch self.phase {
+            case .calibrating: self.finishCalibration(keep: false)
+            case .live: self.stopLive()
+            case .localizing: self.stopLocalizing()
+            case .idle: break
+            }
+        }
         motion.start(hz: 50)
         // 原始磁力计：和校准后磁场的差就是系统当前估计的偏置，用来发现重新校准
         if motion.manager.isMagnetometerAvailable && mode != .calibrating {
@@ -792,6 +801,7 @@ final class MagneticEngine: ObservableObject {
     }
 
     private func stopMotion() {
+        SensorArbiter.shared.release("地磁定位")
         motion.stop()
         motion.onSample = nil
         motion.manager.stopMagnetometerUpdates()
@@ -1092,7 +1102,14 @@ final class MagneticEngine: ObservableObject {
         if !headingEditing { headingRad = heading }
         stepCount = steps
         feature = f
-        position = p
+        // 显示平滑：小步移动取一半，蓝点连续滑动而不是一跳一跳；大跳（滤波切到别的簇、手动修正）直接到位
+        let shown: Point2
+        if let prev = position, prev.distance(to: p) < 300 {
+            shown = prev + (p - prev) * 0.5
+        } else {
+            shown = p
+        }
+        position = shown
         if let last = trail.last, last.distance(to: p) < 15 {
             // 太近不记
         } else {

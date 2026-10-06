@@ -94,6 +94,8 @@ final class MagMapStore: ObservableObject {
     }
 
     func setMapUpBearing(_ deg: Double?) {
+        let norm = deg.map { (($0.truncatingRemainder(dividingBy: 360)) + 360).truncatingRemainder(dividingBy: 360) }
+        guard norm != mapUpBearingDeg else { return }
         mapUpBearingDeg = deg.map { (($0.truncatingRemainder(dividingBy: 360)) + 360).truncatingRemainder(dividingBy: 360) }
         save()
         AppLog.i("地磁", "地图朝向：" + (mapUpBearingDeg.map { "上方指向 \(Fmt.f($0, 0))°" } ?? "未设置"))

@@ -87,6 +87,8 @@ final class Recorder: ObservableObject {
     /// 额外写进 meta.json 的字段（建图采集用）。
     var extraMeta: [String: Any] = [:]
     var currentSessionDir: URL? { sessionDir }
+    /// 向 SensorArbiter 申请传感器时用的名字；为空表示由外层（建图采集）自己申请
+    var arbiterName = "采集"
     /// 保护壳 / MagSafe 附件 / 手持姿态等备注，写入 meta.json（地磁对这些很敏感）。
     @Published var setupNote = ""
 
@@ -131,6 +133,9 @@ final class Recorder: ObservableObject {
 
     func startRecording() {
         guard !isRecording else { return }
+        if !arbiterName.isEmpty {
+            SensorArbiter.shared.claim(arbiterName) { [weak self] in self?.stopRecording() }
+        }
         lastError = nil
         do {
             let fmt = DateFormatter()
@@ -218,6 +223,7 @@ final class Recorder: ObservableObject {
         marksWriter = nil
         UIApplication.shared.isIdleTimerDisabled = false
         isRecording = false
+        if !arbiterName.isEmpty { SensorArbiter.shared.release(arbiterName) }
         AppLog.i("采集", "停止录制：BLE \(bleRows) 行，IMU \(imuRows) 行，打点 \(markCount) 次")
         AppLog.shared.stopMirroring()
     }

@@ -188,6 +188,8 @@ final class SurveyEngine: ObservableObject {
         coverage.configure(crosses: store.crosses)
         lastError = nil
         recorder.deviceLabel = "survey"
+        recorder.arbiterName = ""
+        SensorArbiter.shared.claim("建图采集") { [weak self] in self?.stop() }
         recorder.setupNote = note
         recorder.extraMeta = [
             "survey": true,
@@ -248,6 +250,7 @@ final class SurveyEngine: ObservableObject {
         coverage.save()
         stage = .idle
         headingEditing = false
+        SensorArbiter.shared.release("建图采集")
         UIApplication.shared.isIdleTimerDisabled = false
         AppLog.i("建图", "结束：走了 \(Fmt.f(totalWalkedM, 0)) m，修正 \(anchorCount) 次")
     }

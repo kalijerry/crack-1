@@ -293,22 +293,16 @@ struct MapCanvas: View {
             ctx.stroke(p, with: .color(Color.blue.opacity(0.35)), lineWidth: 0.6)
         }
 
-        // 其他元素（柱子等）：浅浅画一下
-        for o in m.others {
-            let path = Self.rectPath(cx: o.x, cy: o.y, w: o.width, h: o.height, rotation: o.rotation, t: t)
-            ctx.fill(path, with: .color(.gray.opacity(0.18)))
-        }
-
-        // 货架：旋转矩形。标准货架（实物）实心；虚拟货架和非标准编码只画很淡的轮廓
-        for s in m.shelves {
-            let path = Self.rectPath(cx: s.x, cy: s.y, w: s.width, h: s.height, rotation: s.rotation, t: t)
-            if s.kind == .standard {
-                ctx.fill(path, with: .color(.gray.opacity(0.35)))
-                ctx.stroke(path, with: .color(.gray.opacity(0.7)), lineWidth: 0.6)
-            } else {
-                ctx.stroke(path, with: .color(.gray.opacity(0.25)), lineWidth: 0.4)
-            }
-        }
+        // 其他元素和货架：几千个矩形预先合成三条路径（地图坐标，缓存），每帧只做一次缩放平移再画，
+        // 不再逐个画几千次（拖动大图时这是主要开销）
+        let cached = ShelfPathCache.shared.paths(for: m)
+        var mc = ctx
+        mc.concatenate(CGAffineTransform(a: CGFloat(t.scale), b: 0, c: 0, d: CGFloat(t.scale), tx: t.origin.x, ty: t.origin.y))
+        let px = 1 / CGFloat(Swift.max(t.scale, 1e-6))          // 1 屏幕点对应的地图长度
+        mc.fill(cached.others, with: .color(.gray.opacity(0.18)))
+        mc.fill(cached.standard, with: .color(.gray.opacity(0.35)))
+        mc.stroke(cached.standard, with: .color(.gray.opacity(0.7)), lineWidth: 0.6 * px)
+        mc.stroke(cached.nonStandard, with: .color(.gray.opacity(0.25)), lineWidth: 0.4 * px)
 
         // 指纹点
         if showFingerprints {
@@ -469,5 +463,30 @@ struct MapCanvas: View {
         for c in corners.dropFirst() { path.addLine(to: t.toScreen(c)) }
         path.closeSubpath()
         return path
+    }
+}
+
+
+/// 把地图里几千个矩形合成三条路径（地图坐标，cm），按地图缓存。
+final class ShelfPathCache {
+    static let shared = ShelfPathCache()
+    private var key = ""
+    private var cached = (standard: Path(), nonStandard: Path(), others: Path())
+
+    func paths(for m: StoreMap) -> (standard: Path, nonStandard: Path, others: Path) {
+        let k = "\(Int(m.width))x\(Int(m.height))/\(m.shelves.count)/\(m.others.count)/\(m.shelves.first?.x ?? 0)"
+        if k == key { return cached }
+        let id = MapTransform(scale: 1, origin: .zero)
+        var std = Path(), non = Path(), oth = Path()
+        for s in m.shelves {
+            let p = MapCanvas.rectPath(cx: s.x, cy: s.y, w: s.width, h: s.height, rotation: s.rotation, t: id)
+            if s.kind == .standard { std.addPath(p) } else { non.addPath(p) }
+        }
+        for o in m.others {
+            oth.addPath(MapCanvas.rectPath(cx: o.x, cy: o.y, w: o.width, h: o.height, rotation: o.rotation, t: id))
+        }
+        cached = (std, non, oth)
+        key = k
+        return cached
     }
 }

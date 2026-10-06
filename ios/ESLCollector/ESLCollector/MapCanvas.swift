@@ -57,6 +57,8 @@ struct MapCanvas: View {
     var highlightId: String?
     /// 画 1 m 方格（没有货架的小测试区用）
     var gridCm: Double?
+    /// 每条通道的采集进度 0...1（数量须与 map.crosses 一致）；用来给通道上色
+    var crossCoverage: [Double] = []
     var showHeading = true
     /// 设朝向中：箭头画长、橙色；拖动 / 点击不再平移，而是把方向交给 onHeadingPoint
     var headingEditing = false
@@ -252,14 +254,20 @@ struct MapCanvas: View {
         }
 
         // 通道：半透明粗线
-        for c in m.crosses {
+        let colored = crossCoverage.count == m.crosses.count && !crossCoverage.isEmpty
+        for (i, c) in m.crosses.enumerated() {
             var p = Path()
             p.move(to: t.toScreen(c.a))
             p.addLine(to: t.toScreen(c.b))
             let w = Swift.max(t.len(c.lineWidth), 1.5)
-            ctx.stroke(p, with: .color(.blue.opacity(0.14)),
+            var base = Color.blue
+            if colored {
+                let f = crossCoverage[i]
+                base = f >= 0.9 ? .green : (f >= 0.25 ? .orange : .red)
+            }
+            ctx.stroke(p, with: .color(base.opacity(colored ? 0.30 : 0.14)),
                        style: StrokeStyle(lineWidth: w, lineCap: .round))
-            ctx.stroke(p, with: .color(.blue.opacity(0.35)), lineWidth: 0.6)
+            ctx.stroke(p, with: .color(base.opacity(colored ? 0.7 : 0.35)), lineWidth: 0.6)
         }
 
         // 其他元素（柱子等）：浅浅画一下

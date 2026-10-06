@@ -8,11 +8,12 @@ import UniformTypeIdentifiers
 @MainActor
 struct MagneticView: View {
     enum Step: String, CaseIterable, Identifiable {
-        case map = "地图点位", live = "实时定位", advanced = "高级"
+        case map = "地图点位", live = "实时定位", survey = "建图采集", advanced = "高级"
         var id: String { rawValue }
     }
 
     @StateObject private var engine = MagneticEngine()
+    @StateObject private var survey = SurveyEngine()
     @ObservedObject private var store = MagMapStore.shared
     @ObservedObject private var storeData = StoreDataStore.shared
 
@@ -24,6 +25,8 @@ struct MagneticView: View {
     @State private var checkId = ""
     @State private var confirmClearPoints = false
     @State private var confirmClearCal = false
+    @State private var confirmResetCoverage = false
+    @State private var surveyNote = ""
 
     var body: some View {
         NavigationStack {
@@ -34,7 +37,7 @@ struct MagneticView: View {
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
                 .padding(.vertical, 8)
-                .disabled(engine.phase != .idle)
+                .disabled(engine.phase != .idle || survey.isRunning)
                 .onChange(of: step) { AppLog.tap("地磁·步骤", $0.rawValue) }
 
                 canvas
@@ -48,6 +51,7 @@ struct MagneticView: View {
                     switch step {
                     case .map: mapPanel
                     case .live: livePanel
+                    case .survey: surveyPanel
                     case .advanced:
                         calibratePanel
                         locatePanel
@@ -65,6 +69,7 @@ struct MagneticView: View {
             if startId.isEmpty { startId = store.points.first?.id ?? "" }
         }
         .onChange(of: storeData.map?.crosses.count) { _ in store.adopt(map: storeData.map) }
+        .onAppear { survey.coverage.configure(crosses: store.crosses) }
     }
 
     // MARK: 画布
@@ -76,24 +81,30 @@ struct MagneticView: View {
     }
 
     private var canvas: some View {
+        let isSurvey = step == .survey
         let showsTrack = step != .map
         let live = step == .live && engine.phase == .live
+        let surveying = isSurvey && survey.isRunning
         return MapCanvas(map: canvasMap,
                          fingerprints: [],
-                         trail: showsTrack ? engine.trail : [],
-                         position: showsTrack ? engine.position : nil,
-                         headingRad: engine.headingRad,
-                         uncertaintyCm: engine.uncertaintyCm,
+                         trail: isSurvey ? survey.trail : (showsTrack ? engine.trail : []),
+                         position: isSurvey ? survey.position : (showsTrack ? engine.position : nil),
+                         headingRad: isSurvey ? survey.headingRad : engine.headingRad,
+                         uncertaintyCm: isSurvey ? 0 : engine.uncertaintyCm,
                          showFingerprints: false,
                          markPoints: store.points,
-                         targetId: showsTrack ? engine.targetId : nil,
+                         targetId: showsTrack && !isSurvey ? engine.targetId : nil,
                          highlightId: calibrationHighlight,
                          gridCm: storeData.map == nil ? 100 : nil,
-                         showHeading: !live || engine.isTracking || engine.headingEditing,
-                         headingEditing: live && engine.headingEditing,
+                         crossCoverage: isSurvey ? survey.coverage.fractions : [],
+                         showHeading: isSurvey ? (survey.stage != .needPosition)
+                             : (!live || engine.isTracking || engine.headingEditing),
+                         headingEditing: isSurvey ? survey.headingEditing : (live && engine.headingEditing),
                          onLongPress: longPressAction,
-                         onDoubleTap: live ? { engine.toggleHeadingEdit() } : nil,
-                         onHeadingPoint: live ? { engine.pointHeading(toward: $0) } : nil)
+                         onDoubleTap: surveying ? { survey.toggleHeadingEdit() }
+                             : (live ? { engine.toggleHeadingEdit() } : nil),
+                         onHeadingPoint: surveying ? { survey.pointHeading(toward: $0) }
+                             : (live ? { engine.pointHeading(toward: $0) } : nil))
     }
 
     private var longPressAction: ((Point2) -> Void)? {
@@ -106,6 +117,8 @@ struct MagneticView: View {
             }
         case .live:
             return engine.phase == .live && !engine.headingEditing ? { engine.setAnchor($0) } : nil
+        case .survey:
+            return survey.isRunning && !survey.headingEditing ? { survey.anchor(at: $0) } : nil
         case .advanced:
             return nil
         }
@@ -159,6 +172,82 @@ struct MagneticView: View {
                     }
             }
         } header: { Text("点位 \(store.points.count)（左滑删除）") }
+    }
+
+    // MARK: 建图采集
+
+    @ViewBuilder private var surveyPanel: some View {
+        let rec = survey.recorder
+        Section {
+            if !survey.isRunning {
+                if !store.usesStoreMap {
+                    Text("建图采集需要门店地图：先到「门店数据」页导入地图。").foregroundStyle(.orange)
+                }
+                TextField("备注：保护壳 / 手持姿态 / 营业状态", text: $surveyNote)
+                    .autocorrectionDisabled()
+                bigButton("开始建图采集", name: "建图·开始") { survey.start(note: surveyNote) }
+                    .disabled(!store.usesStoreMap)
+            } else {
+                Text(surveyInstruction).font(.callout)
+                bigButton("结束采集", name: "建图·结束") { survey.stop() }.tint(.red)
+            }
+            if let err = survey.lastError { Text(err).font(.footnote).foregroundStyle(.red) }
+        } header: { Text("建图采集") } footer: {
+            if !survey.isRunning {
+                Text("手机保持竖着、摄像头朝前下方（像 AR 那样）。每走约 30 m，或到路口，长按地图修正一次位置。录制的是全部传感器 + ARKit 位姿，回电脑用 tools/magmap.py 建磁场图。")
+            }
+        }
+
+        if survey.isRunning {
+            Section("状态") {
+                HStack {
+                    Text("ARKit 跟踪")
+                    Spacer()
+                    Text(survey.trackingState == 2 ? "正常" : (survey.trackingState == 1 ? "受限" : "不可用"))
+                        .fontWeight(.semibold)
+                        .foregroundStyle(survey.trackingState == 2 ? .green : .red)
+                }
+                HStack {
+                    Text("磁场精度")
+                    Spacer()
+                    Text(Self.accuracyText(rec.magAccuracy)).fontWeight(.semibold)
+                        .foregroundStyle(rec.magAccuracy >= 2 ? .green : .orange)
+                }
+                row("原始磁力计", "\(rec.magRawHz) Hz · IMU \(rec.imuHz) Hz")
+                row("已走 / 距上次修正", "\(Int(survey.totalWalkedM)) m / \(Int(survey.walkedSinceAnchorM)) m")
+                row("修正次数", "\(survey.anchorCount)")
+                if let n = survey.sessionName { row("会话", n).font(.footnote) }
+                if survey.walkedSinceAnchorM > SurveyEngine.anchorEveryM {
+                    Text("已经走了超过 \(Int(SurveyEngine.anchorEveryM)) m，找个路口或已知点长按地图修正。")
+                        .font(.footnote).foregroundStyle(.orange)
+                }
+            }
+        }
+
+        Section {
+            let total = survey.coverage.totalMeters
+            let done = survey.coverage.coveredMeters
+            row("已覆盖（双向算满）", "\(Int(done)) / \(Int(total)) m")
+            ProgressView(value: total > 0 ? done / total : 0)
+            Text("地图上通道颜色：红 = 没走，橙 = 走了一部分或只走了一个方向，绿 = 双向都走完。")
+                .font(.footnote).foregroundStyle(.secondary)
+            if !survey.isRunning {
+                Button("清空采集进度", role: .destructive) { confirmResetCoverage = true }
+                    .confirmationDialog("清空采集进度？已录的会话文件不受影响。", isPresented: $confirmResetCoverage, titleVisibility: .visible) {
+                        Button("清空", role: .destructive) { survey.resetCoverage() }
+                    }
+            }
+        } header: { Text("采集进度") }
+    }
+
+    private var surveyInstruction: String {
+        switch survey.stage {
+        case .needPosition: return "长按地图：我现在在这里。找一个路口或已知点位站着。"
+        case .needHeading: return "双击地图，然后在地图上点或拖动，让橙色箭头指向你要走的方向，再双击确定。"
+        case .aligning: return "朝箭头方向直线走 1.5 m，App 会自动对齐 ARKit 轨迹。"
+        case .tracking: return "沿通道走。到路口、或约 30 m 一次，长按地图修正位置。要换方向时双击重设朝向。"
+        case .idle: return ""
+        }
     }
 
     // MARK: 实时定位：校准传感器 → 长按定点 → 双击设朝向 → 走

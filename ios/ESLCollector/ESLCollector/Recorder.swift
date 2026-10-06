@@ -84,6 +84,9 @@ final class Recorder: ObservableObject {
     @Published var imuRows = 0
     @Published var magRawHz = 0
     @Published var magRawRows = 0
+    /// 额外写进 meta.json 的字段（建图采集用）。
+    var extraMeta: [String: Any] = [:]
+    var currentSessionDir: URL? { sessionDir }
     /// 保护壳 / MagSafe 附件 / 手持姿态等备注，写入 meta.json（地磁对这些很敏感）。
     @Published var setupNote = ""
 
@@ -307,6 +310,7 @@ final class Recorder: ObservableObject {
             "mag_raw_convention": "uT, CMMagnetometerData: device frame, NOT bias-corrected; calibrated field is in imu.csv mx..mz",
             "imu_convention": "android: acc m/s^2 incl. gravity (+z up when flat), gyro rad/s, mag uT calibrated",
         ]
+        for (k, v) in extraMeta { meta[k] = v }
         if let endMs { meta["end_ms"] = endMs }
         let data = try JSONSerialization.data(withJSONObject: meta, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: dir.appendingPathComponent("meta.json"))

@@ -301,6 +301,8 @@ final class SurveyEngine: ObservableObject {
     // 地磁定位（和采集一起跑）：自动起点 + 精度测试
     /// 采集的同时测地磁定位精度（需要已经有磁场图）
     @Published var evaluate = false
+    /// 这次是「测试会话」：只用来测精度，不参与生成磁场图（避免自己考自己）
+    @Published var isTestSession = false
     @Published private(set) var shadowStatus: String?
     @Published private(set) var evalSummary: String?
     private(set) var evaluator = LocalizationEvaluator()
@@ -375,6 +377,7 @@ final class SurveyEngine: ObservableObject {
             "survey": true,
             "map_width_cm": store.widthCm, "map_height_cm": store.heightCm,
             "map_id": MapLibrary.shared.activeId ?? "",
+            "purpose": isTestSession ? "test" : "build",
             "arkit": true,
             "arkit_frame": "gravity-aligned, x right, y up, z toward viewer; map = pRef + R(phi)(a - aRef), a = (x, z) cm",
         ]
@@ -445,6 +448,9 @@ final class SurveyEngine: ObservableObject {
         headingEditing = false
         SensorArbiter.shared.release("建图采集")
         UIApplication.shared.isIdleTimerDisabled = false
+        if Telemetry.shared.enabled && Telemetry.shared.autoUpload, let dir = lastSessionDir {
+            Task { _ = await Telemetry.shared.upload(sessionDir: dir) }
+        }
         AppLog.i("建图", "结束：走了 \(Fmt.f(totalWalkedM, 0)) m，修正 \(anchorCount) 次，自动贴通道 \(lockFixes) 次"
                  + (lock.map { "（累计转 \(Fmt.f($0.totalAbsAngle * 180 / Double.pi, 1))°）" } ?? ""))
     }

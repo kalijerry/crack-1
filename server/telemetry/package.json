@@ -1,0 +1,13 @@
+{
+  "name": "hpass-telemetry",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check": "node --check src/hub.js"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  }
+}

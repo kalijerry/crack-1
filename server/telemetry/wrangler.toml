@@ -1,0 +1,23 @@
+# 地磁定位云端后台：接收 App 的实时日志 / 状态（WebSocket）、上传的会话和地图，网页看板。
+# 部署见 README.md。
+name = "hpass-telemetry"
+main = "src/index.js"
+
+# 看板网页按文本模块打包进 Worker
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = false
+compatibility_date = "2026-09-01"
+
+[[durable_objects.bindings]]
+name = "HUB"
+class_name = "Hub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Hub"]
+
+[[r2_buckets]]
+binding = "DATA"
+bucket_name = "hpass-data"

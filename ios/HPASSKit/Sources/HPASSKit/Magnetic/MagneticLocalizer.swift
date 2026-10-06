@@ -44,8 +44,11 @@ public struct MagneticConfig {
     public var featureWeights: (Double, Double, Double) = (1.0, 1.0, 0.5)
     /// 对数似然除以这个温度，抵消特征之间的相关性造成的过度自信。
     public var likelihoodTemperature: Double = 1.5
-    /// 粒子所在位置没有地图数据时的对数似然惩罚。
-    public var missingDataPenalty: Double = -4
+    /// 粒子所在位置没有地图数据时的对数似然惩罚。要比「在对的地方但读数有点对不上」重得多，
+    /// 否则粒子会跑到没采集过的地方去（实测：−4 时估计会跳到一百多米外）。
+    public var missingDataPenalty: Double = -20
+    /// 步长比例的上下限。计步在手机竖拿时可能少算三成，所以给足范围。
+    public var scaleRange: ClosedRange<Double> = 0.6...1.7
 
     /// 通道约束：新位置不在可走区域、或中途穿过货架时的对数惩罚。
     public var blockedPenalty: Double = -4
@@ -60,6 +63,15 @@ public struct MagneticConfig {
     public var lateralSigmaCm: Double = 35
     /// 超过这个距离的墙不参与比较（深度相机量程之外）。
     public var lateralMaxCm: Double = 450
+
+    /// 已收敛后，估计位置想跳到 `jumpGateCm` 以外的另一个簇，要连续 `jumpConfirmUpdates` 次更新都指向那里才切换；
+    /// 期间继续跟着原来的簇走。防止一两次读数异常（比如系统重新校准磁力计）就把位置甩到别处。
+    public var jumpGateCm: Double = 300
+    public var jumpConfirmUpdates: Int = 6
+    /// 原来的簇权重占比低于这个值，就不再坚持，立刻切换。
+    public var keepClusterMinMass: Double = 0.12
+    /// 已收敛时注入随机粒子的比例（没收敛时用 `randomInjection`）。
+    public var randomInjectionConverged: Double = 0.003
 
     /// 有效粒子数低于 N × 该比例时重采样。
     public var resampleThreshold: Double = 0.5
@@ -141,6 +153,14 @@ public final class MagneticLocalizer {
     private var lowStreak = 0
     private var firstUpdateDone = false
     private var headingUnknown = false
+    /// 有磁场数据（并且能走）的格子中心，冷启动撒点和跟丢后注入粒子都只在这里面。
+    private var mappedCells: [Point2] = []
+    /// 当前认定的位置（簇中心）。跳到远处另一个簇需要连续确认。
+    private var committed: Point2?
+    private var switchStreak = 0
+    /// 收敛判定要求「簇的移动和实际走的一致」：上次更新时的簇中心，以及之后累计的平均位移。
+    private var lastCenter: Point2?
+    private var motionSinceUpdate = Point2.zero
 
     public init(field: MagneticFieldMap, walkable: WalkableMap? = nil,
                 config: MagneticConfig = .init(), seed: UInt64 = 1) {
@@ -148,10 +168,27 @@ public final class MagneticLocalizer {
         self.walkable = walkable
         self.config = config
         self.rng = MagRNG(seed: seed)
+        for j in 0..<field.rows {
+            for i in 0..<field.cols {
+                let c = Point2((Double(i) + 0.5) * field.cellCm, (Double(j) + 0.5) * field.cellCm)
+                guard field.sample(at: c) != nil else { continue }
+                if let w = walkable, !w.isWalkable(c) { continue }
+                mappedCells.append(c)
+            }
+        }
         reset(start: nil)
     }
 
+    /// 有磁场数据的面积（m²），冷启动只在这里面找。
+    public var mappedAreaM2: Double { Double(mappedCells.count) * field.cellCm * field.cellCm / 10_000 }
+
     private func randomPosition() -> Point2 {
+        // 只在有磁场数据的地方找：没采集过的地方本来就没法用地磁定位
+        if !mappedCells.isEmpty {
+            let c = mappedCells[min(Int(rng.uniform() * Double(mappedCells.count)), mappedCells.count - 1)]
+            let h = field.cellCm / 2
+            return Point2(c.x + (rng.uniform() * 2 - 1) * h, c.y + (rng.uniform() * 2 - 1) * h)
+        }
         if let w = walkable, let p = w.randomPoint(u1: rng.uniform(), u2: rng.uniform(), u3: rng.uniform()) {
             return p
         }
@@ -194,6 +231,10 @@ public final class MagneticLocalizer {
         featureSum = MagneticFeature(total: 0, vertical: 0, horizontal: 0)
         featureCount = 0
         trustSum = 0
+        committed = start
+        switchStreak = 0
+        lastCenter = nil
+        motionSinceUpdate = .zero
         clearLateral()
         updateCount = 0
         lastEffectiveRatio = 1
@@ -214,7 +255,12 @@ public final class MagneticLocalizer {
             if let v = l.rightCm { latRightSum += v; latRightN += 1 }
             latHeadingSin += sin(l.headingRad); latHeadingCos += cos(l.headingRad); latN += 1
         }
-        if dist > 0 { predict(delta: delta, dist: dist) }
+        if dist > 0 {
+            predict(delta: delta, dist: dist)
+            // 认定的位置跟着粒子的平均位移走
+            if let c = committed { committed = c + meanMotion }
+            motionSinceUpdate = motionSinceUpdate + meanMotion
+        }
 
         travelledCm += dist
         if let f = feature {
@@ -283,7 +329,10 @@ public final class MagneticLocalizer {
 
     // MARK: 预测
 
+    private var meanMotion = Point2.zero
+
     private func predict(delta: Point2, dist: Double) {
+        var mx = 0.0, my = 0.0, mw = 0.0
         let distM = dist / 100
         let posSigma = config.positionNoiseFraction * dist + config.positionNoiseFloorCm
         let biasWalk = config.headingBiasWalkDegPerM * Double.pi / 180 * distM.squareRoot()
@@ -292,7 +341,7 @@ public final class MagneticLocalizer {
         let useHeading = config.corridorHeadingWeight > 0 && dist >= 10
         for i in 0..<xs.count {
             bias[i] += rng.normal() * biasWalk
-            scale[i] = min(max(scale[i] + rng.normal() * scaleWalk, 0.6), 1.5)
+            scale[i] = min(max(scale[i] + rng.normal() * scaleWalk, config.scaleRange.lowerBound), config.scaleRange.upperBound)
             let c = cos(bias[i]), s = sin(bias[i])
             let dx = (delta.x * c - delta.y * s) * scale[i]
             let dy = (delta.x * s + delta.y * c) * scale[i]
@@ -317,9 +366,12 @@ public final class MagneticLocalizer {
                     logw[i] -= config.corridorHeadingWeight * 0.5 * (d / hs) * (d / hs)
                 }
             }
+            let w = exp(logw[i])
+            mx += (np.x - old.x) * w; my += (np.y - old.y) * w; mw += w
             xs[i] = np.x
             ys[i] = np.y
         }
+        meanMotion = mw > 0 ? Point2(mx / mw, my / mw) : delta
     }
 
     // MARK: 观测更新
@@ -330,24 +382,62 @@ public final class MagneticLocalizer {
         let floor2 = config.observationSigmaFloorUT * config.observationSigmaFloorUT
         func t(_ d2: Double) -> Double { -(nu + 1) / 2 * log(1 + d2 / nu) }
 
+        // 没有地图数据的粒子：
+        // - 还没收敛（冷启动）时重罚，免得定到没采集过的地方；
+        // - 已经收敛后不奖不罚（给有数据粒子的平均似然），否则路上一个数据空洞就会把整团粒子「赶」回别处有数据的地方
+        var lls = [Double?](repeating: nil, count: xs.count)
+        var sumLL = 0.0, sumW = 0.0
         for i in 0..<xs.count {
-            guard let m = field.sample(at: Point2(xs[i], ys[i])) else {
-                logw[i] += config.missingDataPenalty
-                continue
-            }
+            guard let m = field.sample(at: Point2(xs[i], ys[i])) else { continue }
             let d0 = f.total - m.mean.total, d1 = f.vertical - m.mean.vertical, d2 = f.horizontal - m.mean.horizontal
             let v0 = m.sigma.total * m.sigma.total + floor2
             let v1 = m.sigma.vertical * m.sigma.vertical + floor2
             let v2 = m.sigma.horizontal * m.sigma.horizontal + floor2
-            let ll = w.0 * t(d0 * d0 / v0) + w.1 * t(d1 * d1 / v1) + w.2 * t(d2 * d2 / v2)
-            logw[i] += trust * ll / config.likelihoodTemperature
+            let ll = trust * (w.0 * t(d0 * d0 / v0) + w.1 * t(d1 * d1 / v1) + w.2 * t(d2 * d2 / v2)) / config.likelihoodTemperature
+            lls[i] = ll
+            let pw = exp(logw[i])
+            sumLL += pw * ll
+            sumW += pw
+        }
+        let neutral = sumW > 0 ? sumLL / sumW : 0
+        for i in 0..<xs.count {
+            if let ll = lls[i] {
+                logw[i] += ll
+            } else {
+                logw[i] += hasConverged ? neutral : config.missingDataPenalty
+            }
         }
         normalize()
         updateCount += 1
         let neff = effectiveCount()
         lastEffectiveRatio = neff / Double(xs.count)
         if lastEffectiveRatio < config.resampleThreshold { resample(to: xs.count) }
+        decideCluster()
         checkConvergence()
+    }
+
+    /// 决定认定哪个簇：离当前认定位置近就直接跟；远的另一个簇要连续确认几次才切过去。
+    private func decideCluster() {
+        let best = cluster(from: nil)
+        guard hasConverged, let c = committed else { committed = best.center; switchStreak = 0; return }
+        if best.center.distance(to: c) <= config.jumpGateCm {
+            committed = best.center
+            switchStreak = 0
+            return
+        }
+        let mine = cluster(from: c)
+        if mine.mass < config.keepClusterMinMass {
+            committed = best.center                 // 原来的簇已经快没了，不再坚持
+            switchStreak = 0
+            return
+        }
+        switchStreak += 1
+        if switchStreak >= config.jumpConfirmUpdates {
+            committed = best.center
+            switchStreak = 0
+        } else {
+            committed = mine.center
+        }
     }
 
     /// 收敛与丢失：
@@ -355,9 +445,13 @@ public final class MagneticLocalizer {
     /// - 已收敛：置信度持续很低（走进没采过的地方、磁场对不上）就算丢失，`converged` 变回 false。
     private func checkConvergence() {
         let e = estimate()
+        // 簇中心应当按实际走的方向和距离移动；凑巧在别处匹配上的「簇」会忽东忽西，不算
+        let consistent = lastCenter.map { ($0 + motionSinceUpdate).distance(to: e.position) <= 100 } ?? false
+        lastCenter = e.position
+        motionSinceUpdate = .zero
         let good = e.uncertaintyCm <= config.convergedUncertaintyCm && e.confidence >= config.convergedConfidence
         if !hasConverged {
-            convergedStreak = good ? convergedStreak + 1 : 0
+            convergedStreak = (good && consistent) ? convergedStreak + 1 : 0
             if convergedStreak >= 3 {
                 hasConverged = true
                 lowStreak = 0
@@ -414,7 +508,7 @@ public final class MagneticLocalizer {
             ns[i] = scale[j]
             u += step
         }
-        let inject = Int(Double(m) * config.randomInjection)
+        let inject = Int(Double(m) * (hasConverged ? config.randomInjectionConverged : config.randomInjection))
         for k in 0..<inject {
             let i = m - 1 - k
             let p = randomPosition()
@@ -435,33 +529,41 @@ public final class MagneticLocalizer {
 
     // MARK: 估计
 
-    public func estimate() -> MagneticEstimate {
+    /// 从 `seed` 开始（nil = 从权重总和最大的 2 m 方块开始）做均值漂移，返回簇中心、权重占比、1σ 不确定度。
+    private func cluster(from seed: Point2?) -> (center: Point2, mass: Double, unc: Double) {
         let n = xs.count
         let mx = logw.max() ?? 0
         var w = [Double](repeating: 0, count: n)
-        var best = 0
         var total = 0.0
-        for i in 0..<n {
-            w[i] = exp(logw[i] - mx)
-            total += w[i]
-            if w[i] > w[best] { best = i }
+        for i in 0..<n { w[i] = exp(logw[i] - mx); total += w[i] }
+        guard total > 0 else { return (Point2(field.widthCm / 2, field.heightCm / 2), 0, field.widthCm) }
+        var cx: Double, cy: Double
+        if let s = seed {
+            cx = s.x; cy = s.y
+        } else {
+            // 不从「单个最重粒子」开始：权重很平的时候，单个最重粒子可能是刚注入的随机粒子，估计会满图跳
+            var mass: [Int: Double] = [:], sumX: [Int: Double] = [:], sumY: [Int: Double] = [:]
+            let bin = 200.0
+            for i in 0..<n {
+                let k = Int(ys[i] / bin) * 100_000 + Int(xs[i] / bin)
+                mass[k, default: 0] += w[i]
+                sumX[k, default: 0] += w[i] * xs[i]
+                sumY[k, default: 0] += w[i] * ys[i]
+            }
+            let top = mass.max(by: { $0.value < $1.value })!
+            cx = sumX[top.key]! / top.value
+            cy = sumY[top.key]! / top.value
         }
-        guard total > 0 else {
-            return MagneticEstimate(position: Point2(field.widthCm / 2, field.heightCm / 2),
-                                    uncertaintyCm: field.widthCm, confidence: 0,
-                                    effectiveRatio: 0, updates: updateCount, converged: hasConverged)
-        }
-        // 以最重粒子为中心取一个簇，做两轮均值漂移。
-        var cx = xs[best], cy = ys[best]
         let r2 = config.clusterRadiusCm * config.clusterRadiusCm
-        var mass = 0.0
-        for _ in 0..<2 {
+        var m = 0.0
+        for _ in 0..<3 {
             var sw = 0.0, sx = 0.0, sy = 0.0
             for i in 0..<n {
                 let dx = xs[i] - cx, dy = ys[i] - cy
                 if dx * dx + dy * dy <= r2 { sw += w[i]; sx += w[i] * xs[i]; sy += w[i] * ys[i] }
             }
-            if sw > 0 { cx = sx / sw; cy = sy / sw; mass = sw / total }
+            if sw > 0 { cx = sx / sw; cy = sy / sw }
+            m = sw / total
         }
         var sw = 0.0, vx = 0.0, vy = 0.0
         for i in 0..<n {
@@ -469,8 +571,15 @@ public final class MagneticLocalizer {
             if dx * dx + dy * dy <= r2 { sw += w[i]; vx += w[i] * dx * dx; vy += w[i] * dy * dy }
         }
         let unc = sw > 0 ? ((vx + vy) / sw).squareRoot() : config.clusterRadiusCm
-        let conf = max(0, min(1, mass * (1 - unc / config.confidenceScaleCm)))
-        return MagneticEstimate(position: Point2(cx, cy), uncertaintyCm: unc, confidence: conf,
+        return (Point2(cx, cy), m, unc)
+    }
+
+    public func estimate() -> MagneticEstimate {
+        let c = cluster(from: hasConverged ? committed : nil)
+        var conf = max(0, min(1, c.mass * (1 - c.unc / config.confidenceScaleCm)))
+        // 估计点本身落在没有磁场数据的地方：地磁说了不算，置信度归零
+        if field.sample(at: c.center) == nil { conf = 0 }
+        return MagneticEstimate(position: c.center, uncertaintyCm: c.unc, confidence: conf,
                                 effectiveRatio: lastEffectiveRatio, updates: updateCount, converged: hasConverged)
     }
 }

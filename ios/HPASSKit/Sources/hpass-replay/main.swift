@@ -4,7 +4,9 @@ import HPASSKit
 // 离线回放：用采集到的会话重跑「惯导 + 地磁粒子滤波」，和位置真值比。
 //
 //   swift run hpass-replay --session <会话目录> --map map.json --truth truth.csv \
-//        [--magmap magmap.json] [--cold] [--depth depth_lateral.csv] [--out replay.csv]
+//        [--magmap magmap.json] [--cold] [--vio] [--depth depth_lateral.csv] [--out replay.csv]
+//
+// --vio：用 ARKit 位姿（arkit_pose.csv）当运动模型，与 App「实时定位」开视觉里程计时一致。
 //
 // truth.csv 由 `tools/magmap.py --truth-dir` 导出。不给 --magmap 时只回放惯导（通道约束），
 // 用来看惯导本身的漂移；给了就同时输出地磁滤波的结果，两者对比能看出地磁纠偏带来多少。
@@ -63,45 +65,110 @@ if let far = truth.first(where: { $0.p.distance(to: start) >= 150 }) {
     heading = atan2(far.p.x - start.x, far.p.y - start.y)
 }
 
+let useVIO = CommandLine.arguments.contains("--vio")
+
 var fcfg = FusionConfig()
 fcfg.useCorridorConstraint = !storeMap.crosses.isEmpty
 fcfg.useMagneticHeading = false
 let fusion = FusionEngine(corridors: storeMap.crosses, config: fcfg)
-fusion.setInitialPosition(cold ? Point2(storeMap.width / 2, storeMap.height / 2) : start, headingRad: cold ? nil : heading)
+fusion.setInitialPosition(cold ? Point2(storeMap.width / 2, storeMap.height / 2) : start, headingRad: cold ? 0 : heading)
 
 let extractor = MagneticFeatureExtractor()
+// 磁场可信度：与 App 一样用原始磁力计发现系统重新校准（没有 mag_raw.csv 时只看精度）
+let trustMon = MagneticTrustMonitor()
+let rawMag: [(t: Int64, v: (Double, Double, Double))] = FileManager.default.fileExists(atPath: sessionDir + "/mag_raw.csv")
+    ? rows(sessionDir + "/mag_raw.csv").compactMap { r in
+        guard r.count >= 4, let t = Int64(r[0]), let x = Double(r[1]), let y = Double(r[2]), let z = Double(r[3]) else { return nil }
+        return (t, (x, y, z)) }
+    : []
+let accuracyByT: [Int64: Int] = Dictionary(rows(sessionDir + "/imu.csv").compactMap { r -> (Int64, Int)? in
+    guard r.count >= 11, let t = Int64(r[0]), let a = Int(r[10]) else { return nil }
+    return (t, a) }, uniquingKeysWith: { a, _ in a })
+var rawIdx = 0
+var trustNow = 1.0
+func updateTrust(_ s: IMUSample) {
+    while rawIdx + 1 < rawMag.count && rawMag[rawIdx + 1].t <= s.tMs { rawIdx += 1 }
+    let raw = rawMag.isEmpty ? nil : (abs(rawMag[rawIdx].t - s.tMs) <= 20 ? rawMag[rawIdx].v : nil)
+    trustNow = trustMon.update(tMs: s.tMs, calibrated: (s.mx, s.my, s.mz), raw: raw, accuracy: accuracyByT[s.tMs] ?? 2)
+}
 var localizer: MagneticLocalizer?
 if let f = field {
     var cfg = MagneticConfig()
     if cold { cfg.initialHeadingBiasSigmaDeg = 30 }
+    if useVIO && !cold && CommandLine.arguments.contains("--tight") {
+        cfg.initialHeadingBiasSigmaDeg = 5; cfg.headingBiasWalkDegPerM = 1; cfg.positionNoiseFraction = 0.04
+        cfg.initialScaleSigma = 0.03; cfg.scaleWalkPerM = 0.003
+    } else if !useVIO {
+        cfg.initialScaleSigma = 0.15            // 计步的步长误差可能有三成
+    }
     let walk = storeMap.crosses.isEmpty ? nil : WalkableMap(crosses: storeMap.crosses, widthCm: storeMap.width, heightCm: storeMap.height)
     localizer = MagneticLocalizer(field: f, walkable: walk, config: cfg)
-    localizer?.reset(start: cold ? nil : start, spreadCm: 50)
+    localizer?.reset(start: cold ? nil : start, spreadCm: 50, headingUnknown: cold)
+    if cold, let l = localizer { print(String(format: "冷启动范围：有磁场数据的区域 %.0f m²", l.mappedAreaM2)) }
 }
 
-var lastPos: Point2?
 var pdrErr: [Double] = [], pfErr: [Double] = []
 var convergedAtMs: Int64?
 var out = ["t_ms,truth_x,truth_y,pdr_x,pdr_y,pf_x,pf_y,pdr_err,pf_err,unc,conf"]
-for s in imu {
-    let feat = extractor.process(s)
-    guard let o = fusion.process(s) else { continue }
-    let delta = lastPos.map { o.position - $0 } ?? .zero
-    lastPos = o.position
-    var pf: MagneticEstimate?
-    if let loc = localizer { pf = loc.step(delta: delta, feature: feat) }
-    guard let tr = truthAt(o.tMs) else { continue }
-    let pe = o.position.distance(to: tr)
+var latestFeature: MagneticFeature?
+var lastPDR: Point2?
+var pdrPos: Point2 = start
+
+func record(_ t: Int64, _ shownPDR: Point2, _ pf: MagneticEstimate?) {
+    guard let tr = truthAt(t) else { return }
+    let pe = shownPDR.distance(to: tr)
     let fe = pf.map { $0.position.distance(to: tr) }
-    if let e = pf, e.converged, convergedAtMs == nil { convergedAtMs = o.tMs }
-    if !cold || pf?.converged == true || localizer == nil {
+    if let e = pf, e.converged, convergedAtMs == nil { convergedAtMs = t }
+    // 门控：滤波器没把握（未收敛 / 丢失）时 App 不显示位置，这里也不计入误差
+    if localizer == nil || pf?.converged == true {
         pdrErr.append(pe)
         if let fe { pfErr.append(fe) }
     }
-    out.append([String(o.tMs), Fmt.f1(tr.x), Fmt.f1(tr.y), Fmt.f1(o.position.x), Fmt.f1(o.position.y),
+    out.append([String(t), Fmt.f1(tr.x), Fmt.f1(tr.y), Fmt.f1(shownPDR.x), Fmt.f1(shownPDR.y),
                 pf.map { Fmt.f1($0.position.x) } ?? "", pf.map { Fmt.f1($0.position.y) } ?? "",
                 Fmt.f1(pe), fe.map(Fmt.f1) ?? "", pf.map { Fmt.f1($0.uncertaintyCm) } ?? "",
                 pf.map { String(format: "%.2f", $0.confidence) } ?? ""].joined(separator: ","))
+}
+
+if useVIO {
+    // 视觉里程计做运动模型：已知起点用对齐器（朝向取真值前 1.5 m），冷启动直接用 ARKit 原始位移（旋转由粒子去猜）
+    struct Pose { var t: Int64; var a: Point2; var ok: Bool }
+    let poses = rows(sessionDir + "/arkit_pose.csv").compactMap { r -> Pose? in
+        guard r.count >= 9, let t = Int64(r[0]), let x = Double(r[1]), let z = Double(r[3]) else { return nil }
+        return Pose(t: t, a: Point2(x * 100, z * 100), ok: r[8] == "2")
+    }.filter { $0.t >= truth[0].t }
+    let aligner = VisualOdometryAligner()
+    var anchored = false
+    var lastA: Point2?
+    var accum = Point2.zero
+    var k = 0
+    for p in poses {
+        while k < imu.count && imu[k].tMs <= p.t { updateTrust(imu[k]); latestFeature = extractor.process(imu[k]) ?? latestFeature; k += 1 }
+        var delta = Point2.zero
+        if cold {
+            if let la = lastA, p.ok { delta = p.a - la }
+            lastA = p.a
+        } else {
+            if !anchored, p.ok { aligner.anchor(map: start, ar: p.a, headingRad: heading); anchored = true; continue }
+            if case .aligned(let pos, let d) = aligner.process(ar: p.a, trackingNormal: p.ok) { delta = d; pdrPos = pos }
+        }
+        accum = accum + delta
+        guard accum.length >= 20 else { continue }
+        if cold { pdrPos = pdrPos + accum }
+        let est = localizer?.step(delta: accum, feature: latestFeature, trust: trustNow)
+        accum = .zero
+        record(p.t, pdrPos, est)
+    }
+} else {
+    for s in imu {
+        updateTrust(s)
+        let feat = extractor.process(s)
+        guard let o = fusion.process(s) else { continue }
+        let delta = lastPDR.map { o.position - $0 } ?? .zero
+        lastPDR = o.position
+        let est = localizer?.step(delta: delta, feature: feat, trust: trustNow)
+        record(o.tMs, o.position, est)
+    }
 }
 
 enum Fmt { static func f1(_ v: Double) -> String { String(format: "%.1f", v) } }
@@ -112,8 +179,8 @@ func stats(_ name: String, _ e: [Double]) {
     print(String(format: "%@：n=%d  中位 %.0f cm  P90 %.0f cm  最大 %.0f cm  最后 %.0f cm", name, s.count,
                  s[s.count / 2], s[Int(Double(s.count) * 0.9)], s[s.count - 1], e[e.count - 1]))
 }
-print("会话 \(sessionDir)，IMU \(imu.count) 个样本，真值 \(truth.count) 点，\(cold ? "冷启动" : "已知起点")")
-stats("惯导（通道约束）", pdrErr)
+print("会话 \(sessionDir)，IMU \(imu.count) 个样本，真值 \(truth.count) 点，\(cold ? "冷启动" : "已知起点")，运动模型 \(useVIO ? "视觉里程计" : "计步")")
+stats(useVIO ? "视觉里程计（无地磁）" : "惯导（通道约束）", pdrErr)
 if localizer != nil {
     stats("地磁粒子滤波  ", pfErr)
     if cold { print(convergedAtMs.map { "冷启动在第 \(Double($0 - truth[0].t) / 1000) 秒收敛" } ?? "冷启动没有收敛") }
@@ -139,4 +206,5 @@ if let depthPath = arg("--depth"), !storeMap.physicalShelves.isEmpty {
     print("  判读：中位误差在 30 cm 以内，且样本数足够，才适合把「激光雷达」切到「参与定位」；")
     print("        误差很大说明深度换算、货架摆放与地图不一致，先不要打开。")
 }
+print("磁场可信度：发现系统重新校准 \(trustMon.jumpCount) 次")
 if let path = arg("--out") { try? out.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8) }

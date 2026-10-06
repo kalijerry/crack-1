@@ -84,6 +84,9 @@ private final class MagPipeline {
     var latestA: Point2?
     var vioTracking = 0
     var vioProgress = 0.0
+    /// 朝向未知（冷启动 / 只知道位置）时，直接把 ARKit 的原始位移交给粒子滤波，旋转由粒子去猜
+    var vioRaw = false
+    var rawLastA: Point2?
 
     // 深度横向距离
     var lateralMode: DepthMode = .off
@@ -412,6 +415,8 @@ final class MagneticEngine: ObservableObject {
         }
         lastError = nil
         let (fusion, localizer) = makeColdStart(field: field)
+        let raw = useVisualOdometry && ARKitLogger.isSupported
+        if raw { startVisualOdometry() }
         queue.sync {
             pipe.stepBase = 0
             pipe.fusion = fusion
@@ -421,13 +426,18 @@ final class MagneticEngine: ObservableObject {
             pipe.pos = nil
             pipe.lastShown = nil
             pipe.tracking = true
+            pipe.vioPending = nil
+            pipe.vioRaw = raw && pipe.vioEnabled
+            pipe.vioActive = pipe.vioRaw          // 从一开始就不让计步推粒子：两种位移的旋转不一致
+            pipe.rawLastA = nil
+            pipe.vioAccum = .zero
         }
         searching = true
         isTracking = true
         locState = .searching
         position = nil
         trail = []
-        AppLog.i("地磁", "自动定位：冷启动，地图朝向 " + (store.mapUpBearingDeg.map { "\(Int($0))°（一半粒子按罗盘，一半全方向）" } ?? "未设置（全方向猜）"))
+        AppLog.i("地磁", "自动定位：冷启动，运动 \(raw ? "视觉里程计" : "计步（误差大）")，地图朝向 " + (store.mapUpBearingDeg.map { "\(Int($0))°（一半粒子按罗盘，一半全方向）" } ?? "未设置（全方向猜）"))
     }
 
     /// 冷启动的惯导 + 粒子：有地图朝向时用罗盘给一个大致方向，一半粒子信它、一半全方向；
@@ -507,6 +517,7 @@ final class MagneticEngine: ObservableObject {
             pipe.pos = p
             pipe.lastShown = p
             pipe.vioAccum = .zero
+            pipe.vioRaw = false
             if pipe.vioEnabled {
                 // 修正位置且旋转已经对齐：只拉位置；其他情况重新对齐
                 pipe.vioPending = (isCorrection && pipe.aligner.isAligned) ? .keep(p) : .fresh(p, heading)
@@ -635,6 +646,10 @@ final class MagneticEngine: ObservableObject {
 
         let writer = Self.makeTrackWriter()
         trackFileName = writer?.name
+        trackStem = writer.map { ($0.name as NSString).deletingPathExtension }
+        let useVIO = useVisualOdometry && ARKitLogger.isSupported
+        if useVIO { startVisualOdometry() }
+        let headingKnown = start != nil && heading != nil
         queue.sync {
             pipe.fusion = fusion
             pipe.localizer = localizer
@@ -643,6 +658,14 @@ final class MagneticEngine: ObservableObject {
             pipe.estimate = nil
             pipe.pendingCheck = nil
             pipe.trackWriter = writer?.writer
+            pipe.tracking = true
+            pipe.pos = start
+            pipe.lastShown = start
+            pipe.vioAccum = .zero
+            pipe.rawLastA = nil
+            pipe.vioRaw = useVIO && pipe.vioEnabled && !headingKnown
+            pipe.vioActive = pipe.vioRaw
+            pipe.vioPending = (useVIO && pipe.vioEnabled && headingKnown) ? .fresh(start!, heading!) : nil
         }
         trail = []
         checks = []
@@ -811,6 +834,10 @@ final class MagneticEngine: ObservableObject {
             let delta = pipe.lastFusedPos.map { out.position - $0 } ?? .zero
             pipe.lastFusedPos = out.position
             pipe.lastOut = out
+            if pipe.vioActive {
+                publishLive(pipe: pipe, tMs: s.tMs)
+                return
+            }
             let est = loc.step(delta: delta, feature: feat, trust: pipe.trustNow)
             pipe.estimate = est
             emit(pipe: pipe, tMs: out.tMs, shown: est.position, unc: est.uncertaintyCm, est: est,
@@ -865,7 +892,36 @@ final class MagneticEngine: ObservableObject {
     private nonisolated func handlePose(t: Int64, a: Point2, state: Int, pipe: MagPipeline) {
         pipe.latestA = a
         pipe.vioTracking = state
-        guard pipe.vioEnabled, pipe.mode == .live, pipe.tracking else { return }
+        guard pipe.vioEnabled, pipe.mode == .live || pipe.mode == .localizing, pipe.tracking else { return }
+
+        if pipe.vioRaw {
+            defer { pipe.rawLastA = state == 2 ? a : nil }
+            guard state == 2, let last = pipe.rawLastA else { return }
+            let d = a - last
+            guard d.length < 300 else { return }                  // ARKit 坐标系重置，这一帧不算
+            pipe.vioAccum = pipe.vioAccum + d
+            guard pipe.vioAccum.length >= 20, let loc = pipe.localizer else { return }
+            let step = pipe.vioAccum
+            pipe.vioAccum = .zero
+            let e = loc.step(delta: step, feature: pipe.latest, trust: pipe.trustNow)
+            // 朝向：用地图上显示位置的移动方向（ARKit 自己的方向和地图差一个未知旋转）
+            if let ls = pipe.lastShown {
+                let dv = e.position - ls
+                if dv.length > 3 {
+                    let u = dv * (1 / dv.length)
+                    pipe.vioHeadingVec = pipe.vioHeadingVec * 0.85 + u * 0.15
+                }
+            }
+            pipe.lastShown = e.position
+            pipe.pos = e.position
+            let h = pipe.vioHeadingVec.length > 0.3 ? atan2(pipe.vioHeadingVec.x, pipe.vioHeadingVec.y) : pipe.lastHeadingRad
+            pipe.lastHeadingRad = h
+            var hd = h * 180 / Double.pi
+            if hd < 0 { hd += 360 }
+            emit(pipe: pipe, tMs: t, shown: e.position, unc: e.uncertaintyCm, est: e, heading: h, headingDeg: hd,
+                 src: "vio-raw", feature: pipe.latest)
+            return
+        }
 
         if let pending = pipe.vioPending, state == 2 {
             switch pending {

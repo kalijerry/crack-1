@@ -32,8 +32,8 @@ public struct MagneticFeature: Equatable {
 public final class MagneticFeatureExtractor {
     /// 重力方向低通时间常数（s）。
     public var gravityTauS: Double = 0.5
-    /// 特征低通时间常数（s）。
-    public var featureTauS: Double = 0.25
+    /// 特征低通时间常数（s）。太大会让读数滞后（0.25 s 在 1.1 m/s 下就是 30 cm），建图是不滞后的，两边对不上。
+    public var featureTauS: Double = 0.1
 
     private var up: FusionVec3?
     private var smoothed: MagneticFeature?

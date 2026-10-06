@@ -2,13 +2,13 @@
 # 部署见 README.md。
 name = "hpass-telemetry"
 main = "src/index.js"
+compatibility_date = "2026-09-01"
 
 # 看板网页按文本模块打包进 Worker
 [[rules]]
 type = "Text"
 globs = ["**/*.html"]
 fallthrough = false
-compatibility_date = "2026-09-01"
 
 [[durable_objects.bindings]]
 name = "HUB"

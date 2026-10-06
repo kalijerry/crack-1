@@ -1,4 +1,5 @@
 import HPASSKit
+import SceneKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -27,6 +28,14 @@ struct MagneticView: View {
     @State private var confirmClearCal = false
     @State private var confirmResetCoverage = false
     @State private var surveyNote = ""
+    enum Camera3D: String, CaseIterable, Identifiable {
+        case follow = "跟随", overview = "总览", top = "俯视"
+        var id: String { rawValue }
+    }
+    @StateObject private var model3D = Store3DModel()
+    @State private var show3D = false
+    @State private var camera3D: Camera3D = .follow
+    @State private var shelfHeight3D = 1.8
     @State private var exportURL: URL?
     @State private var exportError: String?
 
@@ -42,7 +51,7 @@ struct MagneticView: View {
                 .disabled(engine.phase != .idle || survey.isRunning)
                 .onChange(of: step) { AppLog.tap("地磁·步骤", $0.rawValue) }
 
-                canvas
+                canvasArea
                     .padding(.horizontal)
                     .frame(height: min(max(UIScreen.main.bounds.height * 0.42, 260), 420))
 
@@ -128,6 +137,78 @@ struct MagneticView: View {
         }
     }
 
+    // MARK: 2D / 3D
+
+    /// 3D 里没有长按定点、双击设朝向，这些只在 2D 里做。
+    private var canvasArea: some View {
+        ZStack(alignment: .topTrailing) {
+            if show3D, let sc = model3D.scene {
+                Store3DView(scene: sc, follow: camera3D == .follow)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            } else {
+                canvas
+            }
+            VStack(alignment: .trailing, spacing: 6) {
+                LoggedButton(name: "2D/3D", detail: show3D ? "→2D" : "→3D") { toggle3D() } label: {
+                    Text(show3D ? "2D" : "3D").font(.footnote.bold()).frame(width: 40, height: 28)
+                }
+                .buttonStyle(.borderedProminent)
+                if show3D {
+                    Picker("视角", selection: $camera3D) {
+                        ForEach(Camera3D.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.menu)
+                    .buttonStyle(.bordered)
+                    .onChange(of: camera3D) { _ in applyCamera3D() }
+                }
+            }
+            .padding(8)
+        }
+        .onChange(of: show3D) { on in if on { sync3D(full: true) } }
+        .onChange(of: engine.position) { _ in sync3D(full: false) }
+        .onChange(of: survey.position) { _ in sync3D(full: false) }
+        .onChange(of: engine.trail.count) { _ in sync3D(full: false) }
+        .onChange(of: survey.coverage.revision) { _ in sync3D(full: false) }
+        .onChange(of: store.points) { _ in sync3D(full: true) }
+        .onChange(of: store.sampleCount) { _ in sync3D(full: true) }
+        .onChange(of: step) { _ in sync3D(full: true) }
+    }
+
+    private func toggle3D() {
+        if !show3D { model3D.ensure(map: canvasMap ?? StoreMap(width: store.widthCm, height: store.heightCm, shelves: [], crosses: [])) }
+        show3D.toggle()
+        if show3D { sync3D(full: true); applyCamera3D() }
+    }
+
+    private func applyCamera3D() {
+        guard let s = model3D.scene else { return }
+        switch camera3D {
+        case .follow: s.setCamera(.follow)
+        case .overview: s.setCamera(.overview)
+        case .top: s.setCamera(.top)
+        }
+    }
+
+    /// 把当前状态推给 3D 场景。`full` = 连点位、磁场图、采集进度一起刷新。
+    private func sync3D(full: Bool) {
+        guard show3D else { return }
+        let map = canvasMap ?? StoreMap(width: store.widthCm, height: store.heightCm, shelves: [], crosses: [])
+        let s = model3D.ensure(map: map)
+        let isSurvey = step == .survey
+        s.setPose(position: isSurvey ? survey.position : engine.position,
+                  headingRad: isSurvey ? survey.headingRad : engine.headingRad,
+                  uncertaintyCm: isSurvey ? 0 : engine.uncertaintyCm)
+        s.setTrail(isSurvey ? survey.trail : engine.trail)
+        if full {
+            s.setPoints(store.points, highlight: calibrationHighlight)
+            model3D.updateField(store.field, signature: store.sampleCount &* 31 &+ store.validCells)
+        }
+        // 采集进度：建图采集页看；实时定位页也画上，能看出哪里有磁场数据
+        if step != .map { model3D.updateCoverage(crosses: store.crosses, coverage: survey.coverage, force: full) }
+        s.setShelfHeight(shelfHeight3D)
+        if camera3D == .follow { s.followAvatar() }
+    }
+
     private var calibrationHighlight: String? {
         guard step == .advanced, engine.phase == .calibrating else { return nil }
         let pts = engine.calUsedPoints
@@ -146,6 +227,10 @@ struct MagneticView: View {
                 row("地图尺寸", "\(Fmt.f(store.widthCm / 100, 1)) × \(Fmt.f(store.heightCm / 100, 1)) m（没有货架数据）")
                 Text("还没有货架和通道。在这里导入完整的门店地图 JSON，或到「门店数据」页导入。").font(.footnote).foregroundStyle(.orange)
             }
+            Stepper("3D 货架高度 \(Fmt.f(shelfHeight3D, 1)) m", value: $shelfHeight3D, in: 0.8...3.0, step: 0.2)
+                .onChange(of: shelfHeight3D) { _ in sync3D(full: false) }
+            Text("右上角的「3D」按钮切换立体视图：单指转、双指缩放和平移。立体视图里不能定点，回到 2D 操作。")
+                .font(.footnote).foregroundStyle(.secondary)
             Text(store.usesStoreMap
                  ? "地图来自「门店数据」页。长按地图空白处放点（按住不动约半秒再松手），点位用作起点、目标和路线建图的锚点。双指可缩放、单指拖动平移。"
                  : "还没有门店地图，现在是 10×10 m 测试区。长按方格图空白处放点，点位按编号连线。")

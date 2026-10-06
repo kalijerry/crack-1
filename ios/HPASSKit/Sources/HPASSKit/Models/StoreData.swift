@@ -305,6 +305,18 @@ public enum StoreDataLoader {
                 throw StoreDataError.invalidJSON("内层 JSON：\(error.localizedDescription)")
             }
         }
+        // 服务端统一信封：{ code, message, success, data: … }，data 可能又是 JSON 字符串。
+        if let dict = obj as? [String: Any], let inner = dict["data"],
+           dict["success"] != nil || dict["code"] != nil || dict["message"] != nil {
+            obj = inner
+            if let s = obj as? String, let bytes = s.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8) {
+                do {
+                    obj = try JSONSerialization.jsonObject(with: bytes, options: [.fragmentsAllowed])
+                } catch {
+                    throw StoreDataError.invalidJSON("data 字段里的 JSON：\(error.localizedDescription)")
+                }
+            }
+        }
         return obj
     }
 

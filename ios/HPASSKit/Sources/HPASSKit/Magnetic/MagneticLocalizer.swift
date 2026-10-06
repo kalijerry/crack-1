@@ -3,13 +3,21 @@ import Foundation
 // 地磁定位：粒子滤波。
 //
 // 运动模型：惯导（FusionEngine 的位移增量，cm）。每个粒子带一个航向偏差和一个步长比例，
-//          用来吸收室内磁场对罗盘航向的扰动和步长误差。
+//          用来吸收惯导的航向漂移和步长误差。
 // 观测模型：粒子位置处地图里的 (|B|, Bz, Bh) 与实测特征比较，重尾似然（Student-t，ν = 4），
 //          只在累计走过一段距离之后才更新一次，避免站着不动时权重被越压越窄。
-// 约束：    粒子不能出地图边界；地图里没有数据的格子会被扣分但不会被直接杀掉。
+// 通道约束：（可选）粒子必须在通道里走，不能穿货架；单一走向的通道里，行走方向应沿通道轴线。
+// 冷启动：  没有起点时在可走区域均匀撒粒子，收敛后缩到较少的粒子数。
 
 public struct MagneticConfig {
+    /// 已知起点或收敛之后用的粒子数。
     public var particleCount = 1500
+    /// 冷启动（没有起点）时用的粒子数，收敛后自动缩到 `particleCount`。
+    public var coldStartParticleCount = 6000
+    /// 收敛判据：簇内不确定度小于该值（cm）、置信度大于 `convergedConfidence`，连续 3 次更新。
+    public var convergedUncertaintyCm: Double = 200
+    public var convergedConfidence: Double = 0.6
+
     /// 累计位移达到多少 cm 才做一次观测更新。
     public var updateDistanceCm: Double = 50
     /// 每走 1 cm 附加的位置噪声比例，外加一个固定底噪（cm）。
@@ -21,6 +29,7 @@ public struct MagneticConfig {
     /// 步长比例的初始 1σ 与每走 1 m 的随机游走。
     public var initialScaleSigma: Double = 0.06
     public var scaleWalkPerM: Double = 0.005
+
     /// 观测噪声下限（µT），与地图格子的标准差合成。
     public var observationSigmaFloorUT: Double = 1.5
     /// 总强度、垂直分量、水平分量的权重（Bh 与前两者相关，权重低一些）。
@@ -29,6 +38,14 @@ public struct MagneticConfig {
     public var likelihoodTemperature: Double = 1.5
     /// 粒子所在位置没有地图数据时的对数似然惩罚。
     public var missingDataPenalty: Double = -4
+
+    /// 通道约束：新位置不在可走区域、或中途穿过货架时的对数惩罚。
+    public var blockedPenalty: Double = -4
+    /// 通道走向先验的标准差（度）。行走方向偏离通道轴线越多，扣分越多。
+    public var corridorHeadingSigmaDeg: Double = 22
+    /// 走向先验的整体强度，0 关闭。
+    public var corridorHeadingWeight: Double = 1.0
+
     /// 有效粒子数低于 N × 该比例时重采样。
     public var resampleThreshold: Double = 0.5
     /// 重采样后的位置抖动（cm），以及注入的随机粒子比例（用于跟丢后重新找回）。
@@ -53,6 +70,8 @@ public struct MagneticEstimate {
     public var effectiveRatio: Double
     /// 已经做过几次观测更新。
     public var updates: Int
+    /// 是否已经收敛（冷启动时从 false 变 true）。
+    public var converged: Bool
 }
 
 /// 可复现的随机数（测试要求结果稳定）。
@@ -80,6 +99,8 @@ struct MagRNG {
 public final class MagneticLocalizer {
     public var config: MagneticConfig
     public let field: MagneticFieldMap
+    /// 可走区域。nil 表示整张地图都能走（10×10 m 测试区）。
+    public let walkable: WalkableMap?
 
     private var rng: MagRNG
     private var xs: [Double] = []
@@ -93,30 +114,46 @@ public final class MagneticLocalizer {
     private var featureCount = 0
     private var updateCount = 0
     private var lastEffectiveRatio = 1.0
+    private var coldStart = false
+    private var convergedStreak = 0
+    private var hasConverged = false
 
-    public init(field: MagneticFieldMap, config: MagneticConfig = .init(), seed: UInt64 = 1) {
+    public init(field: MagneticFieldMap, walkable: WalkableMap? = nil,
+                config: MagneticConfig = .init(), seed: UInt64 = 1) {
         self.field = field
+        self.walkable = walkable
         self.config = config
         self.rng = MagRNG(seed: seed)
         reset(start: nil)
     }
 
-    /// 重新开始。start 为 nil 时在整张地图上均匀撒点；否则以 start 为中心，spreadCm 为 1σ。
+    private func randomPosition() -> Point2 {
+        if let w = walkable, let p = w.randomPoint(u1: rng.uniform(), u2: rng.uniform(), u3: rng.uniform()) {
+            return p
+        }
+        return Point2(rng.uniform() * field.widthCm, rng.uniform() * field.heightCm)
+    }
+
+    /// 重新开始。start 为 nil 时在可走区域（没有通道信息就是整张图）均匀撒点；
+    /// 否则以 start 为中心，spreadCm 为 1σ。
     public func reset(start: Point2?, spreadCm: Double = 150) {
-        let n = max(config.particleCount, 10)
+        coldStart = start == nil
+        let n = max(coldStart ? config.coldStartParticleCount : config.particleCount, 10)
         xs = [Double](repeating: 0, count: n)
         ys = xs
         bias = xs
         scale = [Double](repeating: 1, count: n)
         logw = [Double](repeating: 0, count: n)
         for i in 0..<n {
+            var p: Point2
             if let s = start {
-                xs[i] = min(max(s.x + rng.normal() * spreadCm, 0), field.widthCm)
-                ys[i] = min(max(s.y + rng.normal() * spreadCm, 0), field.heightCm)
+                p = Point2(s.x + rng.normal() * spreadCm, s.y + rng.normal() * spreadCm)
+                if let w = walkable, !w.isWalkable(p) { p = w.nearestWalkable(to: p, radiusCm: 300) ?? s }
             } else {
-                xs[i] = rng.uniform() * field.widthCm
-                ys[i] = rng.uniform() * field.heightCm
+                p = randomPosition()
             }
+            xs[i] = min(max(p.x, 0), field.widthCm)
+            ys[i] = min(max(p.y, 0), field.heightCm)
             bias[i] = rng.normal() * config.initialHeadingBiasSigmaDeg * Double.pi / 180
             scale[i] = 1 + rng.normal() * config.initialScaleSigma
         }
@@ -125,6 +162,8 @@ public final class MagneticLocalizer {
         featureCount = 0
         updateCount = 0
         lastEffectiveRatio = 1
+        convergedStreak = 0
+        hasConverged = !coldStart
     }
 
     /// 送入一次惯导位移增量（cm，地图系）和这段时间内最新的磁场特征，返回当前估计。
@@ -154,21 +193,37 @@ public final class MagneticLocalizer {
         let posSigma = config.positionNoiseFraction * dist + config.positionNoiseFloorCm
         let biasWalk = config.headingBiasWalkDegPerM * Double.pi / 180 * distM.squareRoot()
         let scaleWalk = config.scaleWalkPerM * distM.squareRoot()
+        let hs = config.corridorHeadingSigmaDeg * Double.pi / 180
+        let useHeading = config.corridorHeadingWeight > 0 && dist >= 10
         for i in 0..<xs.count {
             bias[i] += rng.normal() * biasWalk
             scale[i] = min(max(scale[i] + rng.normal() * scaleWalk, 0.6), 1.5)
             let c = cos(bias[i]), s = sin(bias[i])
             let dx = (delta.x * c - delta.y * s) * scale[i]
             let dy = (delta.x * s + delta.y * c) * scale[i]
-            var nx = xs[i] + dx + rng.normal() * posSigma
-            var ny = ys[i] + dy + rng.normal() * posSigma
+            let old = Point2(xs[i], ys[i])
+            var nx = old.x + dx + rng.normal() * posSigma
+            var ny = old.y + dy + rng.normal() * posSigma
             if nx < 0 || nx > field.widthCm || ny < 0 || ny > field.heightCm {
                 nx = min(max(nx, 0), field.widthCm)
                 ny = min(max(ny, 0), field.heightCm)
                 logw[i] -= 2           // 撞墙：扣分
             }
-            xs[i] = nx
-            ys[i] = ny
+            var np = Point2(nx, ny)
+            if let w = walkable {
+                if !w.isWalkable(np) || !w.isSegmentClear(from: old, to: np) {
+                    np = old                          // 不能穿货架：原地不动并扣分
+                    logw[i] += config.blockedPenalty
+                } else if useHeading, let ax = w.axisAngle(at: np) {
+                    // 行走方向相对通道轴线的夹角（模 π：沿轴线正反两个方向都可以）
+                    let walk = atan2(dy, dx)
+                    var d = abs(walk - ax).truncatingRemainder(dividingBy: Double.pi)
+                    d = min(d, Double.pi - d)
+                    logw[i] -= config.corridorHeadingWeight * 0.5 * (d / hs) * (d / hs)
+                }
+            }
+            xs[i] = np.x
+            ys[i] = np.y
         }
     }
 
@@ -196,7 +251,23 @@ public final class MagneticLocalizer {
         updateCount += 1
         let neff = effectiveCount()
         lastEffectiveRatio = neff / Double(xs.count)
-        if lastEffectiveRatio < config.resampleThreshold { resample() }
+        if lastEffectiveRatio < config.resampleThreshold { resample(to: xs.count) }
+        checkConvergence()
+    }
+
+    /// 冷启动：连续几次更新都落在一个小簇里，就认为收敛，把粒子数缩到 `particleCount`。
+    private func checkConvergence() {
+        guard coldStart, !hasConverged else { return }
+        let e = estimate()
+        if e.uncertaintyCm <= config.convergedUncertaintyCm && e.confidence >= config.convergedConfidence {
+            convergedStreak += 1
+        } else {
+            convergedStreak = 0
+        }
+        if convergedStreak >= 3 {
+            hasConverged = true
+            if xs.count > config.particleCount { resample(to: config.particleCount) }
+        }
     }
 
     /// 减去最大值再归一到 Σw = 1（对数域），防止下溢。
@@ -217,17 +288,17 @@ public final class MagneticLocalizer {
         return s2 > 0 ? 1 / s2 : 0
     }
 
-    /// 系统重采样 + 位置抖动 + 少量随机粒子（跟丢后能重新找回）。
-    private func resample() {
+    /// 系统重采样到 m 个粒子 + 位置抖动 + 少量随机粒子（跟丢后能重新找回）。
+    private func resample(to m: Int) {
         let n = xs.count
         var cum = [Double](repeating: 0, count: n)
         var acc = 0.0
         for i in 0..<n { acc += exp(logw[i]); cum[i] = acc }
-        let step = acc / Double(n)
+        let step = acc / Double(m)
         var u = rng.uniform() * step
-        var nx = xs, ny = ys, nb = bias, ns = scale
+        var nx = [Double](repeating: 0, count: m), ny = nx, nb = nx, ns = nx
         var j = 0
-        for i in 0..<n {
+        for i in 0..<m {
             while j < n - 1 && cum[j] < u { j += 1 }
             nx[i] = xs[j] + rng.normal() * config.roughenCm
             ny[i] = ys[j] + rng.normal() * config.roughenCm
@@ -235,45 +306,47 @@ public final class MagneticLocalizer {
             ns[i] = scale[j]
             u += step
         }
-        let inject = Int(Double(n) * config.randomInjection)
+        let inject = Int(Double(m) * config.randomInjection)
         for k in 0..<inject {
-            let i = n - 1 - k
-            nx[i] = rng.uniform() * field.widthCm
-            ny[i] = rng.uniform() * field.heightCm
+            let i = m - 1 - k
+            let p = randomPosition()
+            nx[i] = p.x
+            ny[i] = p.y
             nb[i] = rng.normal() * config.initialHeadingBiasSigmaDeg * Double.pi / 180
             ns[i] = 1 + rng.normal() * config.initialScaleSigma
         }
-        for i in 0..<n {
-            xs[i] = min(max(nx[i], 0), field.widthCm)
-            ys[i] = min(max(ny[i], 0), field.heightCm)
+        for i in 0..<m {
+            var p = Point2(min(max(nx[i], 0), field.widthCm), min(max(ny[i], 0), field.heightCm))
+            if let w = walkable, !w.isWalkable(p) { p = Point2(xs[min(i, n - 1)], ys[min(i, n - 1)]) }
+            nx[i] = p.x
+            ny[i] = p.y
         }
-        bias = nb
-        scale = ns
-        logw = [Double](repeating: -log(Double(n)), count: n)
+        xs = nx; ys = ny; bias = nb; scale = ns
+        logw = [Double](repeating: -log(Double(m)), count: m)
     }
 
     // MARK: 估计
 
     public func estimate() -> MagneticEstimate {
         let n = xs.count
-        // 权重（线性域）。没做过更新时所有 logw 相同，等价于均匀。
+        let mx = logw.max() ?? 0
         var w = [Double](repeating: 0, count: n)
         var best = 0
         var total = 0.0
         for i in 0..<n {
-            w[i] = exp(logw[i] - (logw.max() ?? 0))
+            w[i] = exp(logw[i] - mx)
             total += w[i]
             if w[i] > w[best] { best = i }
         }
         guard total > 0 else {
             return MagneticEstimate(position: Point2(field.widthCm / 2, field.heightCm / 2),
                                     uncertaintyCm: field.widthCm, confidence: 0,
-                                    effectiveRatio: 0, updates: updateCount)
+                                    effectiveRatio: 0, updates: updateCount, converged: hasConverged)
         }
         // 以最重粒子为中心取一个簇，做两轮均值漂移。
         var cx = xs[best], cy = ys[best]
         let r2 = config.clusterRadiusCm * config.clusterRadiusCm
-        var mass = 0.0, vx = 0.0, vy = 0.0
+        var mass = 0.0
         for _ in 0..<2 {
             var sw = 0.0, sx = 0.0, sy = 0.0
             for i in 0..<n {
@@ -282,7 +355,7 @@ public final class MagneticLocalizer {
             }
             if sw > 0 { cx = sx / sw; cy = sy / sw; mass = sw / total }
         }
-        var sw = 0.0
+        var sw = 0.0, vx = 0.0, vy = 0.0
         for i in 0..<n {
             let dx = xs[i] - cx, dy = ys[i] - cy
             if dx * dx + dy * dy <= r2 { sw += w[i]; vx += w[i] * dx * dx; vy += w[i] * dy * dy }
@@ -290,6 +363,6 @@ public final class MagneticLocalizer {
         let unc = sw > 0 ? ((vx + vy) / sw).squareRoot() : config.clusterRadiusCm
         let conf = max(0, min(1, mass * (1 - unc / config.confidenceScaleCm)))
         return MagneticEstimate(position: Point2(cx, cy), uncertaintyCm: unc, confidence: conf,
-                                effectiveRatio: lastEffectiveRatio, updates: updateCount)
+                                effectiveRatio: lastEffectiveRatio, updates: updateCount, converged: hasConverged)
     }
 }

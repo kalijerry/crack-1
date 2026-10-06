@@ -18,6 +18,12 @@ final class MagMapStore: ObservableObject {
     @Published private(set) var validCells = 0
     @Published private(set) var lastError: String?
 
+    /// 门店地图里的通道（来自「门店数据」页导入的地图），用于通道约束。
+    @Published private(set) var crosses: [CrossSegment] = []
+    /// 地图的真实朝向：地图 +y 轴的磁罗盘方位角（度）。第一次「定点 + 设朝向」时自动记下，之后冷启动用。
+    @Published private(set) var declinationDeg: Double?
+    private var walkableCache: WalkableMap?
+
     private var builder = MagneticFieldBuilder(widthCm: 1000, heightCm: 1000)
     /// 导入的地图里自带的磁场（没有累积统计，只能用来定位）。
     private var importedField: MagneticFieldMap?
@@ -35,6 +41,45 @@ final class MagMapStore: ObservableObject {
             }
         }
     }
+
+    // MARK: 门店地图
+
+    /// 采用「门店数据」页导入的地图：尺寸、通道。尺寸变了就清掉不再对得上的校准数据和点位。
+    func adopt(map: StoreMap?) {
+        guard let m = map, m.width > 0, m.height > 0 else { return }
+        let sameSize = abs(m.width - widthCm) < 1 && abs(m.height - heightCm) < 1
+        let sameCrosses = m.crosses.count == crosses.count
+        crosses = m.crosses
+        if !sameCrosses { walkableCache = nil }
+        if sameSize { return }
+        widthCm = m.width
+        heightCm = m.height
+        walkableCache = nil
+        builder = MagneticFieldBuilder(widthCm: widthCm, heightCm: heightCm)
+        importedField = nil
+        points = points.filter { $0.x <= widthCm && $0.y <= heightCm }
+        refreshField()
+        save()
+        AppLog.i("地磁", "采用门店地图：\(Int(widthCm)) × \(Int(heightCm)) cm，\(crosses.count) 条通道")
+    }
+
+    /// 可走区域（由通道栅格化，首次使用时生成并缓存）。没有通道时为 nil。
+    func walkableMap() -> WalkableMap? {
+        if let w = walkableCache { return w }
+        guard !crosses.isEmpty else { return nil }
+        let w = WalkableMap(crosses: crosses, widthCm: widthCm, heightCm: heightCm)
+        walkableCache = w
+        AppLog.i("地磁", "可走区域：\(w.walkableCellCount) 格，\(Int(w.walkableAreaM2)) m²")
+        return w
+    }
+
+    func setDeclination(_ deg: Double) {
+        declinationDeg = deg
+        save()
+    }
+
+    /// 用门店地图做底，还是没有门店地图时的小测试区。
+    var usesStoreMap: Bool { !crosses.isEmpty }
 
     // MARK: 点位
 
@@ -112,6 +157,7 @@ final class MagMapStore: ObservableObject {
             "mapElementList": [Any](),
             "markPoints": points.map { ["id": $0.id, "x": Int($0.x.rounded()), "y": Int($0.y.rounded())] as [String: Any] },
         ]
+        if let d = declinationDeg { root["magDeclinationDeg"] = d }
         if let f = field { root["magField"] = f.jsonObject() }
         if builder.sampleCount > 0 {
             let snap = try JSONEncoder().encode(builder.snapshot())
@@ -136,6 +182,11 @@ final class MagMapStore: ObservableObject {
         heightCm = map.height
         floorName = map.floorName ?? floorName
         points = try StoreDataLoader.loadMarkPoints(data)
+        if let root = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) as? [String: Any],
+           let d = root["magDeclinationDeg"] as? Double {
+            declinationDeg = d
+        }
+        walkableCache = nil
         importedField = try StoreDataLoader.loadMagneticField(data)
 
         builder = MagneticFieldBuilder(widthCm: widthCm, heightCm: heightCm)

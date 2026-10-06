@@ -50,6 +50,20 @@ struct MapCanvas: View {
     /// 点击地图回调，参数是地图坐标（cm）
     var onTap: ((Point2) -> Void)?
 
+    // 地磁页用到的附加层和手势
+    /// 手动定的点位
+    var markPoints: [MarkPoint] = []
+    var targetId: String?
+    var highlightId: String?
+    /// 画 1 m 方格（没有货架的小测试区用）
+    var gridCm: Double?
+    var showHeading = true
+    /// 设朝向中：箭头画长、橙色；拖动 / 点击不再平移，而是把方向交给 onHeadingPoint
+    var headingEditing = false
+    var onLongPress: ((Point2) -> Void)?
+    var onDoubleTap: (() -> Void)?
+    var onHeadingPoint: ((Point2) -> Void)?
+
     @State private var zoom: CGFloat = 1
     @State private var pinch: CGFloat = 1
     @State private var pan: CGSize = .zero
@@ -72,6 +86,19 @@ struct MapCanvas: View {
                 .background(Color(.secondarySystemBackground))
                 .contentShape(Rectangle())
                 .gesture(dragGesture(extent: extent, size: geo.size))
+                .simultaneousGesture(
+                    LongPressGesture(minimumDuration: 0.5)
+                        .sequenced(before: DragGesture(minimumDistance: 0))
+                        .onEnded { value in
+                            guard let onLongPress, !headingEditing else { return }
+                            if case .second(true, let drag?) = value {
+                                onLongPress(transform(extent: extent, size: geo.size).toMap(drag.location))
+                            }
+                        }
+                )
+                .simultaneousGesture(
+                    SpatialTapGesture(count: 2).onEnded { _ in onDoubleTap?() }
+                )
                 .simultaneousGesture(
                     MagnificationGesture()
                         .onChanged { v in pinch = v }
@@ -116,10 +143,19 @@ struct MapCanvas: View {
     private func dragGesture(extent: CGRect, size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { v in
+                if headingEditing, let onHeadingPoint {
+                    onHeadingPoint(transform(extent: extent, size: size).toMap(v.location))
+                    return
+                }
                 if abs(v.translation.width) > 10 || abs(v.translation.height) > 10 { dragMoved = true }
                 if dragMoved { dragOffset = v.translation }
             }
             .onEnded { v in
+                if headingEditing {
+                    dragOffset = .zero
+                    dragMoved = false
+                    return
+                }
                 if dragMoved {
                     pan.width += v.translation.width
                     pan.height += v.translation.height
@@ -198,6 +234,23 @@ struct MapCanvas: View {
     private func draw(ctx: GraphicsContext, t: MapTransform) {
         guard let m = map else { return }
 
+        if let g = gridCm, g > 0, m.width > 0, m.height > 0 {
+            var grid = Path()
+            var x = 0.0
+            while x <= m.width + 0.5 {
+                grid.move(to: t.toScreen(Point2(x, 0)))
+                grid.addLine(to: t.toScreen(Point2(x, m.height)))
+                x += g
+            }
+            var y = 0.0
+            while y <= m.height + 0.5 {
+                grid.move(to: t.toScreen(Point2(0, y)))
+                grid.addLine(to: t.toScreen(Point2(m.width, y)))
+                y += g
+            }
+            ctx.stroke(grid, with: .color(.secondary.opacity(0.25)), lineWidth: 0.8)
+        }
+
         // 通道：半透明粗线
         for c in m.crosses {
             var p = Path()
@@ -258,6 +311,28 @@ struct MapCanvas: View {
                        style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
         }
 
+        // 手动定的点位
+        if !markPoints.isEmpty {
+            if markPoints.count > 1 {
+                var line = Path()
+                for (i, p) in markPoints.enumerated() {
+                    i == 0 ? line.move(to: t.toScreen(p.position)) : line.addLine(to: t.toScreen(p.position))
+                }
+                ctx.stroke(line, with: .color(.secondary.opacity(0.5)),
+                           style: StrokeStyle(lineWidth: 1.2, dash: [5, 4]))
+            }
+            for p in markPoints {
+                let c = t.toScreen(p.position)
+                if p.id == targetId || p.id == highlightId {
+                    let ring = CGRect(x: c.x - 15, y: c.y - 15, width: 30, height: 30)
+                    ctx.stroke(Path(ellipseIn: ring), with: .color(p.id == targetId ? .green : .blue), lineWidth: 3)
+                }
+                ctx.fill(Path(ellipseIn: CGRect(x: c.x - 9, y: c.y - 9, width: 18, height: 18)), with: .color(.orange))
+                ctx.draw(Text(p.id).font(.system(size: 10, weight: .semibold)).foregroundColor(.black),
+                         at: c, anchor: .center)
+            }
+        }
+
         // 原始指纹结果（与显示位置明显不同时画空心圈）
         if let raw = rawEstimate,
            position == nil || raw.distance(to: position ?? raw) > rawMarkerThresholdCm {
@@ -276,14 +351,15 @@ struct MapCanvas: View {
                 ctx.stroke(Path(ellipseIn: rect), with: .color(.accentColor.opacity(0.4)), lineWidth: 0.8)
             }
             // 航向：dx = L·sinθ，dy = L·cosθ（地图系，y 向下）
-            if headingRad.isFinite {
-                let L: CGFloat = 26
+            if headingRad.isFinite && showHeading {
+                let L: CGFloat = headingEditing ? 70 : 26
+                let arrowColor: Color = headingEditing ? .orange : .accentColor
                 let tip = CGPoint(x: c.x + L * CGFloat(sin(headingRad)),
                                   y: c.y + L * CGFloat(cos(headingRad)))
                 var arrow = Path()
                 arrow.move(to: c)
                 arrow.addLine(to: tip)
-                ctx.stroke(arrow, with: .color(.accentColor),
+                ctx.stroke(arrow, with: .color(arrowColor),
                            style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                 // 箭头两翼
                 let back = headingRad + .pi
@@ -293,7 +369,7 @@ struct MapCanvas: View {
                     wing.move(to: tip)
                     wing.addLine(to: CGPoint(x: tip.x + 8 * CGFloat(sin(a)),
                                              y: tip.y + 8 * CGFloat(cos(a))))
-                    ctx.stroke(wing, with: .color(.accentColor),
+                    ctx.stroke(wing, with: .color(arrowColor),
                                style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                 }
             }

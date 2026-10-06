@@ -75,6 +75,8 @@ final class MagneticEngine: ObservableObject {
     @Published private(set) var magAccuracy = -1
     @Published private(set) var isTracking = false
     @Published private(set) var headingEditing = false
+    /// 冷启动搜索中：还没收敛，不显示位置
+    @Published private(set) var searching = false
     @Published private(set) var uncertaintyCm: Double = 0
     /// 用磁罗盘持续修正航向。钢货架附近罗盘常偏，默认关，只靠陀螺。
     @Published var useCompassHeading = false
@@ -189,6 +191,7 @@ final class MagneticEngine: ObservableObject {
         stepCount = 0
         uncertaintyCm = 0
         isTracking = false
+        searching = false
         headingEditing = false
         hint = nil
         targetId = nil
@@ -205,6 +208,7 @@ final class MagneticEngine: ObservableObject {
             pipe.tracking = false
         }
         isTracking = false
+        searching = false
         headingEditing = false
         AppLog.i("地磁", "实时定位停止，修正 \(checks.count) 次")
     }
@@ -260,6 +264,50 @@ final class MagneticEngine: ObservableObject {
             isTracking = true
             AppLog.i("地磁", "开始推算：起点 \(p)，朝向 \(deg)°")
         }
+        rememberDeclination()
+    }
+
+    /// 设好朝向后，让融合引擎用当时的罗盘读数反推「地图朝向」，存起来供冷启动使用。
+    private func rememberDeclination() {
+        queue.async { [pipe] in
+            guard let d = pipe.fusion?.config.magneticDeclinationDeg else { return }
+            Task { @MainActor in
+                MagMapStore.shared.setDeclination(d)
+                AppLog.i("地磁", "记住地图朝向（磁偏角）\(Fmt.f(d, 1))°")
+            }
+        }
+    }
+
+    /// 不知道自己在哪：粒子撒满整张可走区域，沿通道直行十几米后自动收敛。
+    /// 需要磁场地图，以及之前至少做过一次「定点 + 设朝向」（用来得到地图朝向）。
+    func startColdSearch() {
+        guard phase == .live, !isTracking else { return }
+        let store = MagMapStore.shared
+        guard let field = store.field else {
+            lastError = "还没有磁场地图，无法自动定位"
+            return
+        }
+        guard let decl = store.declinationDeg else {
+            lastError = "先在已知位置做一次「长按定点 + 双击设朝向」，让 App 记住地图朝向"
+            return
+        }
+        lastError = nil
+        let center = Point2(store.widthCm / 2, store.heightCm / 2)
+        let fusion = makeFusion(at: center, heading: nil, declinationDeg: decl)
+        let localizer = makeLocalizer(field: field, start: nil)
+        queue.sync {
+            pipe.stepBase = 0
+            pipe.fusion = fusion
+            pipe.localizer = localizer
+            pipe.lastFusedPos = nil
+            pipe.lastOut = nil
+            pipe.tracking = true
+        }
+        searching = true
+        isTracking = true
+        position = nil
+        trail = []
+        AppLog.i("地磁", "自动定位：冷启动，磁偏角 \(Fmt.f(decl, 1))°")
     }
 
     /// 设朝向时点 / 拖到的位置：箭头从我的位置指向这里。
@@ -269,13 +317,25 @@ final class MagneticEngine: ObservableObject {
         refreshHint()
     }
 
-    private func makeFusion(at p: Point2, heading: Double?) -> FusionEngine {
+    private func makeFusion(at p: Point2, heading: Double?, declinationDeg: Double? = nil) -> FusionEngine {
+        let store = MagMapStore.shared
         var cfg = FusionConfig()
-        cfg.useCorridorConstraint = false
+        // 有门店通道时，惯导位置被限制在通道里（与蓝牙定位页一致）
+        cfg.useCorridorConstraint = store.usesStoreMap
         cfg.useMagneticHeading = useCompassHeading
-        let f = FusionEngine(corridors: [], config: cfg)
+        if let d = declinationDeg { cfg.magneticDeclinationDeg = d }
+        let f = FusionEngine(corridors: store.crosses, config: cfg)
         f.setInitialPosition(p, headingRad: heading)
         return f
+    }
+
+    private func makeLocalizer(field: MagneticFieldMap, start: Point2?) -> MagneticLocalizer {
+        var cfg = MagneticConfig()
+        // 冷启动时航向只来自罗盘，偏差可能很大
+        if start == nil { cfg.initialHeadingBiasSigmaDeg = 30 }
+        let loc = MagneticLocalizer(field: field, walkable: MagMapStore.shared.walkableMap(), config: cfg)
+        loc.reset(start: start, spreadCm: 50)
+        return loc
     }
 
     /// 在 p 以朝向 heading 重新开始推算（换一个新引擎，步数累加）。
@@ -283,8 +343,7 @@ final class MagneticEngine: ObservableObject {
         let fusion = makeFusion(at: p, heading: heading)
         var localizer: MagneticLocalizer?
         if useMagCorrection, let field = MagMapStore.shared.field {
-            localizer = MagneticLocalizer(field: field)
-            localizer?.reset(start: p, spreadCm: 50)
+            localizer = makeLocalizer(field: field, start: p)
         }
         queue.sync {
             pipe.stepBase += pipe.lastOut?.stepCount ?? 0
@@ -326,12 +385,9 @@ final class MagneticEngine: ObservableObject {
         }
         route = store.points
 
-        var cfgF = FusionConfig()
-        cfgF.useCorridorConstraint = false
-        let fusion = FusionEngine(corridors: [], config: cfgF)
-        fusion.setInitialPosition(start ?? Point2(store.widthCm / 2, store.heightCm / 2), headingRad: heading)
-        let localizer = MagneticLocalizer(field: field)
-        localizer.reset(start: start)
+        let fusion = makeFusion(at: start ?? Point2(store.widthCm / 2, store.heightCm / 2), heading: heading,
+                                declinationDeg: store.declinationDeg)
+        let localizer = makeLocalizer(field: field, start: start)
 
         let writer = Self.makeTrackWriter()
         trackFileName = writer?.name
@@ -467,6 +523,13 @@ final class MagneticEngine: ObservableObject {
             let heading = out.headingRad, acc = pipe.magAccuracy
             Task { @MainActor in
                 self.magAccuracy = acc
+                if self.searching {
+                    self.stepCount = steps
+                    self.estimate = est
+                    guard est?.converged == true else { return }
+                    self.searching = false
+                    AppLog.i("地磁", "冷启动收敛：\(shown)，步数 \(steps)")
+                }
                 self.applyFix(position: shown, uncertainty: unc, heading: heading, steps: steps, feature: feat, estimate: est)
             }
         case .localizing:

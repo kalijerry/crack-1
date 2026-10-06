@@ -2,154 +2,6 @@ import HPASSKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-// MARK: - 地图画布
-
-/// 10×10 m 方格图：点位、轨迹、当前位置。长按空白处放点（仅在传了 onLongPress 时）。
-private struct MagMapCanvas: View {
-    let widthCm: Double
-    let heightCm: Double
-    let points: [MarkPoint]
-    var trail: [Point2] = []
-    var position: Point2?
-    var headingRad: Double = 0
-    var uncertaintyCm: Double = 0
-    var targetId: String?
-    var highlightId: String?
-    var showHeading = true
-    var headingEditing = false
-    var onLongPress: ((Point2) -> Void)?
-    var onDoubleTap: (() -> Void)?
-    /// 设朝向时手指点到 / 拖到的位置。
-    var onPoint: ((Point2) -> Void)?
-
-    private let pad: CGFloat = 24
-
-    var body: some View {
-        GeometryReader { geo in
-            let side = min(geo.size.width, geo.size.height)
-            let plot = side - pad - 6
-            let scale = plot / CGFloat(max(widthCm, heightCm))
-            let toView = { (p: Point2) -> CGPoint in
-                CGPoint(x: pad + CGFloat(p.x) * scale, y: pad + CGFloat(p.y) * scale)
-            }
-            let toCm = { (v: CGPoint) -> Point2 in
-                Point2(Double((v.x - pad) / scale), Double((v.y - pad) / scale))
-            }
-            Canvas { ctx, _ in
-                // 网格：每 1 m 一条线
-                var grid = Path()
-                var strong = Path()
-                for m in 0...Int(widthCm / 100) {
-                    let x = pad + CGFloat(m) * 100 * scale
-                    var seg = Path()
-                    seg.move(to: CGPoint(x: x, y: pad))
-                    seg.addLine(to: CGPoint(x: x, y: pad + CGFloat(heightCm) * scale))
-                    if m % 5 == 0 { strong.addPath(seg) } else { grid.addPath(seg) }
-                    ctx.draw(Text("\(m)").font(.system(size: 9)).foregroundColor(.secondary),
-                             at: CGPoint(x: x, y: pad - 11), anchor: .center)
-                }
-                for m in 0...Int(heightCm / 100) {
-                    let y = pad + CGFloat(m) * 100 * scale
-                    var seg = Path()
-                    seg.move(to: CGPoint(x: pad, y: y))
-                    seg.addLine(to: CGPoint(x: pad + CGFloat(widthCm) * scale, y: y))
-                    if m % 5 == 0 { strong.addPath(seg) } else { grid.addPath(seg) }
-                    ctx.draw(Text("\(m)").font(.system(size: 9)).foregroundColor(.secondary),
-                             at: CGPoint(x: pad - 12, y: y), anchor: .center)
-                }
-                ctx.stroke(grid, with: .color(.secondary.opacity(0.25)), lineWidth: 1)
-                ctx.stroke(strong, with: .color(.secondary.opacity(0.55)), lineWidth: 1)
-
-                // 点位按编号连线
-                if points.count > 1 {
-                    var line = Path()
-                    for (i, p) in points.enumerated() {
-                        i == 0 ? line.move(to: toView(p.position)) : line.addLine(to: toView(p.position))
-                    }
-                    ctx.stroke(line, with: .color(.secondary.opacity(0.6)),
-                               style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
-                }
-
-                // 轨迹
-                if trail.count > 1 {
-                    var t = Path()
-                    for (i, p) in trail.enumerated() { i == 0 ? t.move(to: toView(p)) : t.addLine(to: toView(p)) }
-                    ctx.stroke(t, with: .color(.blue.opacity(0.7)), lineWidth: 2)
-                }
-
-                // 点位
-                for p in points {
-                    let c = toView(p.position)
-                    if p.id == targetId {
-                        ctx.stroke(Path(ellipseIn: CGRect(x: c.x - 15, y: c.y - 15, width: 30, height: 30)),
-                                   with: .color(.green), lineWidth: 3)
-                    }
-                    if p.id == highlightId {
-                        ctx.stroke(Path(ellipseIn: CGRect(x: c.x - 15, y: c.y - 15, width: 30, height: 30)),
-                                   with: .color(.blue), lineWidth: 3)
-                    }
-                    ctx.fill(Path(ellipseIn: CGRect(x: c.x - 9, y: c.y - 9, width: 18, height: 18)), with: .color(.orange))
-                    ctx.draw(Text(p.id).font(.system(size: 10, weight: .semibold)).foregroundColor(.black), at: c, anchor: .center)
-                }
-
-                // 当前位置
-                if let pos = position {
-                    let c = toView(pos)
-                    let r = CGFloat(uncertaintyCm) * scale
-                    if r > 4 {
-                        ctx.stroke(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)),
-                                   with: .color(.blue.opacity(0.4)), lineWidth: 1.5)
-                    }
-                    ctx.fill(Path(ellipseIn: CGRect(x: c.x - 7, y: c.y - 7, width: 14, height: 14)), with: .color(.blue))
-                    if showHeading {
-                        // 航向箭头：θ=0 指向 +y（屏幕向下），dx = sinθ，dy = cosθ。设朝向时画长一点、换颜色。
-                        let len: CGFloat = headingEditing ? 60 : 22
-                        let color: Color = headingEditing ? .orange : .blue
-                        let dir = CGPoint(x: CGFloat(sin(headingRad)), y: CGFloat(cos(headingRad)))
-                        let tip = CGPoint(x: c.x + dir.x * len, y: c.y + dir.y * len)
-                        var arrow = Path()
-                        arrow.move(to: c)
-                        arrow.addLine(to: tip)
-                        // 箭头尖
-                        let back = CGPoint(x: tip.x - dir.x * 10, y: tip.y - dir.y * 10)
-                        arrow.move(to: tip)
-                        arrow.addLine(to: CGPoint(x: back.x - dir.y * 6, y: back.y + dir.x * 6))
-                        arrow.move(to: tip)
-                        arrow.addLine(to: CGPoint(x: back.x + dir.y * 6, y: back.y - dir.x * 6))
-                        ctx.stroke(arrow, with: .color(color), lineWidth: 3)
-                    }
-                }
-            }
-            .frame(width: side, height: side)
-            .contentShape(Rectangle())
-            .gesture(
-                LongPressGesture(minimumDuration: 0.5)
-                    .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .local))
-                    .onEnded { value in
-                        guard let onLongPress else { return }
-                        if case .second(true, let drag?) = value {
-                            let p = toCm(drag.location)
-                            if p.x >= -20, p.x <= widthCm + 20, p.y >= -20, p.y <= heightCm + 20 {
-                                onLongPress(p)
-                            }
-                        }
-                    }
-            )
-            .simultaneousGesture(
-                SpatialTapGesture(count: 2).onEnded { _ in onDoubleTap?() }
-            )
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 0, coordinateSpace: .local).onChanged { v in
-                    guard headingEditing, let onPoint else { return }
-                    onPoint(toCm(v.location))
-                }
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .aspectRatio(1, contentMode: .fit)
-    }
-}
-
 // MARK: - 页面
 
 /// 地磁定位：地图点位 → 实时定位（定点即走）；高级里保留按点位建磁场图和粒子滤波定位。
@@ -162,6 +14,7 @@ struct MagneticView: View {
 
     @StateObject private var engine = MagneticEngine()
     @ObservedObject private var store = MagMapStore.shared
+    @ObservedObject private var storeData = StoreDataStore.shared
 
     @State private var step: Step = .map
     @State private var showImporter = false
@@ -208,28 +61,39 @@ struct MagneticView: View {
             }
         }
         .onAppear {
+            store.adopt(map: storeData.map)
             if startId.isEmpty { startId = store.points.first?.id ?? "" }
         }
+        .onChange(of: storeData.map?.crosses.count) { _ in store.adopt(map: storeData.map) }
     }
 
     // MARK: 画布
 
+    /// 画布用的地图：有门店地图就用它，没有就是一块带 1 m 方格的小测试区。
+    private var canvasMap: StoreMap? {
+        if let m = storeData.map, m.width > 0 { return m }
+        return StoreMap(width: store.widthCm, height: store.heightCm, shelves: [], crosses: [])
+    }
+
     private var canvas: some View {
         let showsTrack = step != .map
         let live = step == .live && engine.phase == .live
-        return MagMapCanvas(widthCm: store.widthCm, heightCm: store.heightCm,
-                            points: store.points,
-                            trail: showsTrack ? engine.trail : [],
-                            position: showsTrack ? engine.position : nil,
-                            headingRad: engine.headingRad,
-                            uncertaintyCm: engine.uncertaintyCm,
-                            targetId: showsTrack ? engine.targetId : nil,
-                            highlightId: calibrationHighlight,
-                            showHeading: !live || engine.isTracking || engine.headingEditing,
-                            headingEditing: live && engine.headingEditing,
-                            onLongPress: longPressAction,
-                            onDoubleTap: live ? { engine.toggleHeadingEdit() } : nil,
-                            onPoint: live ? { engine.pointHeading(toward: $0) } : nil)
+        return MapCanvas(map: canvasMap,
+                         fingerprints: [],
+                         trail: showsTrack ? engine.trail : [],
+                         position: showsTrack ? engine.position : nil,
+                         headingRad: engine.headingRad,
+                         uncertaintyCm: engine.uncertaintyCm,
+                         showFingerprints: false,
+                         markPoints: store.points,
+                         targetId: showsTrack ? engine.targetId : nil,
+                         highlightId: calibrationHighlight,
+                         gridCm: storeData.map == nil ? 100 : nil,
+                         showHeading: !live || engine.isTracking || engine.headingEditing,
+                         headingEditing: live && engine.headingEditing,
+                         onLongPress: longPressAction,
+                         onDoubleTap: live ? { engine.toggleHeadingEdit() } : nil,
+                         onHeadingPoint: live ? { engine.pointHeading(toward: $0) } : nil)
     }
 
     private var longPressAction: ((Point2) -> Void)? {
@@ -258,7 +122,9 @@ struct MagneticView: View {
 
     @ViewBuilder private var mapPanel: some View {
         Section {
-            Text("长按方格图空白处放点，编号自动递增。点位按编号连线，校准时就沿着这条线走。")
+            Text(store.usesStoreMap
+                 ? "地图来自「门店数据」页。长按地图空白处放点，点位用作起点、目标和路线建图的锚点。"
+                 : "还没有门店地图，现在是 10×10 m 测试区。长按方格图空白处放点，点位按编号连线。")
                 .font(.footnote).foregroundStyle(.secondary)
             LoggedButton(name: "导入地图", detail: "JSON") { showImporter = true } label: {
                 Label("导入地图 JSON（网页编辑器导出的）", systemImage: "square.and.arrow.down")
@@ -267,7 +133,10 @@ struct MagneticView: View {
             if FileManager.default.fileExists(atPath: MagMapStore.fileURL.path), !store.points.isEmpty {
                 ShareLink("导出地图（含点位和磁场数据）", item: MagMapStore.fileURL)
             }
-        } header: { Text("地图 \(Int(store.widthCm / 100)) × \(Int(store.heightCm / 100)) m") }
+        } header: {
+            Text("地图 \(Int(store.widthCm / 100)) × \(Int(store.heightCm / 100)) m"
+                 + (store.usesStoreMap ? "，\(store.crosses.count) 条通道" : ""))
+        }
 
         Section {
             if store.points.isEmpty {
@@ -304,6 +173,10 @@ struct MagneticView: View {
                     .disabled(store.field == nil)
                 bigButton("打开传感器，开始", name: "实时·开始") { engine.startLive() }
                     .disabled(engine.phase != .idle)
+                if store.field != nil && store.usesStoreMap {
+                    Text("已有磁场地图：打开传感器后，可以用「自动定位」，不用手动定点。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
             } header: { Text("实时定位") } footer: {
                 Text("罗盘在钢货架旁常偏几十度，默认关闭，只用陀螺仪推算航向。")
             }
@@ -324,13 +197,19 @@ struct MagneticView: View {
             } header: { Text("① 传感器") }
 
             Section {
+                if !engine.isTracking && store.field != nil && store.usesStoreMap && engine.position == nil {
+                    bigButton("自动定位（不知道我在哪）", name: "实时·自动定位") { engine.startColdSearch() }
+                }
                 Text(liveInstruction).font(.callout)
                 if let p = engine.position {
                     row("位置", "x \(Int(p.x))  y \(Int(p.y)) cm")
                     row("朝向", "\(Int((engine.headingRad * 180 / Double.pi).rounded()))°")
                 }
-                if engine.isTracking {
+                if engine.isTracking && !engine.searching {
                     row("不确定度", "± \(Int(engine.uncertaintyCm)) cm")
+                }
+                if engine.searching, let e = engine.estimate {
+                    row("搜索中", "置信度 \(Int((e.confidence * 100).rounded()))%")
                 }
                 bigButton("停止", name: "实时·停止") { engine.stopLive() }
                     .tint(.red)
@@ -363,6 +242,7 @@ struct MagneticView: View {
     }
 
     private var liveInstruction: String {
+        if engine.searching { return "正在找你在哪：沿通道直行 20～30 米，不要原地转圈。找到后地图上会出现蓝点。" }
         if engine.position == nil { return "长按地图：我现在在这里（离点位 50 cm 内会自动吸附到点位）。" }
         if engine.headingEditing { return "在地图上点或拖动，让橙色箭头指向你面朝的方向，然后双击确定。" }
         if !engine.isTracking { return "双击地图，开始设朝向。" }

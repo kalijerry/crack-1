@@ -87,6 +87,12 @@ private final class MagPipeline {
     var vioProgress = 0.0
     /// 朝向未知（冷启动 / 只知道位置）时，直接把 ARKit 的原始位移交给粒子滤波，旋转由粒子去猜
     var vioRaw = false
+    /// 冷启动（不知道朝向）时，用「地磁定出来的地图位置 ↔ ARKit 位置」估旋转，给 AR 叠加用
+    let rotFit = ARMapRotationFit()
+    /// 和 lastShown 同一时刻的 ARKit 位置
+    var shownA: Point2?
+    /// 地磁滤波器当前是否有把握（没用地磁时为 true）
+    var lastConverged = true
     var rawLastA: Point2?
 
     // 磁场来源：地图用「原始磁力计减偏置」建的，实时也必须一样
@@ -454,6 +460,8 @@ final class MagneticEngine: ObservableObject {
             pipe.tracking = true
             pipe.vioPending = nil
             pipe.vioRaw = raw && pipe.vioEnabled
+            pipe.rotFit.reset()
+            pipe.shownA = nil
             pipe.vioActive = pipe.vioRaw          // 从一开始就不让计步推粒子：两种位移的旋转不一致
             pipe.rawLastA = nil
             pipe.vioAccum = .zero
@@ -553,6 +561,8 @@ final class MagneticEngine: ObservableObject {
             pipe.lastShown = p
             pipe.vioAccum = .zero
             pipe.vioRaw = false
+            pipe.rotFit.reset()
+            pipe.shownA = nil
             if pipe.vioEnabled {
                 // 修正位置且旋转已经对齐：只拉位置；其他情况重新对齐
                 pipe.vioPending = (isCorrection && pipe.aligner.isAligned) ? .keep(p) : .fresh(p, heading)
@@ -715,6 +725,8 @@ final class MagneticEngine: ObservableObject {
             pipe.vioAccum = .zero
             pipe.rawLastA = nil
             pipe.vioRaw = useVIO && pipe.vioEnabled && !headingKnown
+            pipe.rotFit.reset()
+            pipe.shownA = nil
             pipe.vioActive = pipe.vioRaw
             pipe.vioPending = (useVIO && pipe.vioEnabled && headingKnown) ? .fresh(start!, heading!) : nil
         }
@@ -1043,6 +1055,9 @@ final class MagneticEngine: ObservableObject {
                 }
             }
             pipe.lastShown = e.position
+            pipe.shownA = a
+            pipe.lastConverged = e.converged
+            if e.converged { pipe.rotFit.add(ar: a, map: e.position) } else { pipe.rotFit.reset() }
             pipe.pos = e.position
             let h = pipe.vioHeadingVec.length > 0.3 ? atan2(pipe.vioHeadingVec.x, pipe.vioHeadingVec.y) : pipe.lastHeadingRad
             pipe.lastHeadingRad = h
@@ -1098,6 +1113,8 @@ final class MagneticEngine: ObservableObject {
                 unc = e.uncertaintyCm
             }
             pipe.lastShown = shown
+            pipe.shownA = a
+            pipe.lastConverged = est?.converged ?? true
             let h = pipe.vioHeadingVec.length > 0.3 ? atan2(pipe.vioHeadingVec.x, pipe.vioHeadingVec.y) : pipe.lastHeadingRad
             pipe.lastHeadingRad = h
             var hd = h * 180 / Double.pi
@@ -1133,7 +1150,13 @@ final class MagneticEngine: ObservableObject {
         let aligned = pipe.vioActive, progress = pipe.vioProgress
         let pdr = pipe.pdrDistanceCm
         let lat = Self.lateralDescription(pipe.lastLatLeft, pipe.lastLatRight)
-        let alignment = (pipe.vioEnabled && !pipe.vioRaw && pipe.vioActive) ? pipe.aligner.transform : nil
+        // AR 叠加：以「界面上显示的位置」为锚点，这样地磁修正了位置，AR 里的货架也跟着挪，和地图上的点一致。
+        // 旋转：对齐过的用对齐器的；冷启动用地磁轨迹和 ARKit 轨迹拟合出来的。地磁没把握时不显示。
+        var alignment: MapARTransform?
+        if pipe.vioEnabled, pipe.lastConverged, let p = pipe.lastShown, let a = pipe.shownA {
+            let phi = pipe.vioRaw ? pipe.rotFit.phi : (pipe.vioActive ? pipe.aligner.transform?.phi : nil)
+            if let phi { alignment = MapARTransform(pRef: p, aRef: a, phi: phi) }
+        }
         let rawReady = pipe.useRawMag ? pipe.biasTracker.bias : nil
         let rawMode = pipe.useRawMag
         Task { @MainActor in

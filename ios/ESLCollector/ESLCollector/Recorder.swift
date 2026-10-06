@@ -64,6 +64,22 @@ private final class SharedState {
     }
 }
 
+/// 录制时顺带把 IMU 和原始磁力计转给别的模块（建图时的地磁定位）。回调在传感器线程上，接收方自己换队列。
+final class SensorTap: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _imu: (@Sendable (IMUSample) -> Void)?
+    private var _raw: (@Sendable (Int64, (Double, Double, Double)) -> Void)?
+
+    var imu: (@Sendable (IMUSample) -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return _imu }
+        set { lock.lock(); _imu = newValue; lock.unlock() }
+    }
+    var raw: (@Sendable (Int64, (Double, Double, Double)) -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return _raw }
+        set { lock.lock(); _raw = newValue; lock.unlock() }
+    }
+}
+
 @MainActor
 final class Recorder: ObservableObject {
     // 录制
@@ -103,6 +119,7 @@ final class Recorder: ObservableObject {
 
     private let ble = BLEScanner()
     private let motion = MotionRecorder()
+    let tap = SensorTap()
     private let shared = SharedState()
     private lazy var sensors = SensorLogger(motionManager: motion.manager)
     private var bleWriter: CSVWriter?
@@ -168,7 +185,10 @@ final class Recorder: ObservableObject {
                 bleW.append("\(r.tMs),\(Fmt.csv(point)),\(r.eslId ?? ""),\(r.rssi),\(r.src),\(r.mfgHex)")
                 shared.addReading(t: r.tMs, id: r.eslId ?? r.src, rssi: r.rssi)
             }
+            let tap = self.tap
+            sensors.tap = tap
             motion.onSample = { s in
+                tap.imu?(s)
                 let line = [
                     "\(s.tMs)",
                     Fmt.f(s.acc.0), Fmt.f(s.acc.1), Fmt.f(s.acc.2),

@@ -140,7 +140,7 @@ final class SurveyCoverage: ObservableObject {
 /// 每次修正都写进 `anchors.csv`，离线建图时用它们分段校正 ARKit 的漂移。
 @MainActor
 final class SurveyEngine: ObservableObject {
-    enum Stage { case idle, needPosition, needHeading, aligning, tracking }
+    enum Stage { case idle, needPosition, autoLocating, needHeading, aligning, tracking }
 
     /// 走出多远（cm）才用位移方向对齐朝向
     private static let alignCm = 150.0
@@ -193,15 +193,41 @@ final class SurveyEngine: ObservableObject {
     private var lastMapPos: Point2?
     private var lastLogMs: Int64 = 0
     private var lock: CorridorLock?
+
+    // 地磁定位（和采集一起跑）：自动起点 + 精度测试
+    /// 采集的同时测地磁定位精度（需要已经有磁场图）
+    @Published var evaluate = false
+    @Published private(set) var shadowStatus: String?
+    @Published private(set) var evalSummary: String?
+    private(set) var evaluator = LocalizationEvaluator()
+    private let shadowQueue = DispatchQueue(label: "survey.shadow", qos: .userInitiated)
+    private let shadowBox = ShadowBox()
+    private var shadowWriter: CSVWriter?
+    private var lastEvalPublish = Date.distantPast
+    /// 自动起点：收敛后连续走这么远（cm）才认
+    static let autoStartStableCm = 500.0
     private var speedRef: (t: Int64, a: Point2)?
 
     init() {
         // 把录制器的变化转发出来，界面只需要观察本对象
         cancellable = Publishers.Merge(recorder.objectWillChange, coverage.objectWillChange)
             .sink { [weak self] _ in self?.objectWillChange.send() }
+        let box = shadowBox, sq = shadowQueue
         ar.onPose = { [weak self] t, x, z, state in
             Task { @MainActor in self?.handlePose(t: t, a: Point2(x, z), state: state) }
+            sq.async {
+                guard let sh = box.sh, let e = sh.pose(a: Point2(x, z), normal: state == 2) else { return }
+                let stable = sh.stableCm, phi = sh.rotFit.phi, ea = sh.estimateA
+                Task { @MainActor in self?.handleShadow(t: t, e, stable: stable, phi: phi, a: ea) }
+            }
         }
+        recorder.tap.imu = { s in
+            let h = HPASSKit.IMUSample(tMs: s.tMs, ax: s.acc.0, ay: s.acc.1, az: s.acc.2,
+                                       gx: s.gyr.0, gy: s.gyr.1, gz: s.gyr.2,
+                                       mx: s.mag.0, my: s.mag.1, mz: s.mag.2)
+            sq.async { box.sh?.imu(h) }
+        }
+        recorder.tap.raw = { t, v in sq.async { box.sh?.rawMag(tMs: t, v) } }
         ar.onFloor = { [weak self] y in
             Task { @MainActor in self?.arFloorY = y }
         }
@@ -270,6 +296,11 @@ final class SurveyEngine: ObservableObject {
         latestA = nil
         lastMapPos = nil
         lock = store.crosses.isEmpty ? nil : CorridorLock(crosses: store.crosses)
+        evaluator = LocalizationEvaluator()
+        evalSummary = nil
+        shadowStatus = nil
+        shadowWriter = nil
+        if evaluate { startShadow(dir: dir) }
         lockFixes = 0
         speedMS = 0
         speedRef = nil
@@ -294,6 +325,8 @@ final class SurveyEngine: ObservableObject {
         }
         ar.stop()
         arAlignment = nil
+        stopShadow()
+        if evaluate, let s = evalSummary { AppLog.i("建图", "地磁定位精度：\(s)") }
         anchorsWriter?.close()
         anchorsWriter = nil
         recorder.stopRecording()
@@ -318,7 +351,9 @@ final class SurveyEngine: ObservableObject {
         let (p, snapLabel) = snap(tapped)
         lastSnap = snapLabel
         switch stage {
-        case .needPosition, .needHeading:
+        case .needPosition, .autoLocating, .needHeading:
+            if stage == .autoLocating && !evaluate { stopShadow() }
+            shadowStatus = nil
             pRef = p
             aRef = a
             position = p
@@ -431,6 +466,87 @@ final class SurveyEngine: ObservableObject {
         position = p
     }
 
+    // MARK: 地磁定位（自动起点 / 精度测试）
+
+    var canUseShadow: Bool { MagMapStore.shared.field != nil }
+
+    /// 自动起点：不长按、不设朝向，直接沿采集过的通道走，地磁定到了就自动当起点。
+    func startAutoLocate() {
+        guard stage == .needPosition, let dir = recorder.currentSessionDir else { return }
+        guard canUseShadow else { lastError = "还没有磁场图：自动起点只能在已经采过、生成过磁场图的区域用"; return }
+        startShadow(dir: dir)
+        stage = .autoLocating
+        shadowStatus = "地磁定位中：沿采集过的通道正常往前走 10～20 m"
+        AppLog.i("建图", "自动起点：开始地磁定位")
+    }
+
+    private func startShadow(dir: URL) {
+        let store = MagMapStore.shared
+        guard shadowBox.sh == nil, let field = store.field else { return }
+        let walk = store.walkableMap()
+        let raw = store.magSource == "raw"
+        if shadowWriter == nil {
+            shadowWriter = try? CSVWriter(url: dir.appendingPathComponent("shadow_loc.csv"),
+                                          header: "t_ms,est_x_cm,est_y_cm,unc_cm,converged,ref_x_cm,ref_y_cm")
+        }
+        let box = shadowBox
+        shadowQueue.async { box.sh = ShadowLocalizer(field: field, walkable: walk, useRawMag: raw) }
+    }
+
+    private func stopShadow() {
+        let box = shadowBox
+        shadowQueue.async { box.sh = nil }
+        shadowWriter?.close()
+        shadowWriter = nil
+    }
+
+    private func handleShadow(t: Int64, _ e: MagneticEstimate, stable: Double, phi: Double?, a: Point2?) {
+        let ref = stage == .tracking ? position : nil
+        shadowWriter?.append([
+            "\(t)", Fmt.f(e.position.x, 1), Fmt.f(e.position.y, 1), Fmt.f(e.uncertaintyCm, 0), e.converged ? "1" : "0",
+            ref.map { Fmt.f($0.x, 1) } ?? "", ref.map { Fmt.f($0.y, 1) } ?? "",
+        ].joined(separator: ","))
+        switch stage {
+        case .autoLocating:
+            if !e.converged {
+                shadowStatus = "地磁定位中：沿采集过的通道正常往前走 10～20 m"
+            } else if stable < Self.autoStartStableCm || phi == nil {
+                shadowStatus = "已经定到，确认中（\(Int(stable / 100)) / \(Int(Self.autoStartStableCm / 100)) m）"
+            } else if let phi, let a {
+                autoStart(at: e.position, ar: a, phi: phi, uncertainty: e.uncertaintyCm)
+            }
+        case .tracking where evaluate:
+            guard let r = ref else { return }
+            evaluator.add(estimate: e, reference: r)
+            if Date().timeIntervalSince(lastEvalPublish) > 1 {
+                lastEvalPublish = Date()
+                evalSummary = evaluator.summary
+            }
+        default:
+            break
+        }
+    }
+
+    private func autoStart(at p: Point2, ar a: Point2, phi newPhi: Double, uncertainty: Double) {
+        pRef = p
+        aRef = a
+        phi = newPhi
+        position = p
+        lastMapPos = p
+        trail = [p]
+        walkedSinceAnchorM = 0
+        lock?.reset()
+        let note = "自动起点 ±\(Int(uncertainty)) cm"
+        writeAnchor(kind: "start", map: p, ar: a, heading: nil, note: note)
+        writeAnchor(kind: "align", map: p, ar: a, heading: newPhi, note: note)
+        stage = .tracking
+        shadowStatus = nil
+        if !evaluate { stopShadow() }
+        publishAlignment()
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        AppLog.i("建图", "自动起点：\(p)，旋转 \(Fmt.f(newPhi * 180 / Double.pi, 1))°，不确定度 \(Int(uncertainty)) cm")
+    }
+
     // MARK: 工具
 
     /// 离路点 / 点位 60 cm 以内就吸附上去。
@@ -461,4 +577,9 @@ final class SurveyEngine: ObservableObject {
         anchorsWriter?.flush()
         anchorCount += 1
     }
+}
+
+/// 只在 shadowQueue 上读写
+private final class ShadowBox: @unchecked Sendable {
+    var sh: ShadowLocalizer?
 }

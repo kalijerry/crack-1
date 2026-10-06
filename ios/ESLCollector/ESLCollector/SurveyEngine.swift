@@ -1,3 +1,4 @@
+import ARKit
 import Combine
 import Foundation
 import HPASSKit
@@ -131,6 +132,12 @@ final class SurveyEngine: ObservableObject {
     @Published private(set) var walkedSinceAnchorM = 0.0
     @Published private(set) var totalWalkedM = 0.0
     @Published private(set) var sessionName: String?
+    /// LiDAR 实景扫描：建图时同时扫网格，结束时导出 mesh.ply（电脑上用 tools/meshcheck.py 量货架高度和偏移）
+    @Published var scanMesh = false
+    /// 地图 → ARKit 的变换（对齐之后才有），给 AR 叠加用
+    @Published private(set) var arAlignment: MapARTransform?
+    @Published private(set) var arFloorY: Double?
+    var arSession: ARSession { ar.session }
     /// 上一次建图采集的会话目录（结束之后用来导出）
     @Published private(set) var lastSessionDir: URL?
     @Published private(set) var lastError: String?
@@ -155,6 +162,9 @@ final class SurveyEngine: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
         ar.onPose = { [weak self] t, x, z, state in
             Task { @MainActor in self?.handlePose(t: t, a: Point2(x, z), state: state) }
+        }
+        ar.onFloor = { [weak self] y in
+            Task { @MainActor in self?.arFloorY = y }
         }
         ar.onError = { [weak self] msg in
             Task { @MainActor in
@@ -193,7 +203,10 @@ final class SurveyEngine: ObservableObject {
         do {
             anchorsWriter = try CSVWriter(url: dir.appendingPathComponent("anchors.csv"),
                                           header: "t_ms,kind,map_x_cm,map_y_cm,ar_x_cm,ar_z_cm,heading_rad,note")
-            try ar.start(dir: dir, wantsDepth: true, lateralFile: dir.appendingPathComponent("depth_lateral.csv"))
+            try ar.start(dir: dir, wantsDepth: true, lateralFile: dir.appendingPathComponent("depth_lateral.csv"),
+                         wantsMesh: scanMesh)
+            arFloorY = nil
+            arAlignment = nil
         } catch {
             lastError = "启动失败：\(error.localizedDescription)"
             recorder.stopRecording()
@@ -218,7 +231,17 @@ final class SurveyEngine: ObservableObject {
         if stage == .tracking, let p = position, let a = latestA {
             writeAnchor(kind: "end", map: p, ar: a, heading: nil, note: "")
         }
+        if scanMesh, let dir = recorder.currentSessionDir {
+            do {
+                let n = try ar.exportMesh(to: dir.appendingPathComponent("mesh.ply"))
+                recorder.extraMeta["lidar_mesh"] = n.vertices > 0
+                AppLog.i("建图", "LiDAR 网格：\(n.vertices) 个顶点，\(n.faces) 个三角形")
+            } catch {
+                AppLog.e("建图", "导出网格失败：\(error.localizedDescription)")
+            }
+        }
         ar.stop()
+        arAlignment = nil
         anchorsWriter?.close()
         anchorsWriter = nil
         recorder.stopRecording()
@@ -260,6 +283,7 @@ final class SurveyEngine: ObservableObject {
             walkedSinceAnchorM = 0
             writeAnchor(kind: "reanchor", map: p, ar: a, heading: nil,
                         note: (snapLabel ?? "") + (before.map { " 修正前偏 \(Int($0.distance(to: p))) cm" } ?? ""))
+            publishAlignment()
         case .idle:
             return
         }
@@ -283,6 +307,7 @@ final class SurveyEngine: ObservableObject {
         pRef = p
         aRef = a
         stage = .aligning
+        publishAlignment()
         writeAnchor(kind: "heading", map: p, ar: a, heading: headingRad, note: "")
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     }
@@ -293,6 +318,10 @@ final class SurveyEngine: ObservableObject {
     }
 
     func resetCoverage() { coverage.reset() }
+
+    private func publishAlignment() {
+        arAlignment = stage == .tracking ? MapARTransform(pRef: pRef, aRef: aRef, phi: phi) : nil
+    }
 
     // MARK: ARKit 位姿
 
@@ -310,6 +339,7 @@ final class SurveyEngine: ObservableObject {
             phi = atan2(hm.y, hm.x) - atan2(d.y, d.x)
             stage = .tracking
             AppLog.i("建图", "朝向对齐完成，旋转 \(Fmt.f(phi * 180 / Double.pi, 1))°")
+            publishAlignment()
         case .tracking:
             break
         default:

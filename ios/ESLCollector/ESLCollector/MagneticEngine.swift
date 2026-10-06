@@ -1,3 +1,4 @@
+import ARKit
 import CoreMotion
 import Foundation
 import HPASSKit
@@ -157,6 +158,11 @@ final class MagneticEngine: ObservableObject {
     @Published private(set) var vioAligned = false
     @Published private(set) var vioProgress = 0.0
     @Published private(set) var lateralText = ""
+    /// 地图 → ARKit 的变换（视觉里程计已对齐、且不是冷启动的原始模式时才有），给 AR 叠加用
+    @Published private(set) var arAlignment: MapARTransform?
+    @Published private(set) var arFloorY: Double?
+    var arSession: ARSession { ar.session }
+    var arRunningNow: Bool { arRunning }
 
     static let trailCapacity = 600
     private static let arriveCm: Double = 100
@@ -193,6 +199,9 @@ final class MagneticEngine: ObservableObject {
         ar.onLateral = { [weak self] lat in
             guard let self else { return }
             queue.async { self.handleLateral(lat, pipe: pipe) }
+        }
+        ar.onFloor = { [weak self] y in
+            Task { @MainActor in self?.arFloorY = y }
         }
         ar.onError = { [weak self] msg in
             Task { @MainActor in
@@ -557,6 +566,8 @@ final class MagneticEngine: ObservableObject {
         guard arRunning else { return }
         ar.stop()
         arRunning = false
+        arAlignment = nil
+        arFloorY = nil
         queue.async { [pipe] in pipe.vioEnabled = false; pipe.vioActive = false; pipe.vioPending = nil }
         vioTracking = 0
         vioAligned = false
@@ -1003,6 +1014,7 @@ final class MagneticEngine: ObservableObject {
         let aligned = pipe.vioActive, progress = pipe.vioProgress
         let pdr = pipe.pdrDistanceCm
         let lat = Self.lateralDescription(pipe.lastLatLeft, pipe.lastLatRight)
+        let alignment = (pipe.vioEnabled && !pipe.vioRaw && pipe.vioActive) ? pipe.aligner.transform : nil
         Task { @MainActor in
             self.feature = f
             self.magTrust = trust
@@ -1016,6 +1028,7 @@ final class MagneticEngine: ObservableObject {
                 self.vioAligned = aligned
                 self.vioProgress = progress
                 self.lateralText = lat
+                if self.arAlignment != alignment { self.arAlignment = alignment }
                 self.comparePedometer(pdrCm: pdr)
             }
         }

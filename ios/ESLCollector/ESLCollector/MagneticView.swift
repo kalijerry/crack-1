@@ -1,6 +1,13 @@
+import ARKit
 import HPASSKit
 import SceneKit
 import SwiftUI
+
+/// 持有 AR 叠加场景（引用类型，SwiftUI 重绘时不重建）。
+@MainActor
+final class AROverlayModel: ObservableObject {
+    let scene = AROverlayScene()
+}
 import UniformTypeIdentifiers
 
 // MARK: - 页面
@@ -37,6 +44,13 @@ struct MagneticView: View {
     @State private var camera3D: Camera3D = .follow
     @State private var shelfHeight3D = 1.8
     @State private var mapUpText = ""
+    @StateObject private var arModel = AROverlayModel()
+    @State private var showAR = false
+    @State private var arAngle = 0.0
+    @State private var arDX = 0.0
+    @State private var arDY = 0.0
+    @State private var arNote = ""
+    @State private var arSaved = 0
     @State private var exportURL: URL?
     @State private var exportError: String?
 
@@ -62,8 +76,12 @@ struct MagneticView: View {
                     }
                     switch step {
                     case .map: mapPanel
-                    case .live: livePanel
-                    case .survey: surveyPanel
+                    case .live:
+                        arSection
+                        livePanel
+                    case .survey:
+                        arSection
+                        surveyPanel
                     case .advanced:
                         calibratePanel
                         locatePanel
@@ -145,17 +163,40 @@ struct MagneticView: View {
     /// 3D 里没有长按定点、双击设朝向，这些只在 2D 里做。
     private var canvasArea: some View {
         ZStack(alignment: .topTrailing) {
-            if show3D, let sc = model3D.scene {
+            if showAR, let session = arSessionNow {
+                ZStack(alignment: .bottomLeading) {
+                    AROverlayView(session: session, overlay: arModel.scene)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    if arAlignmentNow == nil {
+                        Text("还没对齐：先在 2D 里定点、设朝向，再朝箭头方向直走 1.5 m")
+                            .font(.footnote.weight(.semibold)).padding(6)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                            .padding(8)
+                    }
+                }
+            } else if show3D, let sc = model3D.scene {
                 Store3DView(scene: sc, follow: camera3D == .follow)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             } else {
                 canvas
             }
             VStack(alignment: .trailing, spacing: 6) {
-                LoggedButton(name: "2D/3D", detail: show3D ? "→2D" : "→3D") { toggle3D() } label: {
-                    Text(show3D ? "2D" : "3D").font(.footnote.bold()).frame(width: 40, height: 28)
+                if !showAR {
+                    LoggedButton(name: "2D/3D", detail: show3D ? "→2D" : "→3D") { toggle3D() } label: {
+                        Text(show3D ? "2D" : "3D").font(.footnote.bold()).frame(width: 40, height: 28)
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
-                .buttonStyle(.borderedProminent)
+                if arSessionNow != nil {
+                    LoggedButton(name: "AR", detail: showAR ? "关" : "开") {
+                        showAR.toggle()
+                        if showAR { syncAR(force: true) }
+                    } label: {
+                        Text(showAR ? "地图" : "AR").font(.footnote.bold()).frame(width: 40, height: 28)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.orange)
+                }
                 if show3D {
                     Picker("视角", selection: $camera3D) {
                         ForEach(Camera3D.allCases) { Text($0.rawValue).tag($0) }
@@ -168,6 +209,16 @@ struct MagneticView: View {
             .padding(8)
         }
         .onChange(of: show3D) { on in if on { sync3D(full: true) } }
+        .onChange(of: survey.arAlignment) { _ in syncAR() }
+        .onChange(of: engine.arAlignment) { _ in syncAR() }
+        .onChange(of: survey.arFloorY) { _ in syncAR() }
+        .onChange(of: engine.arFloorY) { _ in syncAR() }
+        .onChange(of: survey.position) { _ in syncAR() }
+        .onChange(of: engine.position) { _ in syncAR() }
+        .onChange(of: arAngle) { _ in syncAR() }
+        .onChange(of: arDX) { _ in syncAR() }
+        .onChange(of: arDY) { _ in syncAR() }
+        .onChange(of: arSessionNow == nil) { gone in if gone { showAR = false } }
         .onChange(of: engine.position) { _ in sync3D(full: false) }
         .onChange(of: survey.position) { _ in sync3D(full: false) }
         .onChange(of: engine.trail.count) { _ in sync3D(full: false) }
@@ -175,6 +226,77 @@ struct MagneticView: View {
         .onChange(of: store.points) { _ in sync3D(full: true) }
         .onChange(of: store.sampleCount) { _ in sync3D(full: true) }
         .onChange(of: step) { _ in sync3D(full: true) }
+    }
+
+    // MARK: AR 叠加
+
+    /// 当前页面正在用的 ARKit 会话（建图采集 / 实时定位开着视觉里程计时才有）。
+    private var arSessionNow: ARSession? {
+        if step == .survey && survey.isRunning { return survey.arSession }
+        if step == .live && engine.phase == .live && engine.arRunningNow { return engine.arSession }
+        return nil
+    }
+
+    private var arAlignmentNow: MapARTransform? {
+        step == .survey ? survey.arAlignment : engine.arAlignment
+    }
+
+    private var arPositionNow: Point2? { step == .survey ? survey.position : engine.position }
+
+    /// 把对齐、地面高度、微调、附近内容推给 AR 叠加。
+    private func syncAR(force: Bool = false) {
+        guard showAR, let session = arSessionNow else { return }
+        let s = arModel.scene
+        s.shelfHeightM = shelfHeight3D
+        // 地面：优先用识别出来的地面；还没识别到就按手机离地约 1.3 m 估
+        let floor = (step == .survey ? survey.arFloorY : engine.arFloorY)
+            ?? session.currentFrame.map { Double($0.camera.transform.columns.3.y) - 1.3 } ?? -1.3
+        s.setTransform(arAlignmentNow, floorY: floor)
+        guard let p = arPositionNow else { return }
+        s.setNudge(angleDeg: arAngle, dxCm: arDX, dyCm: arDY, pivot: p)
+        if let m = canvasMap { s.setLocal(center: p, map: m, points: store.points, force: force) }
+        s.setTrail(step == .survey ? survey.trail : engine.trail)
+    }
+
+    @ViewBuilder private var arSection: some View {
+        if showAR {
+            Section {
+                Text("橙色线框是地图里的货架，青色线是通道中心线，蓝色杆是点位。拖下面的滑块，让线框和真实货架对齐，然后点「记录偏移」。偏移量就是地图在这里错了多少。")
+                    .font(.footnote).foregroundStyle(.secondary)
+                VStack(alignment: .leading) {
+                    Text("旋转 \(Fmt.f(arAngle, 1))°（逆时针为正）")
+                    Slider(value: $arAngle, in: -10...10, step: 0.5)
+                }
+                VStack(alignment: .leading) {
+                    Text("左右平移（地图 x）\(Int(arDX)) cm")
+                    Slider(value: $arDX, in: -200...200, step: 5)
+                }
+                VStack(alignment: .leading) {
+                    Text("上下平移（地图 y）\(Int(arDY)) cm")
+                    Slider(value: $arDY, in: -200...200, step: 5)
+                }
+                Stepper("货架高度 \(Fmt.f(shelfHeight3D, 1)) m", value: $shelfHeight3D, in: 0.8...3.0, step: 0.2)
+                    .onChange(of: shelfHeight3D) { _ in syncAR(force: true) }
+                TextField("备注（例如：第 3 排货架）", text: $arNote)
+                HStack {
+                    Button("归零") { arAngle = 0; arDX = 0; arDY = 0 }
+                        .buttonStyle(.bordered)
+                    Spacer()
+                    LoggedButton(name: "AR·记录偏移", detail: "\(arAngle)° \(arDX) \(arDY)") {
+                        guard let p = arPositionNow else { return }
+                        ARCheckLog.append(position: p, angleDeg: arAngle, dxCm: arDX, dyCm: arDY,
+                                          shelfHeightM: shelfHeight3D, note: arNote)
+                        arSaved = ARCheckLog.count
+                        UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    } label: { Text("记录偏移").fontWeight(.semibold) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(arPositionNow == nil)
+                }
+                if arSaved > 0 || ARCheckLog.count > 0 {
+                    ShareLink("导出偏移记录（\(max(arSaved, ARCheckLog.count)) 条）", item: ARCheckLog.fileURL)
+                }
+            } header: { Text("AR 校对") }
+        }
     }
 
     private func toggle3D() {
@@ -296,6 +418,8 @@ struct MagneticView: View {
                 }
                 TextField("备注：保护壳 / 手持姿态 / 营业状态", text: $surveyNote)
                     .autocorrectionDisabled()
+                Toggle("LiDAR 实景扫描（结束时导出网格，文件较大）", isOn: $survey.scanMesh)
+                    .disabled(!ARKitLogger.supportsMesh)
                 bigButton("开始建图采集", name: "建图·开始") { survey.start(note: surveyNote) }
                     .disabled(!store.usesStoreMap)
             } else {

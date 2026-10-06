@@ -26,8 +26,13 @@ final class ARKitLogger: NSObject, ARSessionDelegate {
     var onPose: (@Sendable (Int64, Double, Double, Int) -> Void)?
     var onLateral: (@Sendable (DepthLateral) -> Void)?
     var onError: (@Sendable (String) -> Void)?
+    /// 地面高度（ARKit 世界 y，米）变化时回调。
+    var onFloor: (@Sendable (Double) -> Void)?
 
-    private let session = ARSession()
+    /// 给 AR 叠加画面共用的会话（ARSCNView.session = 它）。
+    let session = ARSession()
+    private var floorY: Float?
+    private var wantsMesh = false
     private let queue = DispatchQueue(label: "arkit.logger", qos: .userInitiated)
     private var writer: CSVWriter?
     private var lateralWriter: CSVWriter?
@@ -45,6 +50,7 @@ final class ARKitLogger: NSObject, ARSessionDelegate {
 
     static var isSupported: Bool { ARWorldTrackingConfiguration.isSupported }
     static var supportsLiDAR: Bool { ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) }
+    static var supportsMesh: Bool { ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) }
 
     override init() {
         super.init()
@@ -56,7 +62,10 @@ final class ARKitLogger: NSObject, ARSessionDelegate {
     ///   - dir: 写 `arkit_pose.csv` 的目录；nil 不写。
     ///   - lateralFileURL: 写深度横向距离的 csv；nil 不写。
     ///   - wantsDepth: 是否取 LiDAR 深度（设备不支持时静默忽略）。
-    func start(dir: URL?, wantsDepth: Bool = false, lateralFile: URL? = nil) throws {
+    /// - Parameter wantsMesh: 打开 LiDAR 场景重建（网格），结束时可以用 `exportMesh` 导出。
+    func start(dir: URL?, wantsDepth: Bool = false, lateralFile: URL? = nil, wantsMesh: Bool = false) throws {
+        floorY = nil
+        self.wantsMesh = wantsMesh && Self.supportsMesh
         if let dir {
             writer = try CSVWriter(url: dir.appendingPathComponent("arkit_pose.csv"),
                                    header: "t_ms,x_m,y_m,z_m,qx,qy,qz,qw,tracking,limited_reason")
@@ -69,7 +78,8 @@ final class ARKitLogger: NSObject, ARSessionDelegate {
         frameCounter = 0
         let cfg = ARWorldTrackingConfiguration()
         cfg.worldAlignment = .gravity
-        cfg.planeDetection = []
+        cfg.planeDetection = [.horizontal]                  // 用来找地面高度（AR 叠加要把地图贴在地上）
+        if self.wantsMesh { cfg.sceneReconstruction = .mesh }
         cfg.environmentTexturing = .none
         if self.wantsDepth { cfg.frameSemantics = .sceneDepth }
         session.run(cfg, options: [.resetTracking, .removeExistingAnchors])
@@ -127,6 +137,79 @@ final class ARKitLogger: NSObject, ARSessionDelegate {
                 onLateral?(lat)
             }
         }
+    }
+
+    // MARK: 地面
+
+    func session(_ session: ARSession, didAdd anchors: [ARAnchor]) { updateFloor(anchors) }
+    func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) { updateFloor(anchors) }
+
+    /// 地面 = 最低的、面积够大的水平面；有 LiDAR 时优先用分类为「地面」的平面。
+    private func updateFloor(_ anchors: [ARAnchor]) {
+        var best = floorY
+        for case let p as ARPlaneAnchor in anchors where p.alignment == .horizontal {
+            let y = p.transform.columns.3.y + p.center.y
+            let area = p.planeExtent.width * p.planeExtent.height
+            let isFloor = ARPlaneAnchor.isClassificationSupported && p.classification == .floor
+            guard isFloor || area > 1.0 else { continue }
+            if best == nil || y < best! - 0.05 || (isFloor && abs(y - best!) < 0.3) { best = y }
+        }
+        if let b = best, b != floorY {
+            floorY = b
+            onFloor?(Double(b))
+        }
+    }
+
+    // MARK: 网格导出
+
+    /// 把当前所有 LiDAR 网格（ARKit 世界坐标，米）写成二进制 PLY。返回（顶点数，三角形数）。
+    /// 在会话暂停之前调用。没开网格或没有网格时返回 (0, 0)，不写文件。
+    @discardableResult
+    func exportMesh(to url: URL) throws -> (vertices: Int, faces: Int) {
+        guard wantsMesh, let anchors = session.currentFrame?.anchors.compactMap({ $0 as? ARMeshAnchor }), !anchors.isEmpty else {
+            return (0, 0)
+        }
+        var nv = 0, nf = 0
+        for a in anchors { nv += a.geometry.vertices.count; nf += a.geometry.faces.count }
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        let h = try FileHandle(forWritingTo: url)
+        defer { try? h.close() }
+        let header = "ply\nformat binary_little_endian 1.0\ncomment ARKit world, meters, y up\nelement vertex \(nv)\nproperty float x\nproperty float y\nproperty float z\nelement face \(nf)\nproperty list uchar int vertex_indices\nend_header\n"
+        h.write(Data(header.utf8))
+        // 顶点：每个锚点的局部坐标乘锚点变换，换到世界坐标
+        for a in anchors {
+            let src = a.geometry.vertices
+            var buf = Data(capacity: src.count * 12)
+            let base = src.buffer.contents().advanced(by: src.offset)
+            for i in 0..<src.count {
+                let p = base.advanced(by: i * src.stride).assumingMemoryBound(to: (Float, Float, Float).self).pointee
+                let w = a.transform * SIMD4<Float>(p.0, p.1, p.2, 1)
+                var v = (w.x, w.y, w.z)
+                withUnsafeBytes(of: &v) { buf.append(contentsOf: $0) }
+            }
+            h.write(buf)
+        }
+        // 面：索引加上前面锚点的顶点数
+        var offset: Int32 = 0
+        for a in anchors {
+            let f = a.geometry.faces
+            var buf = Data(capacity: f.count * 13)
+            let base = f.buffer.contents()
+            let per = f.indexCountPerPrimitive
+            for i in 0..<f.count {
+                var n = UInt8(per)
+                buf.append(&n, count: 1)
+                for k in 0..<per {
+                    let p = base.advanced(by: (i * per + k) * f.bytesPerIndex)
+                    var idx: Int32 = (f.bytesPerIndex == 4 ? Int32(p.assumingMemoryBound(to: UInt32.self).pointee)
+                                                            : Int32(p.assumingMemoryBound(to: UInt16.self).pointee)) + offset
+                    withUnsafeBytes(of: &idx) { buf.append(contentsOf: $0) }
+                }
+            }
+            h.write(buf)
+            offset += Int32(a.geometry.vertices.count)
+        }
+        return (nv, nf)
     }
 
     func session(_ session: ARSession, didFailWithError error: Error) {

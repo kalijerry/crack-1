@@ -540,10 +540,28 @@ struct MagneticView: View {
                         .foregroundStyle(rec.magAccuracy >= 2 ? .green : .orange)
                 }
                 row("原始磁力计", "\(rec.magRawHz) Hz · IMU \(rec.imuHz) Hz")
+                HStack {
+                    Text("步行速度")
+                    Spacer()
+                    Text("\(Fmt.f(survey.speedMS, 1)) m/s").fontWeight(.semibold)
+                        .foregroundStyle(survey.speedMS > SurveyEngine.maxSpeedMS ? .red : .primary)
+                }
+                if survey.lowSampleRate {
+                    Text("传感器采样率只有 \(rec.imuHz) Hz（要 \(SurveyEngine.minImuHz) Hz 以上），这段不算采集进度。保持 App 在前台、别开别的定位功能。")
+                        .font(.footnote).foregroundStyle(.red)
+                }
+                if survey.speedMS > SurveyEngine.maxSpeedMS {
+                    Text("走太快了，这段不算采集进度。正常步速（约 1 m/s）就好。").font(.footnote).foregroundStyle(.red)
+                }
                 row("已走 / 距上次修正", "\(Int(survey.totalWalkedM)) m / \(Int(survey.walkedSinceAnchorM)) m")
-                row("修正次数", "\(survey.anchorCount)")
+                row("修正次数 / 自动贴通道", "\(survey.anchorCount) / \(survey.lockFixes)")
+                Toggle("自动贴通道（实时）", isOn: $survey.corridorLock)
+                if let p = survey.position, let todo = survey.coverage.nearestTodo(from: p) {
+                    row("最近没采完", "\(todo.code) · \(Int(todo.distanceM)) m" + (todo.oneWay ? " · 差一个方向" : ""))
+                        .font(.footnote)
+                }
                 if let n = survey.sessionName { row("会话", n).font(.footnote) }
-                if survey.walkedSinceAnchorM > SurveyEngine.anchorEveryM {
+                if survey.walkedSinceAnchorM > SurveyEngine.anchorEveryM && !survey.corridorLock {
                     Text("已经走了 \(Int(SurveyEngine.anchorEveryM)) m 以上没修正。可以在下一个路口长按修正一次（可选）。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }

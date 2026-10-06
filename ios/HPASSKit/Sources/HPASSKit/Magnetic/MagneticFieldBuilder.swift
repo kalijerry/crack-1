@@ -124,6 +124,12 @@ public final class MagneticFieldBuilder {
     public var totalCells: Int { cols * rows }
 
     /// 生成地图。样本不足的格子用周围有效格子反距离加权补齐（半径内），补出来的格子标准差放大。
+    /// 空格子怎么补：反距离加权，或高斯过程（局部，最近 12 个有数据的格子）
+    public enum FillMethod { case idw, gp }
+    public var fillMethod: FillMethod = .gp
+    /// 高斯过程的相关长度（cm）：磁场在多远内是相关的
+    public var gpLengthCm = 100.0
+
     public func build(minSamples: Int = 5, fillRadiusCm: Double = 150, sigmaFloorUT: Double = 0.5) -> MagneticFieldMap {
         var cells = [MagneticFeature?](repeating: nil, count: cols * rows)
         var sigmas = [MagneticFeature?](repeating: nil, count: cols * rows)
@@ -138,6 +144,10 @@ public final class MagneticFieldBuilder {
         let reach = Int((fillRadiusCm / cellCm).rounded(.up))
         let original = cells
         let originalSig = sigmas
+        if fillMethod == .gp {
+            gpFill(&cells, &sigmas, original: original, originalSig: originalSig, reach: reach, radius: fillRadiusCm)
+            return MagneticFieldMap(widthCm: widthCm, heightCm: heightCm, cellCm: cellCm, cells: cells, sigmas: sigmas)
+        }
         for j in 0..<rows {
             for i in 0..<cols where original[j * cols + i] == nil {
                 var wsum = 0.0
@@ -166,6 +176,90 @@ public final class MagneticFieldBuilder {
         }
         return MagneticFieldMap(widthCm: widthCm, heightCm: heightCm, cellCm: cellCm, cells: cells, sigmas: sigmas)
     }
+
+    /// 局部高斯过程补空格：取半径内最近的至多 12 个有数据格，平方指数核，减去局部均值后做回归；
+    /// 预测方差直接加到这格的标准差上（离数据越远越不确定，自然比反距离的经验放大更合理）。
+    private func gpFill(_ cells: inout [MagneticFeature?], _ sigmas: inout [MagneticFeature?],
+                        original: [MagneticFeature?], originalSig: [MagneticFeature?], reach: Int, radius: Double) {
+        let l2 = 2 * gpLengthCm * gpLengthCm
+        for j in 0..<rows {
+            for i in 0..<cols where original[j * cols + i] == nil {
+                var nb: [(Double, Double, MagneticFeature, MagneticFeature)] = []   // dx, dy, 值, 标准差
+                for dj in -reach...reach {
+                    for di in -reach...reach {
+                        let ii = i + di, jj = j + dj
+                        guard ii >= 0, ii < cols, jj >= 0, jj < rows, let v = original[jj * cols + ii] else { continue }
+                        let dx = Double(di) * cellCm, dy = Double(dj) * cellCm
+                        guard dx * dx + dy * dy <= radius * radius else { continue }
+                        nb.append((dx, dy, v, originalSig[jj * cols + ii]!))
+                    }
+                }
+                guard !nb.isEmpty else { continue }
+                if nb.count > 12 { nb = Array(nb.sorted { $0.0 * $0.0 + $0.1 * $0.1 < $1.0 * $1.0 + $1.1 * $1.1 }.prefix(12)) }
+                let n = nb.count
+                // 局部均值和方差（信号方差 σf² 用邻居的离散程度，至少 1 µT²）
+                var mean = MagneticFeature(total: 0, vertical: 0, horizontal: 0)
+                for x in nb { mean = mean + x.2 * (1 / Double(n)) }
+                var varSum = 0.0
+                for x in nb { let d = x.2 - mean; varSum += (d.total * d.total + d.vertical * d.vertical + d.horizontal * d.horizontal) / 3 }
+                let sf2 = max(varSum / Double(n), 1)
+                // K + σn² I
+                var K = [Double](repeating: 0, count: n * n)
+                for a in 0..<n {
+                    for b in 0..<n {
+                        let dx = nb[a].0 - nb[b].0, dy = nb[a].1 - nb[b].1
+                        K[a * n + b] = sf2 * exp(-(dx * dx + dy * dy) / l2)
+                    }
+                    let s = nb[a].3
+                    K[a * n + a] += max((s.total * s.total + s.vertical * s.vertical + s.horizontal * s.horizontal) / 3, 0.25)
+                }
+                var ks = [Double](repeating: 0, count: n)
+                for a in 0..<n { ks[a] = sf2 * exp(-(nb[a].0 * nb[a].0 + nb[a].1 * nb[a].1) / l2) }
+                guard let L = Self.cholesky(K, n) else { continue }
+                let alpha = Self.cholSolve(L, n, ks)              // (K)^-1 k*
+                var pred = mean
+                for a in 0..<n { pred = pred + (nb[a].2 - mean) * alpha[a] }
+                var v = sf2
+                for a in 0..<n { v -= ks[a] * alpha[a] }
+                let sd = max(v, 0).squareRoot()
+                // 邻居的观测噪声也带上（取平均）
+                var sAvg = MagneticFeature(total: 0, vertical: 0, horizontal: 0)
+                for x in nb { sAvg = sAvg + x.3 * (1 / Double(n)) }
+                cells[j * cols + i] = pred
+                sigmas[j * cols + i] = MagneticFeature(total: (sAvg.total * sAvg.total + sd * sd).squareRoot(),
+                                                       vertical: (sAvg.vertical * sAvg.vertical + sd * sd).squareRoot(),
+                                                       horizontal: (sAvg.horizontal * sAvg.horizontal + sd * sd).squareRoot())
+            }
+        }
+    }
+
+    static func cholesky(_ A: [Double], _ n: Int) -> [Double]? {
+        var L = [Double](repeating: 0, count: n * n)
+        for i in 0..<n {
+            for j in 0...i {
+                var s = A[i * n + j]
+                for k in 0..<j { s -= L[i * n + k] * L[j * n + k] }
+                if i == j {
+                    guard s > 1e-12 else { return nil }
+                    L[i * n + i] = s.squareRoot()
+                } else {
+                    L[i * n + j] = s / L[j * n + j]
+                }
+            }
+        }
+        return L
+    }
+
+    static func cholSolve(_ L: [Double], _ n: Int, _ b: [Double]) -> [Double] {
+        var y = b
+        for i in 0..<n { for k in 0..<i { y[i] -= L[i * n + k] * y[k] }; y[i] /= L[i * n + i] }
+        var x = y
+        for i in stride(from: n - 1, through: 0, by: -1) {
+            for k in (i + 1)..<n { x[i] -= L[k * n + i] * x[k] }
+            x[i] /= L[i * n + i]
+        }
+        return x
+    }
 }
 
 extension MagneticFieldMap {
@@ -181,4 +275,16 @@ extension MagneticFieldMap {
     }
 
     private func round3(_ v: Double) -> Double { (v * 1000).rounded() / 1000 }
+}
+
+/// 一张地图的建图累积状态：磁场每格统计 + 蓝牙指纹累积 + 已经加进去的会话。
+/// 增量建图时存盘，新会话只往上追加；旧会话删掉也不影响地图。
+public struct MapBuildState: Codable {
+    public var field: MagneticFieldBuilder.Snapshot
+    public var ble: BLEFingerprintBuilder.State
+    public var sessions: [String]
+
+    public init(field: MagneticFieldBuilder.Snapshot, ble: BLEFingerprintBuilder.State, sessions: [String]) {
+        self.field = field; self.ble = ble; self.sessions = sessions
+    }
 }

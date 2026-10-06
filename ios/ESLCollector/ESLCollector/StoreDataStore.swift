@@ -70,6 +70,39 @@ final class StoreDataStore: ObservableObject {
         return "\(Int(m.width))x\(Int(m.height))/\(m.shelves.count)/\(m.crosses.count)/\(m.floor.count)/\(m.floorName ?? "")"
     }
 
+    // MARK: 价签名单（蓝牙粗定位只收名单里的价签）
+
+    private var eslIdsURL: URL { Self.rootURL.appendingPathComponent("esl-ids.txt") }
+    @Published private(set) var eslIdCount = 0
+    /// 价签名单；没导入为 nil（不过滤，只按厂商 ID 和「听到范围」判断）
+    private(set) var eslIds: Set<String>?
+
+    func loadEslIds() {
+        guard let t = try? String(contentsOf: eslIdsURL, encoding: .utf8) else { eslIds = nil; eslIdCount = 0; return }
+        let s = BLEFingerprintBuilder.parseIdList(t)
+        eslIds = s.isEmpty ? nil : s
+        eslIdCount = s.count
+    }
+
+    /// 导入价签名单：任何文本里的 XX-XX-XX-XX 都算（CSV、TXT、表格另存的 CSV）
+    func importEslIds(from source: URL) throws -> Int {
+        let scoped = source.startAccessingSecurityScopedResource()
+        defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+        let text = try String(contentsOf: source, encoding: .utf8)
+        let ids = BLEFingerprintBuilder.parseIdList(text)
+        guard !ids.isEmpty else { throw StoreDataError.unsupportedFormat("文件里没找到价签 ID（格式 XX-XX-XX-XX）") }
+        try FileManager.default.createDirectory(at: Self.rootURL, withIntermediateDirectories: true)
+        try ids.sorted().joined(separator: "\n").write(to: eslIdsURL, atomically: true, encoding: .utf8)
+        loadEslIds()
+        AppLog.i("门店数据", "导入价签名单：\(ids.count) 个")
+        return ids.count
+    }
+
+    func clearEslIds() {
+        try? FileManager.default.removeItem(at: eslIdsURL)
+        loadEslIds()
+    }
+
     /// 当前地图是不是房间扫描生成的
     var currentMapIsRoom: Bool { map.map { $0.crosses.isEmpty && !$0.floor.isEmpty } ?? false }
 
@@ -83,6 +116,7 @@ final class StoreDataStore: ObservableObject {
     }
 
     private init() {
+        defer { loadEslIds() }
         if let a = UserDefaults.standard.array(forKey: Self.shelfOffsetKey) as? [Double], a.count == 2 {
             shelfOffset = Point2(a[0], a[1])
         }

@@ -30,7 +30,8 @@ do {
     let walk = SessionEvaluator.walkable(map)
     var out: [EvalReport] = []
     for t in test {
-        let r = try SessionEvaluator.evaluate(dir: t, map: map, field: field, ble: ble, walkable: walk)
+        let r = try SessionEvaluator.evaluate(dir: t, map: map, field: field, ble: ble, walkable: walk,
+                                              crossCheck: !CommandLine.arguments.contains("--no-crosscheck"))
         print(r.line)
         out.append(r)
     }

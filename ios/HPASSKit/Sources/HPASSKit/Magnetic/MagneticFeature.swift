@@ -19,6 +19,10 @@ public struct MagneticFeature: Equatable {
         MagneticFeature(total: a.total + b.total, vertical: a.vertical + b.vertical, horizontal: a.horizontal + b.horizontal)
     }
 
+    static func - (a: MagneticFeature, b: MagneticFeature) -> MagneticFeature {
+        MagneticFeature(total: a.total - b.total, vertical: a.vertical - b.vertical, horizontal: a.horizontal - b.horizontal)
+    }
+
     static func * (a: MagneticFeature, k: Double) -> MagneticFeature {
         MagneticFeature(total: a.total * k, vertical: a.vertical * k, horizontal: a.horizontal * k)
     }

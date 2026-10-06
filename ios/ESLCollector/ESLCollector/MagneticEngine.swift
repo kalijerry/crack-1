@@ -95,6 +95,10 @@ private final class MagPipeline {
     var lastConverged = true
     /// 蓝牙粗定位：价签指纹、最近几秒的读数、上次用的时间
     var bleMap: BLEFingerprintMap?
+    var bleAssist: BLEAssist?
+    /// 地图还准不准（变化检测 + 定位时的磁场累积），有磁场图时才有
+    var monitor: LiveFieldMonitor?
+    var monitorField: MagneticFieldMap?
     var bleWindow: [(t: Int64, id: String, rssi: Double)] = []
     var lastBleApply: Int64 = 0
     var rawLastA: Point2?
@@ -210,6 +214,40 @@ final class MagneticEngine: ObservableObject {
     /// 蓝牙粗定位的位置（地图上画橙色空心圈）
     @Published private(set) var bleEstimate: Point2?
     @Published private(set) var bleTagsHeard = 0
+    /// 蓝牙判断人在没采集过的区域（地磁不允许定位）
+    @Published private(set) var bleOutside = false
+    /// 可能变了的地方（定位时磁场持续和地图对不上），地图上画橙色方块
+    @Published private(set) var changedSpots: [Point2] = []
+    @Published private(set) var monitorSamples = 0
+    @Published private(set) var liveVsMapText: String?
+
+    nonisolated static var monitorURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("live-monitor.json")
+    }
+
+    /// 读回存盘的变化检测（和当前磁场图对得上才用）
+    func loadMonitor() {
+        guard let f = MagMapStore.shared.field else { changedSpots = []; monitorSamples = 0; liveVsMapText = nil; return }
+        var m = (try? Data(contentsOf: Self.monitorURL)).flatMap { try? JSONDecoder().decode(LiveFieldMonitor.self, from: $0) }
+        if m?.matches(f) != true { m = LiveFieldMonitor(field: f) }
+        let mon = m!
+        queue.sync { pipe.monitor = mon; pipe.monitorField = f }
+        publishMonitor(mon, field: f)
+    }
+
+    private func publishMonitor(_ m: LiveFieldMonitor, field f: MagneticFieldMap) {
+        changedSpots = m.changed().map(\.center)
+        monitorSamples = m.totalSamples
+        liveVsMapText = m.liveVsMap(f).map { "定位攒的磁场和地图平均差 \(Fmt.f($0.medianUT, 2)) µT（\($0.cells) 块）" }
+    }
+
+    private func saveMonitor() {
+        let (m, f) = queue.sync { (pipe.monitor, pipe.monitorField) }
+        guard let m, let f else { return }
+        if let d = try? JSONEncoder().encode(m) { try? d.write(to: Self.monitorURL, options: .atomic) }
+        publishMonitor(m, field: f)
+        if !changedSpots.isEmpty { AppLog.w("地磁", "可能变了的地方 \(changedSpots.count) 处（磁场持续和地图对不上），建议补采") }
+    }
     private var arRunning = false
     private let pedometer = CMPedometer()
     private let activityManager = CMMotionActivityManager()
@@ -384,6 +422,7 @@ final class MagneticEngine: ObservableObject {
         startPedometerAndActivity()
         AppLog.i("地磁", "实时定位：打开传感器，视觉里程计 \(useVisualOdometry ? "开" : "关")，深度 \(depthMode.title)，罗盘修正 \(useCompassHeading ? "开" : "关")，地磁纠偏 \(useMagCorrection ? "开" : "关")")
         startBLE()
+        loadMonitor()
     }
 
     func stopLive() {
@@ -397,6 +436,7 @@ final class MagneticEngine: ObservableObject {
         }
         isTracking = false
         stopBLE()
+        saveMonitor()
         searching = false
         searchStarted = nil
         headingEditing = false
@@ -584,11 +624,12 @@ final class MagneticEngine: ObservableObject {
     private func startBLE() {
         guard let m = MagMapStore.shared.bleMap, !m.tags.isEmpty else { return }
         let pipe = self.pipe, queue = self.queue
-        queue.sync { pipe.bleMap = m; pipe.bleWindow = []; pipe.lastBleApply = 0 }
+        queue.sync { pipe.bleMap = m; pipe.bleAssist = nil; pipe.bleWindow = []; pipe.lastBleApply = 0 }
         if ble == nil { ble = BLEScanner() }
         ble?.onlyESL = true
+        let whitelist = StoreDataStore.shared.eslIds
         ble?.onReading = { r in
-            guard let id = r.eslId else { return }
+            guard let id = r.eslId, whitelist?.contains(id) ?? true else { return }
             queue.async {
                 pipe.bleWindow.append((r.tMs, id, Double(r.rssi)))
                 if pipe.bleWindow.count > 2000 { pipe.bleWindow.removeFirst(pipe.bleWindow.count - 2000) }
@@ -601,25 +642,34 @@ final class MagneticEngine: ObservableObject {
     private func stopBLE() {
         ble?.stop()
         ble?.onReading = nil
-        queue.async { [pipe] in pipe.bleMap = nil; pipe.bleWindow = [] }
+        queue.async { [pipe] in pipe.bleMap = nil; pipe.bleAssist = nil; pipe.bleWindow = [] }
         bleEstimate = nil
     }
 
-    /// 每秒一次：最近 2.5 秒听到的价签 → 粗位置 → 拉一下粒子（还没定到时多撒一些粒子过去）。在引擎队列上调用。
+    /// 每秒一次：最近 2.5 秒听到的价签 → 粗定位、「不在采集区域」判断、交叉检验（BLEAssist，和回放评估同一套）。
+    /// 在引擎队列上调用。
     private nonisolated func bleTick(pipe: MagPipeline, tMs: Int64, loc: MagneticLocalizer) {
         guard let m = pipe.bleMap, tMs - pipe.lastBleApply >= 1000 else { return }
         pipe.lastBleApply = tMs
         pipe.bleWindow.removeAll { $0.t < tMs - 2500 }
         var acc: [String: (Double, Int)] = [:]
         for r in pipe.bleWindow { let a = acc[r.id] ?? (0, 0); acc[r.id] = (a.0 + r.rssi, a.1 + 1) }
-        let obs = acc.mapValues { $0.0 / Double($0.1) }
-        guard let e = m.estimateByTags(obs) else { return }
-        let conv = loc.isConverged
-        // 实测（价签位置法，留一半读数检验）：中位 2.5～3.7 m，P90 约 7 m
-        loc.applyPositionPrior(e.position, sigmaCm: max(e.spreadCm, conv ? 500 : 400),
-                               weight: conv ? 0.3 : 1, injectFraction: conv ? 0 : 0.2)
-        let n = obs.count
-        Task { @MainActor in self.bleEstimate = e.position; self.bleTagsHeard = n }
+        if pipe.bleAssist == nil { pipe.bleAssist = BLEAssist(map: m) }
+        let assist = pipe.bleAssist!
+        let resetsBefore = assist.resets
+        assist.tick(obs: acc.mapValues { $0.0 / Double($0.1) }, localizer: loc,
+                    current: loc.isConverged ? pipe.lastShown : nil)
+        let e = assist.lastEstimate?.position, n = assist.lastHeard, outside = assist.outsideSurveyed
+        let reset = assist.resets > resetsBefore
+        Task { @MainActor in
+            self.bleEstimate = e
+            self.bleTagsHeard = n
+            if self.bleOutside != outside {
+                self.bleOutside = outside
+                AppLog.w("地磁", outside ? "听到的价签大多不在指纹里：可能在没采集过的区域，先不定位" : "回到采集过的区域")
+            }
+            if reset { AppLog.w("地磁", "蓝牙判断地磁定位错了，重新找") }
+        }
     }
 
     /// 视觉重定位成功：ARKit 认出了房间，此刻相机位姿就在扫描时的坐标里，换到地图上就是精确位置和朝向。
@@ -924,6 +974,9 @@ final class MagneticEngine: ObservableObject {
     var locStateText: String? {
         switch locState {
         case .searching:
+            if bleOutside {
+                return "听到的价签大多不在蓝牙指纹里：你可能在没采集过的区域，这里没法自动定位。走到采集过的通道（地图上绿色），或长按地图定点。"
+            }
             if visualAvailable && arRunning {
                 return "正在认房间：拿着手机对着墙和家具慢慢转一圈（视觉定位，一般几秒）。" +
                     (MagMapStore.shared.field != nil ? "同时也在用地磁找。" : "")
@@ -1119,6 +1172,10 @@ final class MagneticEngine: ObservableObject {
     private nonisolated func emit(pipe: MagPipeline, tMs: Int64, shown: Point2, unc: Double, est: MagneticEstimate?,
                                   heading: Double, headingDeg: Double, src: String, feature feat: MagneticFeature?) {
         let steps = pipe.stepBase + (pipe.lastOut?.stepCount ?? 0)
+        // 变化检测：只用有把握的定位（地磁收敛，或纯视觉 / 推算时没有地磁估计）
+        if let m = pipe.monitor, let f = pipe.monitorField, let ft = feat, est?.converged == true {
+            m.add(position: shown, feature: ft, field: f)
+        }
         if let w = pipe.trackWriter {
             let check = pipe.pendingCheck ?? ""
             pipe.pendingCheck = nil

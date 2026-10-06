@@ -39,6 +39,7 @@ struct StoreDataView: View {
     var body: some View {
         Form {
             MapLibrarySection()
+            EslListSection()
             TelemetrySection()
             statusSection
             if Features.bluetooth { selfCheckSection }
@@ -467,6 +468,37 @@ struct TelemetrySection: View {
             Text("设备名：\(tel.deviceName)").font(.caption).foregroundStyle(.secondary)
         } header: { Text("云端后台") } footer: {
             Text("在电脑浏览器打开后台地址、输入同一个口令，就能实时看到这台手机的位置、日志，下载上传的会话和评估报告。只在 App 打开时发送。")
+        }
+    }
+}
+
+/// 价签名单：蓝牙粗定位只认名单里的价签（门店系统导出的价签 ID 列表）
+struct EslListSection: View {
+    @ObservedObject private var store = StoreDataStore.shared
+    @State private var importing = false
+    @State private var message: String?
+
+    var body: some View {
+        Section {
+            HStack {
+                Text("价签名单")
+                Spacer()
+                Text(store.eslIdCount > 0 ? "\(store.eslIdCount) 个" : "未导入").foregroundStyle(.secondary)
+            }
+            Button("导入价签名单（CSV / TXT）") { importing = true }
+            if store.eslIdCount > 0 {
+                Button("清除名单", role: .destructive) { store.clearEslIds() }
+            }
+            if let m = message { Text(m).font(.footnote).foregroundStyle(.secondary) }
+        } header: { Text("蓝牙") } footer: {
+            Text("价签广播用厂商 ID 0x000D、内容是 4 字节价签编号，App 只收这种广播；导入名单后再只收名单里的。另外生成指纹时会自动丢掉「到哪儿都听得到」的设备（不是固定的价签）。表格（xlsx）请另存为 CSV 再导入。")
+        }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.commaSeparatedText, .plainText, .text, .json]) { r in
+            switch r {
+            case .success(let u):
+                do { message = "已导入 \(try store.importEslIds(from: u)) 个价签" } catch { message = "导入失败：\(error)" }
+            case .failure(let e): message = "导入失败：\(e.localizedDescription)"
+            }
         }
     }
 }

@@ -18,10 +18,26 @@ final class SurveyMapService: ObservableObject {
     @Published private(set) var running = false
     @Published private(set) var lines: [String] = []
     @Published private(set) var lastError: String?
+    /// 当前磁场图已经包含的会话（增量建图的累积状态里记着）
+    @Published private(set) var included: Set<String> = []
     private var known: Set<String> = []
+
+    static var stateURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("build-state.json")
+    }
+
+    static func loadState() -> MapBuildState? {
+        guard let d = try? Data(contentsOf: stateURL) else { return nil }
+        return try? JSONDecoder().decode(MapBuildState.self, from: d)
+    }
+
+    /// 选中的会话里还没加进磁场图的
+    var newSelected: [Item] { items.filter { selected.contains($0.id) && !included.contains($0.id) } }
 
     /// 重新扫描会话目录；新出现的建图会话默认选上。
     func refresh() {
+        included = Set(Self.loadState()?.sessions ?? [])
         let fm = FileManager.default
         let dirs = (try? fm.contentsOfDirectory(at: Recorder.sessionsRoot, includingPropertiesForKeys: nil)) ?? []
         let store = MagMapStore.shared
@@ -52,18 +68,29 @@ final class SurveyMapService: ObservableObject {
         selected = selected.intersection(known)
     }
 
-    /// 用选中的会话建图，成功后直接启用（替换当前的磁场数据）。
-    func build(crosses: [CrossSegment], widthCm: Double, heightCm: Double) {
+    /// 建图，成功后直接启用。
+    /// - append = true：接着当前磁场图的累积统计，只加还没加过的选中会话（旧会话删了也不影响）；
+    /// - append = false：只用选中的会话从头重建。
+    func build(crosses: [CrossSegment], widthCm: Double, heightCm: Double, append: Bool = false) {
         guard !running else { return }
-        let urls = items.filter { selected.contains($0.id) }.map(\.url)
-        guard !urls.isEmpty else { lastError = "先选至少一个建图会话"; return }
+        let prior = append ? Self.loadState() : nil
+        let already = Set(prior?.sessions ?? [])
+        let urls = items.filter { selected.contains($0.id) && !already.contains($0.id) }.map(\.url)
+        guard !urls.isEmpty else { lastError = append ? "没有新会话可以追加" : "先选至少一个建图会话"; return }
+        let whitelist = StoreDataStore.shared.eslIds
         running = true
         lastError = nil
         lines = ["正在建图：\(urls.count) 个会话……"]
         AppLog.i("建图", "手机上生成磁场图：\(urls.count) 个会话")
         Task.detached(priority: .userInitiated) {
-            let b = SurveyMapBuilder(widthCm: widthCm, heightCm: heightCm, crosses: crosses)
-            let bb = BLEFingerprintBuilder(widthCm: widthCm, heightCm: heightCm)
+            var b = SurveyMapBuilder(widthCm: widthCm, heightCm: heightCm, crosses: crosses)
+            var bb = BLEFingerprintBuilder(widthCm: widthCm, heightCm: heightCm)
+            if let p = prior, let fb = MagneticFieldBuilder(snapshot: p.field),
+               abs(fb.widthCm - widthCm) < 1, abs(fb.heightCm - heightCm) < 1 {
+                b = SurveyMapBuilder(field: fb, crosses: crosses)
+                bb = BLEFingerprintBuilder(state: p.ble)
+            }
+            bb.whitelist = whitelist
             var bleUsed = 0
             var out: [String] = []
             var total = 0
@@ -85,10 +112,14 @@ final class SurveyMapService: ObservableObject {
                     out.append("\(u.lastPathComponent)：读取失败（\(error)）")
                 }
             }
-            let field = total > 0 ? b.build() : nil
+            let field = (total > 0 || prior != nil) ? b.build() : nil
+            let doneNames = (prior?.sessions ?? []) + urls.map(\.lastPathComponent)
+            let state = MapBuildState(field: b.field.snapshot(), ble: bb.state(), sessions: doneNames)
             let bleMap = bb.build()
             let ble: BLEFingerprintMap? = bleMap.tags.count >= 20 ? bleMap : nil
-            out.append(ble.map { "蓝牙指纹：\($0.tags.count) 个价签，\(bleUsed) 条读数" } ?? "蓝牙指纹：价签读数太少（\(bleUsed) 条），不启用")
+            out.append(ble.map { "蓝牙指纹：\($0.tags.count) 个价签，\(bleUsed) 条读数" + (whitelist != nil ? "（按价签名单）" : "")
+                + (bb.rejectedMoving.isEmpty ? "" : "，\(bb.rejectedMoving.count) 个到处都听得到的设备不算") }
+                ?? "蓝牙指纹：价签读数太少（\(bleUsed) 条），不启用")
             let valid = b.field.validCells()
             await MainActor.run {
                 self.running = false
@@ -100,8 +131,10 @@ final class SurveyMapService: ObservableObject {
                 }
                 let df = DateFormatter()
                 df.dateFormat = "MM-dd HH:mm"
-                let names = urls.map { $0.lastPathComponent.replacingOccurrences(of: "ios_survey_", with: "") }
-                MagMapStore.shared.applyBuilt(f, source: "\(urls.count) 个会话（\(names.joined(separator: "、"))），\(df.string(from: Date())) 生成", ble: ble)
+                let names = doneNames.map { $0.replacingOccurrences(of: "ios_survey_", with: "") }
+                MagMapStore.shared.applyBuilt(f, source: "\(doneNames.count) 个会话（\(names.joined(separator: "、"))），\(df.string(from: Date())) " + (append ? "追加" : "生成"), ble: ble)
+                if let d = try? JSONEncoder().encode(state) { try? d.write(to: Self.stateURL, options: .atomic) }
+                self.included = Set(doneNames)
                 self.lines.append("完成：有数据的格子 \(valid) 个（补齐后 \(f.coveredCells)），已启用")
                 AppLog.i("建图", "手机上生成磁场图完成：样本 \(total)，有效格 \(valid)，补齐后 \(f.coveredCells)")
             }

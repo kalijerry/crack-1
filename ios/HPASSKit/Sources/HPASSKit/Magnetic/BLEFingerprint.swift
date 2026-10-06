@@ -104,7 +104,42 @@ public final class BLEFingerprintBuilder {
     public let cellCm: Double
     private var cells: [Int: (x: Double, y: Double, n: Int, tags: [String: (n: Int, sum: Double)])] = [:]
     private var tagAcc: [String: (w: Double, x: Double, y: Double, maxR: Double, n: Int)] = [:]
+    /// 每个价签「听到它的位置」的二阶矩（强信号加权）：固定的价签只在一小片区域里听得到，
+    /// 跟着人走的手机、手表到哪儿都一样响，范围会大得离谱 → 不当价签用
+    private var tagSpread: [String: (w: Double, xx: Double, yy: Double)] = [:]
     private let cols: Int
+    /// 价签名单（门店系统导出的价签 ID）。给了就只收名单里的
+    public var whitelist: Set<String>?
+    /// 听到范围（强信号位置的标准差）超过这个（cm）就认为不是固定设备
+    public var maxSpreadCm = 1500.0
+
+    /// 累积状态（增量建图时存盘，下次接着加）
+    public struct State: Codable {
+        public struct CellAcc: Codable { var x: Double; var y: Double; var n: Int; var tagN: [String: Int]; var tagSum: [String: Double] }
+        public struct TagAcc: Codable { var w: Double; var x: Double; var y: Double; var maxR: Double; var n: Int }
+        var cellCm: Double
+        var cols: Int
+        var cells: [Int: CellAcc]
+        var tags: [String: TagAcc]
+        var spread: [String: [Double]]?
+    }
+
+    public func state() -> State {
+        State(cellCm: cellCm, cols: cols,
+              cells: cells.mapValues { c in .init(x: c.x, y: c.y, n: c.n, tagN: c.tags.mapValues(\.n), tagSum: c.tags.mapValues(\.sum)) },
+              tags: tagAcc.mapValues { .init(w: $0.w, x: $0.x, y: $0.y, maxR: $0.maxR, n: $0.n) },
+              spread: tagSpread.mapValues { [$0.w, $0.xx, $0.yy] })
+    }
+
+    public init(state s: State) {
+        cellCm = s.cellCm
+        cols = s.cols
+        cells = s.cells.mapValues { c in
+            (c.x, c.y, c.n, Dictionary(uniqueKeysWithValues: c.tagN.map { ($0.key, (n: $0.value, sum: c.tagSum[$0.key] ?? 0)) }))
+        }
+        tagAcc = s.tags.mapValues { ($0.w, $0.x, $0.y, $0.maxR, $0.n) }
+        tagSpread = (s.spread ?? [:]).compactMapValues { $0.count == 3 ? ($0[0], $0[1], $0[2]) : nil }
+    }
 
     public init(widthCm: Double, heightCm: Double, cellCm: Double = 200) {
         self.cellCm = cellCm
@@ -114,6 +149,7 @@ public final class BLEFingerprintBuilder {
     /// 只要价签读数，强度在 −100 dBm 以上
     public func add(position p: Point2, id: String, rssi: Double) {
         guard rssi >= -100, rssi < 0, p.x >= 0, p.y >= 0 else { return }
+        if let wl = whitelist, !wl.contains(id) { return }
         let i = Int(p.x / cellCm), j = Int(p.y / cellCm)
         let k = j * cols + i
         var c = cells[k] ?? ((Double(i) + 0.5) * cellCm, (Double(j) + 0.5) * cellCm, 0, [:])
@@ -127,6 +163,11 @@ public final class BLEFingerprintBuilder {
         var a = tagAcc[id] ?? (0, 0, 0, -200, 0)
         a.w += w; a.x += w * p.x; a.y += w * p.y; a.maxR = max(a.maxR, rssi); a.n += 1
         tagAcc[id] = a
+        if rssi >= -85 {
+            var sp = tagSpread[id] ?? (0, 0, 0)
+            sp.w += 1; sp.xx += p.x * p.x; sp.yy += p.y * p.y
+            tagSpread[id] = sp
+        }
     }
 
     /// 一个会话：蓝牙读数按时间插值到轨迹上（离最近的轨迹点超过 0.5 s 的不要）
@@ -149,12 +190,36 @@ public final class BLEFingerprintBuilder {
 
     public var sampleCount: Int { cells.values.reduce(0) { $0 + $1.n } }
 
+    /// 强信号（≥ −85 dBm）出现位置的标准差（cm）；强读数少于 5 次不判断
+    public func spreadCm(_ id: String) -> Double? {
+        guard let sp = tagSpread[id], sp.w >= 5, let a = tagAcc[id] else { return nil }
+        // 用同一批强读数的均值近似：E[x²] − E[x]²（均值用加权中心，偏差不大）
+        let mx = a.x / a.w, my = a.y / a.w
+        let vx = max(sp.xx / sp.w - mx * mx, 0), vy = max(sp.yy / sp.w - my * my, 0)
+        return (vx + vy).squareRoot()
+    }
+
+    /// 被当成「不是固定设备」丢掉的
+    public var rejectedMoving: [String] { tagAcc.keys.filter { (spreadCm($0) ?? 0) > maxSpreadCm } }
+
+    /// 从文本里找价签 ID（XX-XX-XX-XX），给名单用：CSV、TXT、门店系统导出的表格另存为 CSV 都行
+    public static func parseIdList(_ text: String) -> Set<String> {
+        var out = Set<String>()
+        let pattern = try! NSRegularExpression(pattern: "\\b[0-9A-Fa-f]{2}-[0-9A-Fa-f]{2}-[0-9A-Fa-f]{2}-[0-9A-Fa-f]{2}\\b")
+        let ns = text as NSString
+        for m in pattern.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+            out.insert(ns.substring(with: m.range).uppercased())
+        }
+        return out
+    }
+
     public func build() -> BLEFingerprintMap {
         let cs = cells.values.map { c in
             BLEFingerprintMap.Cell(x: c.x, y: c.y, tags: c.tags.mapValues { $0.sum / Double($0.n) }, samples: c.n)
         }.sorted { ($0.y, $0.x) < ($1.y, $1.x) }
         var tags: [String: BLEFingerprintMap.Tag] = [:]
         for (id, a) in tagAcc where a.w > 0 {
+            if let sp = spreadCm(id), sp > maxSpreadCm { continue }   // 到哪儿都听得到：多半是跟着人走的设备
             tags[id] = .init(x: a.x / a.w, y: a.y / a.w, maxRssi: a.maxR, samples: a.n)
         }
         return BLEFingerprintMap(cellCm: cellCm, cells: cs, tags: tags)

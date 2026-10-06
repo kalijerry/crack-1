@@ -83,6 +83,12 @@ public final class SurveyMapBuilder {
         self.crosses = crosses
     }
 
+    /// 增量建图：接着已有的统计往上加
+    public init(field: MagneticFieldBuilder, crosses: [CrossSegment]) {
+        self.field = field
+        self.crosses = crosses
+    }
+
     public func build() -> MagneticFieldMap { field.build() }
 
     // MARK: - 一次会话

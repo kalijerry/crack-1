@@ -247,6 +247,19 @@ public final class MagneticLocalizer {
     /// 是否已经收敛（有把握）
     public var isConverged: Bool { hasConverged }
 
+    /// 外部判断「现在不在采集过的区域」（例如听到的价签大多不在指纹里）时设为 true：不允许收敛，
+    /// 宁可不显示位置，也不在别处「定」一个错的。
+    public var convergenceBlocked = false
+
+    /// 外部判断「定错了」（例如蓝牙粗定位持续离得很远）：退回没把握的状态，重新找。
+    /// 粒子不清空，靠后面的观测和外部粗定位把它们拉回去。
+    public func declareLost() {
+        hasConverged = false
+        convergedStreak = 0
+        committed = nil
+        switchStreak = 0
+    }
+
     /// 外部给的「粗位置」（蓝牙指纹）：每个粒子按离 `center` 的距离加权（高斯，σ = sigmaCm）。
     /// 还没收敛时再把权重最低的一部分粒子换成撒在 `center` 附近的新粒子（朝向全方向），冷启动几秒就能圈到对的区域。
     /// - Parameter weight: 0...1，收敛后应该给小一点（只当约束，不抢地磁的主导）。
@@ -483,6 +496,7 @@ public final class MagneticLocalizer {
         lastCenter = e.position
         motionSinceUpdate = .zero
         let good = e.uncertaintyCm <= config.convergedUncertaintyCm && e.confidence >= config.convergedConfidence
+            && !convergenceBlocked
         if !hasConverged {
             convergedStreak = (good && consistent) ? convergedStreak + 1 : 0
             if convergedStreak >= 3 {

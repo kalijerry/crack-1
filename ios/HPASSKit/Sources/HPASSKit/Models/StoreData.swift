@@ -169,7 +169,28 @@ public enum StoreDataLoader {
 
     // MARK: 地图
 
-    public static func loadMap(_ data: Data) throws -> StoreMap {
+    /// 矩形元素的 (x, y) 指的是哪个点。
+    ///
+    /// 这家服务端的地图是 Konva 风格：货架 / 桌台 / 方块的 (x, y) 是**矩形左上角**，
+    /// `rotation`（度，顺时针，y 向下）是**绕这个左上角**转；圆形和路点才是中心。
+    /// 用「中心」去解释它们，货架整体会偏出去、压到通道上（实测 67 m 通道被压住；
+    /// 按左上角解释，压住的长度是 0）。
+    public enum RectAnchor {
+        case center
+        case topLeft
+    }
+
+    /// 把「左上角 + 绕左上角旋转」的矩形换算成「中心 + 绕中心旋转」，模块内其余代码都按中心用。
+    static func centerOfRect(x: Double, y: Double, width w: Double, height h: Double, rotationDeg: Double) -> Point2 {
+        let r = rotationDeg * Double.pi / 180
+        let c = cos(r), s = sin(r)           // u = (c, s) 沿 width，v = (−s, c) 沿 height
+        return Point2(x + c * w / 2 - s * h / 2, y + s * w / 2 + c * h / 2)
+    }
+
+    /// 按左上角解释的「其他元素」类型（其余类型，如 Circle、MapRoadPoint，本来就是中心）。
+    private static let topLeftOtherTypes: Set<String> = ["MapTableFeature", "Rect", "MapPillar"]
+
+    public static func loadMap(_ data: Data, rectAnchor: RectAnchor = .topLeft) throws -> StoreMap {
         guard let root = try unwrap(data) as? [String: Any] else {
             throw StoreDataError.unsupportedFormat("地图根节点不是对象")
         }
@@ -181,10 +202,11 @@ public enum StoreDataLoader {
             let type = e["shapeType"] as? String ?? ""
             switch type {
             case "MapShelf":
+                let w = num(e["width"]) ?? 0, h = num(e["height"]) ?? 0, rot = num(e["rotation"]) ?? 0
+                var c = Point2(num(e["x"]) ?? 0, num(e["y"]) ?? 0)
+                if rectAnchor == .topLeft { c = centerOfRect(x: c.x, y: c.y, width: w, height: h, rotationDeg: rot) }
                 shelves.append(ShelfRect(code: e["code"] as? String ?? "",
-                                         x: num(e["x"]) ?? 0, y: num(e["y"]) ?? 0,
-                                         width: num(e["width"]) ?? 0, height: num(e["height"]) ?? 0,
-                                         rotation: num(e["rotation"]) ?? 0,
+                                         x: c.x, y: c.y, width: w, height: h, rotation: rot,
                                          subsection: Int(num(e["subsection"]) ?? 1)))
             case "MapCross":
                 let pts = (e["points"] as? [Any] ?? []).compactMap(num)
@@ -194,7 +216,12 @@ public enum StoreDataLoader {
                                             lineWidth: num(e["lineWidth"]) ?? 0))
             default:
                 if let x = num(e["x"]), let y = num(e["y"]) {
-                    others.append((type, x, y, num(e["width"]) ?? 0, num(e["height"]) ?? 0, num(e["rotation"]) ?? 0))
+                    let w = num(e["width"]) ?? 0, h = num(e["height"]) ?? 0, rot = num(e["rotation"]) ?? 0
+                    var c = Point2(x, y)
+                    if rectAnchor == .topLeft && topLeftOtherTypes.contains(type) {
+                        c = centerOfRect(x: x, y: y, width: w, height: h, rotationDeg: rot)
+                    }
+                    others.append((type, c.x, c.y, w, h, rot))
                 }
             }
         }

@@ -112,9 +112,9 @@ struct MagneticView: View {
                          gridCm: storeData.map == nil ? 100 : nil,
                          crossStates: isSurvey ? survey.coverage.states : [],
                          crossBinCm: SurveyCoverage.binCm,
-                         positionStale: !isSurvey && engine.locState == .lost,
                          showHeading: isSurvey ? (survey.stage != .needPosition)
                              : (!live || engine.isTracking || engine.headingEditing),
+                         positionStale: !isSurvey && engine.locState == .lost,
                          headingEditing: isSurvey ? survey.headingEditing : (live && engine.headingEditing),
                          onLongPress: longPressAction,
                          onDoubleTap: surveying ? { survey.toggleHeadingEdit() }

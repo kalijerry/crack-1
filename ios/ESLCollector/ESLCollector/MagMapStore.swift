@@ -210,6 +210,7 @@ final class MagMapStore: ObservableObject {
         magSource = "raw"
         setFieldSource(source)
         setBLE(ble)
+        try? FileManager.default.removeItem(at: MagneticEngine.monitorURL)   // 地图换了，变化检测从头攒
         refreshField()
         save()
     }
@@ -221,6 +222,7 @@ final class MagMapStore: ObservableObject {
         setFieldSource(nil)
         setBLE(nil)
         try? FileManager.default.removeItem(at: SurveyMapService.stateURL)
+        try? FileManager.default.removeItem(at: MagneticEngine.monitorURL)
         refreshField()
         save()
         AppLog.w("地磁", "已删除磁场图（连同蓝牙指纹和累积统计）")

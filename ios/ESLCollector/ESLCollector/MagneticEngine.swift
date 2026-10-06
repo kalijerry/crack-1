@@ -96,6 +96,9 @@ private final class MagPipeline {
     /// 蓝牙粗定位：价签指纹、最近几秒的读数、上次用的时间
     var bleMap: BLEFingerprintMap?
     var bleAssist: BLEAssist?
+    /// 地图还准不准（变化检测 + 定位时的磁场累积），有磁场图时才有
+    var monitor: LiveFieldMonitor?
+    var monitorField: MagneticFieldMap?
     var bleWindow: [(t: Int64, id: String, rssi: Double)] = []
     var lastBleApply: Int64 = 0
     var rawLastA: Point2?
@@ -213,6 +216,38 @@ final class MagneticEngine: ObservableObject {
     @Published private(set) var bleTagsHeard = 0
     /// 蓝牙判断人在没采集过的区域（地磁不允许定位）
     @Published private(set) var bleOutside = false
+    /// 可能变了的地方（定位时磁场持续和地图对不上），地图上画橙色方块
+    @Published private(set) var changedSpots: [Point2] = []
+    @Published private(set) var monitorSamples = 0
+    @Published private(set) var liveVsMapText: String?
+
+    nonisolated static var monitorURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("live-monitor.json")
+    }
+
+    /// 读回存盘的变化检测（和当前磁场图对得上才用）
+    func loadMonitor() {
+        guard let f = MagMapStore.shared.field else { changedSpots = []; monitorSamples = 0; liveVsMapText = nil; return }
+        var m = (try? Data(contentsOf: Self.monitorURL)).flatMap { try? JSONDecoder().decode(LiveFieldMonitor.self, from: $0) }
+        if m?.matches(f) != true { m = LiveFieldMonitor(field: f) }
+        let mon = m!
+        queue.sync { pipe.monitor = mon; pipe.monitorField = f }
+        publishMonitor(mon, field: f)
+    }
+
+    private func publishMonitor(_ m: LiveFieldMonitor, field f: MagneticFieldMap) {
+        changedSpots = m.changed().map(\.center)
+        monitorSamples = m.totalSamples
+        liveVsMapText = m.liveVsMap(f).map { "定位攒的磁场和地图平均差 \(Fmt.f($0.medianUT, 2)) µT（\($0.cells) 块）" }
+    }
+
+    private func saveMonitor() {
+        let (m, f) = queue.sync { (pipe.monitor, pipe.monitorField) }
+        guard let m, let f else { return }
+        if let d = try? JSONEncoder().encode(m) { try? d.write(to: Self.monitorURL, options: .atomic) }
+        publishMonitor(m, field: f)
+        if !changedSpots.isEmpty { AppLog.w("地磁", "可能变了的地方 \(changedSpots.count) 处（磁场持续和地图对不上），建议补采") }
+    }
     private var arRunning = false
     private let pedometer = CMPedometer()
     private let activityManager = CMMotionActivityManager()
@@ -387,6 +422,7 @@ final class MagneticEngine: ObservableObject {
         startPedometerAndActivity()
         AppLog.i("地磁", "实时定位：打开传感器，视觉里程计 \(useVisualOdometry ? "开" : "关")，深度 \(depthMode.title)，罗盘修正 \(useCompassHeading ? "开" : "关")，地磁纠偏 \(useMagCorrection ? "开" : "关")")
         startBLE()
+        loadMonitor()
     }
 
     func stopLive() {
@@ -400,6 +436,7 @@ final class MagneticEngine: ObservableObject {
         }
         isTracking = false
         stopBLE()
+        saveMonitor()
         searching = false
         searchStarted = nil
         headingEditing = false
@@ -1135,6 +1172,10 @@ final class MagneticEngine: ObservableObject {
     private nonisolated func emit(pipe: MagPipeline, tMs: Int64, shown: Point2, unc: Double, est: MagneticEstimate?,
                                   heading: Double, headingDeg: Double, src: String, feature feat: MagneticFeature?) {
         let steps = pipe.stepBase + (pipe.lastOut?.stepCount ?? 0)
+        // 变化检测：只用有把握的定位（地磁收敛，或纯视觉 / 推算时没有地磁估计）
+        if let m = pipe.monitor, let f = pipe.monitorField, let ft = feat, est?.converged == true {
+            m.add(position: shown, feature: ft, field: f)
+        }
         if let w = pipe.trackWriter {
             let check = pipe.pendingCheck ?? ""
             pipe.pendingCheck = nil

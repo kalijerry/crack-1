@@ -127,6 +127,7 @@ struct MagneticView: View {
             survey.coverage.invalidate()
             store.adopt(map: storeData.map)
             mapService.refresh()
+            engine.loadMonitor()
             mapUpText = store.mapUpBearingDeg.map { Fmt.f($0, 0) } ?? ""
             startId = store.points.first?.id ?? ""
             survey.coverage.configure(crosses: store.crosses)
@@ -138,6 +139,7 @@ struct MagneticView: View {
             survey.coverage.configurePaint(crosses: store.crosses, widthCm: store.widthCm, heightCm: store.heightCm,
                                            walkable: store.walkableMap())
             mapService.refresh()
+            engine.loadMonitor()
         }
         .onChange(of: survey.isRunning) { running in if !running { mapService.refresh() } }
         .onChange(of: survey.lastSessionDir) { _ in exportURL = nil; exportError = nil }
@@ -178,6 +180,7 @@ struct MagneticView: View {
                          nextTarget: surveying && paintMode ? survey.coverage.nextUnpainted : nil,
                          laneGuides: surveying && paintMode ? survey.coverage.laneGuides : [],
                          nextLane: surveying && paintMode ? survey.coverage.nextLane.map { ($0.from, $0.to) } : nil,
+                         alertSpots: step == .live || isSurvey ? engine.changedSpots : [],
                          showHeading: isSurvey ? (survey.stage != .needPosition)
                              : (!live || engine.isTracking || engine.headingEditing),
                          positionStale: !isSurvey && engine.locState == .lost,
@@ -291,7 +294,8 @@ struct MagneticView: View {
             let loc: String = { switch engine.locState { case .tracking: return "tracking"; case .searching: return "searching"; case .lost: return "lost"; default: return "idle" } }()
             Telemetry.shared.state(mode: "live", position: engine.position, uncertaintyCm: engine.uncertaintyCm,
                                    headingRad: engine.headingRad, loc: loc, ble: engine.bleTagsHeard,
-                                   extra: ["visualFixes": engine.visualFixes])
+                                   extra: ["visualFixes": engine.visualFixes, "changedSpots": engine.changedSpots.count,
+                                           "outside": engine.bleOutside])
         }
         .onChange(of: survey.position) { _ in
             sync3D(full: false)
@@ -308,6 +312,7 @@ struct MagneticView: View {
         .onChange(of: coverageLayer) { _ in sync3D(full: true) }
         .onChange(of: store.points) { _ in sync3D(full: true) }
         .onChange(of: store.sampleCount) { _ in sync3D(full: true) }
+        .onChange(of: store.validCells) { _ in engine.loadMonitor() }
         .onChange(of: step) { _ in sync3D(full: true) }
     }
 
@@ -911,6 +916,13 @@ struct MagneticView: View {
                 }
                 if engine.phase == .live && store.bleMap != nil {
                     row("蓝牙粗定位", engine.bleEstimate == nil ? "等价签信号…" : "听到 \(engine.bleTagsHeard) 个价签（橙色圈）").font(.footnote)
+                }
+                if engine.monitorSamples > 0 || !engine.changedSpots.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(engine.changedSpots.isEmpty ? "地图检查：没发现变化（攒了 \(engine.monitorSamples) 个读数）"
+                             : "可能变了的地方：\(engine.changedSpots.count) 处（地图上橙色方块），建议到那里补采").font(.footnote)
+                        if let t = engine.liveVsMapText { Text(t).font(.caption).foregroundStyle(.secondary) }
+                    }
                 }
                 if engine.visualFixes > 0 {
                     row("视觉定位", "成功 \(engine.visualFixes) 次").font(.footnote)

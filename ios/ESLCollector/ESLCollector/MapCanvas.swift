@@ -71,6 +71,8 @@ struct MapCanvas: View {
     var laneGuides: [(Point2, Point2)] = []
     /// 路线规划的下一段（橙色粗线 + 箭头，从 .0 走到 .1）
     var nextLane: (Point2, Point2)?
+    /// 可能变了的地方（1 m 的橙色方块）
+    var alertSpots: [Point2] = []
     var showHeading = true
     /// 位置已冻结（定位丢失）：画成灰色
     var positionStale = false
@@ -426,6 +428,13 @@ struct MapCanvas: View {
             var lp = Path()
             for (a, b) in laneGuides { lp.move(to: t.toScreen(a)); lp.addLine(to: t.toScreen(b)) }
             ctx.stroke(lp, with: .color(Color.green.opacity(0.8)), style: StrokeStyle(lineWidth: 1.2, dash: [6, 5]))
+        }
+        // 可能变了的地方
+        for sp in alertSpots {
+            let c = t.toScreen(sp), r = Swift.max(t.len(50), 3)
+            let rect = CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)
+            ctx.fill(Path(rect), with: .color(Color.orange.opacity(0.35)))
+            ctx.stroke(Path(rect), with: .color(.orange), lineWidth: 1.2)
         }
         // 路线规划：下一段
         if case let (a, b)? = nextLane {

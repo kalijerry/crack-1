@@ -12,12 +12,17 @@ public struct EvalReport: Codable {
     public var pathM: Double
     public var points: Int
     public var usedBLE: Bool
+    /// 有把握时误差超过 5 m 的比例（「定错了还很自信」，最伤人的情况）
+    public var wrongFixShare: Double?
+    /// 蓝牙交叉检验判错、重新找的次数
+    public var crossCheckResets: Int = 0
 
     public var line: String {
         func f(_ v: Double?) -> String { v.map { String(format: "%.0f", $0) } ?? "—" }
         return "\(session)\t中位 \(f(medianCm)) cm\tP90 \(f(p90Cm)) cm\t≤1m \(within1m.map { "\(Int($0 * 100))%" } ?? "—")"
             + "\t跳 \(jumps)\t首次定位 \(firstFixM.map { String(format: "%.1f m", $0) } ?? "没定到")\t走了 \(Int(pathM)) m"
-            + (usedBLE ? "\t+蓝牙" : "")
+            + "\t错定 \(wrongFixShare.map { "\(Int($0 * 100))%" } ?? "—")"
+            + (usedBLE ? "\t+蓝牙（交叉检验重找 \(crossCheckResets) 次）" : "")
     }
 }
 
@@ -47,7 +52,7 @@ public enum SessionEvaluator {
 
     /// 回放一个测试会话：按时间顺序送 IMU、原始磁力计、蓝牙、ARKit 位姿，和参考轨迹比
     public static func evaluate(dir: URL, map: StoreMap, field: MagneticFieldMap, ble: BLEFingerprintMap?,
-                                walkable: WalkableMap?) throws -> EvalReport {
+                                walkable: WalkableMap?, crossCheck: Bool = true) throws -> EvalReport {
         let s = try SurveySessionLoader.load(dir)
         // 参考轨迹：这个会话自己的对齐结果（只用它的锚点和贴通道，不用磁场）
         let refB = SurveyMapBuilder(widthCm: map.width, heightCm: map.height, crosses: map.crosses)
@@ -60,6 +65,7 @@ public enum SessionEvaluator {
         }
         let sh = ShadowLocalizer(field: field, walkable: walkable, useRawMag: !s.raw.isEmpty)
         sh.bleMap = ble
+        sh.crossCheckEnabled = crossCheck
         let bleSamples = ble == nil ? [] : SurveySessionLoader.loadBLE(dir)
         enum Ev { case imu(IMUSample), raw(Int64, (Double, Double, Double)), ble(BLESample), pose(SurveySession.Pose) }
         var evs: [(Int64, Int, Ev)] = []
@@ -82,6 +88,8 @@ public enum SessionEvaluator {
         }
         return EvalReport(session: dir.lastPathComponent, medianCm: ev.percentile(0.5), p90Cm: ev.percentile(0.9),
                           within1m: ev.within1m, jumps: ev.jumps, firstFixM: ev.firstFixPathCm.map { $0 / 100 },
-                          pathM: ev.pathCm / 100, points: ev.errors.count, usedBLE: ble != nil)
+                          pathM: ev.pathCm / 100, points: ev.errors.count, usedBLE: ble != nil,
+                          wrongFixShare: ev.errors.isEmpty ? nil : Double(ev.errors.filter { $0 > 500 }.count) / Double(ev.errors.count),
+                          crossCheckResets: sh.crossCheckResets)
     }
 }

@@ -18,6 +18,7 @@ final class BLEFingerprintTests: XCTestCase {
             for (id, tp) in tags where rssi(p, tp) > -90 && i % 3 == 0 { samples.append(BLESample(tMs: t, id: id, rssi: rssi(p, tp))) }
         }
         let b = BLEFingerprintBuilder(widthCm: 3500, heightCm: 1000)
+        b.maxSpreadCm = .infinity    // 这里的衰减模型很平缓（30 m 外还很响），不测「移动设备」过滤（见 Phase2Tests）
         XCTAssertGreaterThan(b.add(samples: samples, track: track), 100)
         let m = b.build()
         XCTAssertEqual(m.tags.count, 15)

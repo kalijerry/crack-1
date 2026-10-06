@@ -32,6 +32,11 @@ public final class ShadowLocalizer {
     public var bleMap: BLEFingerprintMap?
     private var bleWindow: [(t: Int64, id: String, rssi: Double)] = []
     private var lastBle: Int64 = 0
+    /// 蓝牙交叉检验 / 不在采集区域判断（见 BLEAssist）
+    public var crossCheckEnabled = true
+    private var assist: BLEAssist?
+    public var crossCheckResets: Int { assist?.resets ?? 0 }
+    public var outsideSurveyed: Bool { assist?.outsideSurveyed ?? false }
 
     public init(field: MagneticFieldMap, walkable: WalkableMap?, useRawMag: Bool) {
         var cfg = MagneticConfig()
@@ -72,10 +77,10 @@ public final class ShadowLocalizer {
         bleWindow.removeAll { $0.t < t - 2500 || $0.t > t }
         var acc: [String: (Double, Int)] = [:]
         for r in bleWindow { let a = acc[r.id] ?? (0, 0); acc[r.id] = (a.0 + r.rssi, a.1 + 1) }
-        guard let e = m.estimateByTags(acc.mapValues { $0.0 / Double($0.1) }) else { return }
-        let conv = localizer.isConverged
-        localizer.applyPositionPrior(e.position, sigmaCm: max(e.spreadCm, conv ? 500 : 400),
-                                     weight: conv ? 0.3 : 1, injectFraction: conv ? 0 : 0.2)
+        if assist == nil || assist!.map.tags.count != m.tags.count { assist = BLEAssist(map: m) }
+        assist!.crossCheckEnabled = crossCheckEnabled
+        assist!.tick(obs: acc.mapValues { $0.0 / Double($0.1) }, localizer: localizer,
+                     current: localizer.isConverged ? estimate?.position : nil)
     }
 
     /// ARKit 位姿。送进滤波器时返回新的估计。`tMs` 给了才会用蓝牙。

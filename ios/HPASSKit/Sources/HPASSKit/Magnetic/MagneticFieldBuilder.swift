@@ -141,6 +141,7 @@ public final class MagneticFieldBuilder {
         for j in 0..<rows {
             for i in 0..<cols where original[j * cols + i] == nil {
                 var wsum = 0.0
+                var dmin = Double.infinity
                 var m = MagneticFeature(total: 0, vertical: 0, horizontal: 0)
                 var s = MagneticFeature(total: 0, vertical: 0, horizontal: 0)
                 for dj in -reach...reach {
@@ -150,6 +151,7 @@ public final class MagneticFieldBuilder {
                         let d = Double(di * di + dj * dj).squareRoot() * cellCm
                         guard d > 0, d <= fillRadiusCm else { continue }
                         let w = 1 / (d * d)
+                        dmin = min(dmin, d)
                         m = m + nm * w
                         s = s + originalSig[jj * cols + ii]! * w
                         wsum += w
@@ -157,7 +159,8 @@ public final class MagneticFieldBuilder {
                 }
                 if wsum > 0 {
                     cells[j * cols + i] = m * (1 / wsum)
-                    sigmas[j * cols + i] = s * (1.5 / wsum)     // 补出来的格子不太可信
+                    // 补出来的格子不太可信，离真实数据越远越不可信：50 cm 处放大 1.5 倍，150 cm 处 2.5 倍
+                    sigmas[j * cols + i] = s * ((1 + dmin / 100) / wsum)
                 }
             }
         }

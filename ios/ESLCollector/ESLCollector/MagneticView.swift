@@ -154,6 +154,8 @@ struct MagneticView: View {
                          crossBinCm: SurveyCoverage.binCm,
                          paintLayer: isSurvey && paintMode ? survey.coverage.paintLayer : nil,
                          paintRadiusCm: surveying && paintMode ? survey.coverage.paintLayer?.radiusCm : nil,
+                         nextTarget: surveying && paintMode ? survey.coverage.nextUnpainted : nil,
+                         laneGuides: surveying && paintMode ? survey.coverage.laneGuides : [],
                          showHeading: isSurvey ? (survey.stage != .needPosition)
                              : (!live || engine.isTracking || engine.headingEditing),
                          positionStale: !isSurvey && engine.locState == .lost,
@@ -593,7 +595,13 @@ struct MagneticView: View {
                 }
                 Toggle("自动贴通道（实时）", isOn: $survey.corridorLock)
                 if paintMode, let c = survey.coverage.currentCorridorPaint {
-                    row("当前通道涂色", "\(c.code) · \(Int(c.fraction * 100))%").font(.footnote)
+                    row("当前通道涂色", "\(c.code) · 宽 \(Fmt.f(c.widthCm / 100, 1)) m · \(Int(c.fraction * 100))%").font(.footnote)
+                    if c.widthCm > SurveyCoverage.wideCorridorCm {
+                        Text("沿地图上的绿色虚线走：去程贴一边、回程贴另一边，把宽度涂满（很宽的通道中间再走一趟）。").font(.caption).foregroundStyle(.green)
+                    }
+                }
+                if paintMode, let p = survey.position, let tg = survey.coverage.nextUnpainted {
+                    row("最近没涂的地方（橙色圈）", "\(Int(p.distance(to: tg) / 100)) m").font(.footnote)
                 }
                 if !paintMode, let p = survey.position, let todo = survey.coverage.nearestTodo(from: p) {
                     row("最近没采完", "\(todo.code) · \(Int(todo.distanceM)) m" + (todo.oneWay ? " · 差一个方向" : ""))
@@ -678,7 +686,7 @@ struct MagneticView: View {
                     paintLegend(Color(white: 0.6).opacity(0.35), "淡灰：通道里还没涂到的地方")
                     paintLegend(Color.green.opacity(0.5), "浅绿：走过一趟")
                     paintLegend(Color(red: 0.1, green: 0.55, blue: 0.22), "深绿：走过两趟以上")
-                    Text("采集时以你为圆心画一个 40 cm 的圈，走过的地方涂上颜色。宽通道（超过 1.5 m）贴左右两边各走一趟，把整条通道涂满：靠近货架的磁场横向差别很大，只走中间，顾客贴边走时就对不上。走太快、采样率低时不涂。")
+                    Text("采集时以你为圆心画一个 40 cm 的圈，走过的地方涂上颜色。通道宽于 1 m 时，去程贴一边、回程贴另一边（地图上有绿色虚线），把整条通道涂满：靠近货架的磁场横向差别很大，只走中间，顾客贴边走时就对不上。走太快、采样率低时不涂。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .font(.footnote)

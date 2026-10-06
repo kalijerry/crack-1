@@ -29,6 +29,8 @@ final class MagMapStore: ObservableObject {
     var declinationDeg: Double? { mapUpBearingDeg.map { ($0 + 180).truncatingRemainder(dividingBy: 360) } }
     private var walkableCache: WalkableMap?
     private var shelves: [ShelfRect] = []
+    /// 房间扫描的地图：能走的地面（没有通道时用它当可走区域）
+    @Published private(set) var floor: [[Point2]] = []
     private var raycasterCache: ShelfRaycaster?
 
     /// 磁场图的来源：电脑上 tools/magmap.py 建的是 raw（原始磁力计减偏置），App 里按点位校准的是 calibrated。
@@ -58,12 +60,16 @@ final class MagMapStore: ObservableObject {
     func adopt(map: StoreMap?) {
         guard let m = map, m.width > 0, m.height > 0 else { return }
         let sameSize = abs(m.width - widthCm) < 1 && abs(m.height - heightCm) < 1
-        let sameCrosses = m.crosses.count == crosses.count
+        let sameCrosses = m.crosses.count == crosses.count && m.floor == floor
         crosses = m.crosses
+        floor = m.floor
         if !sameCrosses { walkableCache = nil }
         // 只有标准货架（Shelf-001…100）是实物；虚拟货架和 107 / 401 / Shelf-4-… 等不参与
         let phys = m.physicalShelves
-        if phys != shelves { raycasterCache = nil }   // 货架数量变了或者整体偏移改了
+        if phys != shelves {
+            raycasterCache = nil   // 货架数量变了或者整体偏移改了
+            if !floor.isEmpty { walkableCache = nil }   // 房间：家具挡住的地方不能走
+        }
         shelves = phys
         if sameSize { return }
         widthCm = m.width
@@ -80,6 +86,12 @@ final class MagMapStore: ObservableObject {
     /// 可走区域（由通道栅格化，首次使用时生成并缓存）。没有通道时为 nil。
     func walkableMap() -> WalkableMap? {
         if let w = walkableCache { return w }
+        if crosses.isEmpty && !floor.isEmpty {
+            let w = WalkableMap(floor: floor, obstacles: shelves, widthCm: widthCm, heightCm: heightCm)
+            walkableCache = w
+            AppLog.i("地磁", "可走区域（房间地面 − 家具）：\(w.walkableCellCount) 格，\(Fmt.f(w.walkableAreaM2, 1)) m²")
+            return w
+        }
         guard !crosses.isEmpty else { return nil }
         let w = WalkableMap(crosses: crosses, widthCm: widthCm, heightCm: heightCm)
         walkableCache = w
@@ -106,7 +118,8 @@ final class MagMapStore: ObservableObject {
     }
 
     /// 用门店地图做底，还是没有门店地图时的小测试区。
-    var usesStoreMap: Bool { !crosses.isEmpty }
+    /// 有门店地图（通道）或房间地图（地面）
+    var usesStoreMap: Bool { !crosses.isEmpty || !floor.isEmpty }
 
     // MARK: 点位
 

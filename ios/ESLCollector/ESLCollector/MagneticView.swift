@@ -115,10 +115,16 @@ struct MagneticView: View {
             if mapUpText.isEmpty, let v = store.mapUpBearingDeg { mapUpText = Fmt.f(v, 0) }
             if startId.isEmpty { startId = store.points.first?.id ?? "" }
         }
-        .onChange(of: storeData.map?.crosses.count) { _ in store.adopt(map: storeData.map) }
+        .onChange(of: storeData.mapSignature) { _ in
+            store.adopt(map: storeData.map)
+            survey.coverage.configure(crosses: store.crosses)
+            survey.coverage.configurePaint(crosses: store.crosses, widthCm: store.widthCm, heightCm: store.heightCm,
+                                           walkable: store.walkableMap())
+        }
         .onAppear {
             survey.coverage.configure(crosses: store.crosses)
-            survey.coverage.configurePaint(crosses: store.crosses, widthCm: store.widthCm, heightCm: store.heightCm)
+            survey.coverage.configurePaint(crosses: store.crosses, widthCm: store.widthCm, heightCm: store.heightCm,
+                                           walkable: store.walkableMap())
             mapService.refresh()
         }
         .onChange(of: survey.isRunning) { running in if !running { mapService.refresh() } }

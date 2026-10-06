@@ -52,6 +52,9 @@ final class Store3DScene {
         var minX = Double.infinity, minZ = Double.infinity, maxX = -Double.infinity, maxZ = -Double.infinity
         func grow(_ x: Double, _ y: Double) { minX = min(minX, x); maxX = max(maxX, x); minZ = min(minZ, y); maxZ = max(maxZ, y) }
         for s in map.physicalShelves { let r = max(s.width, s.height) / 2; grow(s.x - r, s.y - r); grow(s.x + r, s.y + r) }
+        for o in map.others where Self.roomTypes.contains(o.shapeType) {
+            let r = max(o.width, o.height) / 2; grow(o.x - r, o.y - r); grow(o.x + r, o.y + r)
+        }
         for c in map.crosses { grow(c.a.x, c.a.y); grow(c.b.x, c.b.y) }
         if minX > maxX { minX = 0; minZ = 0; maxX = map.width; maxZ = map.height }
         content = (max(minX, 0) / 100, max(minZ, 0) / 100, min(maxX, map.width) / 100, min(maxZ, map.height) / 100)
@@ -84,6 +87,9 @@ final class Store3DScene {
         world.addChildNode(n)
     }
 
+    /// 房间扫描地图里画成墙 / 门 / 窗的元素
+    static let roomTypes: Set<String> = ["MapWall", "MapDoor", "MapWindow", "MapOpening"]
+
     func setShelfHeight(_ m: Double) {
         guard abs(m - shelfHeightM) > 0.01 else { return }
         shelfHeightM = m
@@ -99,13 +105,32 @@ final class Store3DScene {
         shelvesNode.childNodes.forEach { $0.removeFromParentNode() }
         let mat = Self.material(S3Color(white: 0.58, alpha: 1))
         let holder = SCNNode()
+        let furniture = Self.material(S3Color(red: 0.55, green: 0.62, blue: 0.75, alpha: 1))
         for s in map.physicalShelves {
-            let box = SCNBox(width: s.width / 100, height: shelfHeightM, length: s.height / 100, chamferRadius: 0)
-            box.firstMaterial = mat
+            // 房间扫描的家具有真实高度；门店货架没有，用统一高度
+            let h = s.heightCm.map { max($0 / 100, 0.05) } ?? shelfHeightM
+            let box = SCNBox(width: s.width / 100, height: h, length: s.height / 100, chamferRadius: 0)
+            box.firstMaterial = s.heightCm == nil ? mat : furniture
             let n = SCNNode(geometry: box)
-            n.position = SCNVector3(s.x / 100, shelfHeightM / 2, s.y / 100)
+            n.position = SCNVector3(s.x / 100, h / 2, s.y / 100)
             // 地图旋转：u = (cos r, sin r) 沿 width，顺时针（y 向下）。绕场景 +y 轴转 −r 才对得上
             n.eulerAngles = SCNVector3(0, -s.rotation * Double.pi / 180, 0)
+            holder.addChildNode(n)
+        }
+        // 房间扫描的墙（半透明，看得见里面）、门、窗
+        let wallMat = Self.material(S3Color(white: 0.85, alpha: 0.55))
+        wallMat.transparencyMode = .dualLayer
+        let doorMat = Self.material(S3Color(red: 0.75, green: 0.5, blue: 0.25, alpha: 0.9))
+        let winMat = Self.material(S3Color(red: 0.4, green: 0.75, blue: 0.95, alpha: 0.6))
+        for o in map.others where Self.roomTypes.contains(o.shapeType) {
+            let isWall = o.shapeType == "MapWall"
+            let h = isWall ? 2.5 : (o.shapeType == "MapWindow" ? 1.2 : 2.05)
+            let y0 = o.shapeType == "MapWindow" ? 0.9 : 0
+            let box = SCNBox(width: o.width / 100, height: h, length: max(o.height, 6) / 100, chamferRadius: 0)
+            box.firstMaterial = isWall ? wallMat : (o.shapeType == "MapWindow" ? winMat : doorMat)
+            let n = SCNNode(geometry: box)
+            n.position = SCNVector3(o.x / 100, y0 + h / 2, o.y / 100)
+            n.eulerAngles = SCNVector3(0, -o.rotation * Double.pi / 180, 0)
             holder.addChildNode(n)
         }
         // 把一千多个盒子合成一个几何体，一次绘制

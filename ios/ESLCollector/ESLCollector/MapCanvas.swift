@@ -285,6 +285,17 @@ struct MapCanvas: View {
             ctx.stroke(grid, with: .color(.secondary.opacity(0.25)), lineWidth: 0.8)
         }
 
+        // 房间地面
+        if !m.floor.isEmpty {
+            var fp = Path()
+            for poly in m.floor where poly.count >= 3 {
+                fp.move(to: t.toScreen(poly[0]))
+                for q in poly.dropFirst() { fp.addLine(to: t.toScreen(q)) }
+                fp.closeSubpath()
+            }
+            ctx.fill(fp, with: .color(Color.blue.opacity(0.06)))
+        }
+
         // 涂色图层：每格一个像素，按地图范围缩放，不插值
         if let pl = paintLayer {
             let o = t.toScreen(Point2(Double(pl.rect.minX), Double(pl.rect.minY)))
@@ -320,6 +331,27 @@ struct MapCanvas: View {
         mc.fill(cached.standard, with: .color(.gray.opacity(0.35)))
         mc.stroke(cached.standard, with: .color(.gray.opacity(0.7)), lineWidth: 0.6 * px)
         mc.stroke(cached.nonStandard, with: .color(.gray.opacity(0.25)), lineWidth: 0.4 * px)
+
+        // 房间扫描的墙 / 门 / 窗：墙深色、门棕色、窗浅蓝（门店地图没有这些类型）
+        for o in m.others {
+            let color: Color
+            switch o.shapeType {
+            case "MapWall": color = Color.primary.opacity(0.75)
+            case "MapDoor": color = Color.brown
+            case "MapWindow": color = Color.cyan
+            case "MapOpening": color = Color.green.opacity(0.6)
+            default: continue
+            }
+            let p = MapCanvas.rectPath(cx: o.x, cy: o.y, w: o.width, h: Swift.max(o.height, 8), rotation: o.rotation, t: t)
+            ctx.fill(p, with: .color(color))
+        }
+        // 房间家具的名字（Room-bed-1 → 床）
+        for s in m.shelves where s.code.hasPrefix("Room-") {
+            let parts = s.code.split(separator: "-")
+            guard parts.count >= 2 else { continue }
+            ctx.draw(Text(RoomCategory.label(String(parts[1]))).font(.system(size: 10, weight: .medium)).foregroundColor(.secondary),
+                     at: t.toScreen(Point2(s.x, s.y)), anchor: .center)
+        }
 
         // 指纹点
         if showFingerprints {

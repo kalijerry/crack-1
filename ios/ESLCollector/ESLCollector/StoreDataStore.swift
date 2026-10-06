@@ -64,6 +64,40 @@ final class StoreDataStore: ObservableObject {
 
     var eslToShelf: [String: String] { StoreDataLoader.eslToShelf(eslItems) }
 
+    /// 地图变了没有（尺寸、货架、通道、地面）。换成房间地图时通道数可能不变（都是 0），所以不能只看通道数。
+    var mapSignature: String {
+        guard let m = map else { return "" }
+        return "\(Int(m.width))x\(Int(m.height))/\(m.shelves.count)/\(m.crosses.count)/\(m.floor.count)/\(m.floorName ?? "")"
+    }
+
+    // MARK: 房间扫描地图
+
+    private var backupURL: URL { Self.rootURL.appendingPathComponent("map-store-backup.json") }
+
+    /// 有没有备份的门店地图（换成房间地图之前的那张）
+    var hasMapBackup: Bool { FileManager.default.fileExists(atPath: backupURL.path) }
+
+    /// 当前地图是不是房间扫描生成的
+    var currentMapIsRoom: Bool { map.map { $0.crosses.isEmpty && !$0.floor.isEmpty } ?? false }
+
+    /// 把房间扫描生成的地图设为当前地图。当前是门店地图时先备份（之后可以恢复）；当前已经是房间地图就直接覆盖。
+    func useRoomMap(_ data: Data) throws {
+        let cur = url(for: .map)
+        if FileManager.default.fileExists(atPath: cur.path) && !currentMapIsRoom {
+            try? FileManager.default.removeItem(at: backupURL)
+            try FileManager.default.copyItem(at: cur, to: backupURL)
+            AppLog.i("门店数据", "已备份原来的门店地图")
+        }
+        try save(data, as: .map)
+    }
+
+    /// 恢复备份的门店地图
+    func restoreMapBackup() throws {
+        let data = try Data(contentsOf: backupURL)
+        try save(data, as: .map)
+        AppLog.i("门店数据", "已恢复门店地图")
+    }
+
     static var rootURL: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return docs.appendingPathComponent("store-data", isDirectory: true)

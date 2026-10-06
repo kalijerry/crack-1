@@ -503,7 +503,7 @@ final class MagneticEngine: ObservableObject {
         let store = MagMapStore.shared
         var cfg = FusionConfig()
         // 有门店通道时，惯导位置被限制在通道里（与蓝牙定位页一致）
-        cfg.useCorridorConstraint = store.usesStoreMap
+        cfg.useCorridorConstraint = !store.crosses.isEmpty
         cfg.useMagneticHeading = compass ?? useCompassHeading
         cfg.stepLengthScale = stepScale
         if let d = declinationDeg ?? store.declinationDeg { cfg.magneticDeclinationDeg = d }

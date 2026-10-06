@@ -437,6 +437,30 @@ struct MagneticView: View {
 
     // MARK: 步骤 1：地图点位
 
+    /// 当前在用的磁场图 + 删除。地图、采集、定位三个步骤都放一份，好找。
+    @ViewBuilder private var fieldSection: some View {
+        Section {
+            if store.field != nil {
+                row("格子数", "\(store.validCells)")
+                Text(store.fieldSource ?? "来源未记录（旧版本生成或导入的）").font(.caption).foregroundStyle(.secondary)
+                Button(role: .destructive) { confirmDeleteField = true } label: {
+                    Label("删除当前磁场图", systemImage: "trash")
+                }
+                .disabled(engine.phase != .idle || survey.isRunning)
+                .confirmationDialog("删除手机上的磁场图？采集会话和点位都保留，可以重新生成。",
+                                    isPresented: $confirmDeleteField, titleVisibility: .visible) {
+                    Button("删除", role: .destructive) { store.deleteField() }
+                }
+            } else {
+                Text("现在没有磁场图。到「采集」步骤选会话生成一张。").font(.footnote).foregroundStyle(.secondary)
+            }
+        } header: { Text("磁场图") } footer: {
+            if store.field != nil && (engine.phase != .idle || survey.isRunning) {
+                Text("先停止定位 / 采集再删除。")
+            }
+        }
+    }
+
     @ViewBuilder private var mapPanel: some View {
         Section {
             if let m = storeData.map {
@@ -496,6 +520,8 @@ struct MagneticView: View {
                  + (store.usesStoreMap ? "，\(store.crosses.count) 条通道" : ""))
         }
 
+        fieldSection
+
         Section {
             if store.points.isEmpty {
                 Text("还没有点位。").foregroundStyle(.secondary)
@@ -523,6 +549,7 @@ struct MagneticView: View {
 
     @ViewBuilder private var surveyPanel: some View {
         let rec = survey.recorder
+        if !survey.isRunning { fieldSection }
         Section {
             if !survey.isRunning {
                 if !store.usesStoreMap {
@@ -617,19 +644,6 @@ struct MagneticView: View {
 
         if !survey.isRunning {
             Section {
-                if store.field != nil {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("当前在用的磁场图：\(store.validCells) 格").font(.footnote.bold())
-                        Text(store.fieldSource ?? "来源未记录（旧版本生成或导入的）").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Button("删除当前磁场图", role: .destructive) { confirmDeleteField = true }
-                        .confirmationDialog("删除手机上的磁场图？采集会话和点位都保留，可以重新生成。",
-                                            isPresented: $confirmDeleteField, titleVisibility: .visible) {
-                            Button("删除", role: .destructive) { store.deleteField() }
-                        }
-                } else {
-                    Text("现在没有磁场图：选会话生成一张。").font(.footnote).foregroundStyle(.secondary)
-                }
                 if mapService.items.isEmpty {
                     Text("还没有建图采集会话。").foregroundStyle(.secondary)
                 }
@@ -751,6 +765,7 @@ struct MagneticView: View {
     // MARK: 实时定位：校准传感器 → 长按定点 → 双击设朝向 → 走
 
     @ViewBuilder private var livePanel: some View {
+        if engine.phase != .live { fieldSection }
         if engine.phase != .live {
             Section {
                 Text("1. 打开传感器（手机竖着拿，摄像头朝前）。\n2. 不知道在哪：点「自动定位」，沿通道走 10～20 米。\n   知道在哪：长按地图定点，点「设朝向」让箭头指向前方再确定。\n3. 走起来，蓝点跟着动；没把握时不显示，丢了会变灰冻结。")

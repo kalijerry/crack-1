@@ -68,14 +68,15 @@ final class SurveyMapBuilderTests: XCTestCase {
         XCTAssertEqual(rb.magSource, "raw")
         XCTAssertEqual(rb.bias?.2 ?? 0, -650, accuracy: 0.5)
         XCTAssertGreaterThan(rb.corridorResidualBefore ?? 0, 50)          // 3° 偏差走 36 m，横向偏出 1 m 多
-        XCTAssertLessThan(rb.corridorResidualAfter ?? 999, 15)
+        // 只把出界的拉回通道（140 cm 宽：离中心线 70 − 30 = 40 cm 以内不拉），不强拉到正中
+        XCTAssertLessThan(rb.corridorResidualAfter ?? 999, 45)
         // 对齐后的轨迹离真实路线（x = 500）多远：不贴通道越走越偏，贴了之后基本在线上
         func lateral(_ r: SurveySessionReport) -> Double {
             let d = r.track.map { abs($0.p.x - aisleX) }.sorted()
             return d[d.count / 2]
         }
         XCTAssertGreaterThan(lateral(ra), 50)
-        XCTAssertLessThan(lateral(rb), 15)
+        XCTAssertLessThan(lateral(rb), 45)
         XCTAssertLessThan(fieldError(b.build()), 1.0)
         XCTAssertGreaterThan(rb.samplesUsed, 1000)
     }

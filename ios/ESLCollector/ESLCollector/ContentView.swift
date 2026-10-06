@@ -1,7 +1,13 @@
 import SwiftUI
 
+/// 功能开关。现在只做地磁定位，蓝牙相关的页面（蓝牙采集、蓝牙定位、指纹库 / 价签数据）先藏起来；
+/// 代码都还在，改成 true 就回来。
+enum Features {
+    static let bluetooth = false
+}
+
 struct ContentView: View {
-    @State private var tab = Tab.collect
+    @State private var tab = Features.bluetooth ? Tab.collect : Tab.magnetic
 
     enum Tab: Hashable {
         case collect, storeData, live, magnetic, log
@@ -9,17 +15,21 @@ struct ContentView: View {
 
     var body: some View {
         TabView(selection: $tab) {
-            CollectView()
-                .tabItem { Label("采集", systemImage: "antenna.radiowaves.left.and.right") }
-                .tag(Tab.collect)
+            if Features.bluetooth {
+                CollectView()
+                    .tabItem { Label("采集", systemImage: "antenna.radiowaves.left.and.right") }
+                    .tag(Tab.collect)
+            }
 
             StoreDataView()
                 .tabItem { Label("门店数据", systemImage: "square.and.arrow.down") }
                 .tag(Tab.storeData)
 
-            LiveLocationView()
-                .tabItem { Label("蓝牙定位", systemImage: "location.viewfinder") }
-                .tag(Tab.live)
+            if Features.bluetooth {
+                LiveLocationView()
+                    .tabItem { Label("蓝牙定位", systemImage: "location.viewfinder") }
+                    .tag(Tab.live)
+            }
 
             MagneticView()
                 .tabItem { Label("地磁定位", systemImage: "scope") }

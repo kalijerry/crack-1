@@ -69,10 +69,13 @@ public final class SurveyMapBuilder {
     public var snapWindowCm: Double = 1000
     public var snapMaxDistCm: Double = 200
     public var snapEnabled = true
-    /// 贴通道之前先按时间顺序跑一遍在线贴通道（和采集时手机上一样）。默认关：
-    /// 离线已经有分段贴通道，两个叠在一起在漂移小的时候反而更差（合成真值回放：中位 10 → 29 cm）；
-    /// 只有 ARKit 朝向漂得很厉害（≥10°/分钟）时才有帮助。
-    public var lockEnabled = false
+    /// 贴通道时，离中心线 半宽 − 这个（cm）以内都算在通道里，不往正中拉
+    public var snapBandMarginCm = 30.0
+    /// 贴通道之前先按时间顺序跑一遍在线贴通道（和采集时手机上一样）。
+    /// 分段贴通道每 10 m 独立估、平移有上限，修不了长直路上累积的朝向误差：
+    /// 实测 124 m 主通道，朝向差 5°，末端横向偏 11 m、磁场数据画到了货架里，定位就乱飘。
+    /// 先按顺序累积修正朝向，再分段细调，就一直在通道里（合成真值，漂移 10°/分钟、不长按：P90 133 → 59 cm）。
+    public var lockEnabled = true
     public var lockLateralGain = 0.3
 
     public init(widthCm: Double, heightCm: Double, crosses: [CrossSegment], cellCm: Double = 50) {
@@ -244,21 +247,24 @@ public final class SurveyMapBuilder {
         }
     }
 
-    private func nearestCorridor(_ p: Point2) -> (dist: Double, foot: Point2, normal: Point2)? {
-        var best: (Double, Point2, Point2)?
+    /// 最近的通道中心线。给了行进方向 `along`（单位向量）时，只考虑和它方向差不多（25° 以内）的通道：
+    /// 沿主通道走的时候不会被一路横穿过去的货架通道吸过去。
+    private func nearestCorridor(_ p: Point2, along: Point2? = nil) -> (dist: Double, foot: Point2, normal: Point2, half: Double)? {
+        var best: (Double, Point2, Point2, Double)?
         for c in crosses {
             let d = c.b - c.a
             let l2 = d.dot(d)
             guard l2 > 1 else { continue }
+            if let u = along, abs(u.dot(d)) < 0.906 * l2.squareRoot() { continue }
             let t = min(max((p - c.a).dot(d) / l2, 0), 1)
             let q = Point2(c.a.x + d.x * t, c.a.y + d.y * t)
             let dist = p.distance(to: q)
             if best == nil || dist < best!.0 {
                 let l = l2.squareRoot()
-                best = (dist, q, Point2(-d.y / l, d.x / l))
+                best = (dist, q, Point2(-d.y / l, d.x / l), max(c.lineWidth, 0) / 2)
             }
         }
-        return best.map { ($0.0, $0.1, $0.2) }
+        return best.map { ($0.0, $0.1, $0.2, $0.3) }
     }
 
     /// 按路程分段，每段估一个小的 (旋转 θ, 平移 tx, ty)，最小化轨迹点到通道中心线的垂直距离；
@@ -267,6 +273,16 @@ public final class SurveyMapBuilder {
         guard let first = mapped.first, let last = mapped.last else { return }
         let total = last.path - first.path
         let nWin = max(Int((total / snapWindowCm).rounded(.up)), 1)
+        // 每个点的行进方向（前后各 1 m）；拐弯、原地转的点没有方向，不参与贴通道
+        var dirs = [Point2?](repeating: nil, count: mapped.count)
+        var lo = 0, hi = 0
+        for i in mapped.indices {
+            while lo < i && mapped[i].path - mapped[lo].path > 100 { lo += 1 }
+            while hi + 1 < mapped.count && mapped[hi].path - mapped[i].path < 100 { hi += 1 }
+            let d = mapped[hi].p - mapped[lo].p
+            let span = mapped[hi].path - mapped[lo].path
+            if span > 120, d.length > 0.9 * span { dirs[i] = d * (1 / d.length) }
+        }
         var corr: [(center: Double, theta: Double, t: Point2, pivot: Point2)] = []
         for w in 0..<nWin {
             let lo = first.path + Double(w) * snapWindowCm, hi = lo + snapWindowCm
@@ -284,9 +300,13 @@ public final class SurveyMapBuilder {
                     let rel = p0 - pivot
                     let c = cos(theta), s = sin(theta)
                     let p = Point2(pivot.x + rel.x * c - rel.y * s + tr.x, pivot.y + rel.x * s + rel.y * c + tr.y)
-                    guard let nc = nearestCorridor(p), nc.dist <= snapMaxDistCm else { continue }
+                    guard let u = dirs[i], let nc = nearestCorridor(p, along: u), nc.dist <= snapMaxDistCm else { continue }
                     let n = nc.normal
-                    let e = n.dot(p - nc.foot)                   // 当前残差
+                    // 残差：人不一定走正中，通道里（离中心线 半宽 − snapBandMarginCm 以内）不算误差，出界的部分才算
+                    var e = n.dot(p - nc.foot)
+                    let band = max(nc.half - snapBandMarginCm, 0)
+                    guard abs(e) > band else { continue }
+                    e -= e > 0 ? band : -band
                     let rr = p - pivot
                     let jt = n.dot(Point2(-rr.y, rr.x))         // ∂e/∂θ
                     let row = [jt, n.x, n.y]

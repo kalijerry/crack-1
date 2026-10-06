@@ -25,6 +25,9 @@ final class StoreDataStore: ObservableObject {
 
         var id: String { rawValue }
 
+        /// 界面上显示的种类：不用蓝牙时只有地图
+        static var visible: [FileKind] { Features.bluetooth ? allCases : [.map] }
+
         var fileName: String {
             switch self {
             case .map: return "map.json"

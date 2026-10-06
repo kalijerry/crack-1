@@ -39,7 +39,7 @@ struct StoreDataView: View {
     var body: some View {
         Form {
             statusSection
-            selfCheckSection
+            if Features.bluetooth { selfCheckSection }
             serverSection
             importSection
         }
@@ -71,13 +71,13 @@ struct StoreDataView: View {
 
     private var statusSection: some View {
         Section {
-            ForEach(StoreDataStore.FileKind.allCases) { kind in
+            ForEach(StoreDataStore.FileKind.visible) { kind in
                 fileRow(kind)
             }
             HStack {
                 Text("整体状态")
                 Spacer()
-                if store.isReady {
+                if Features.bluetooth ? store.isReady : store.map != nil {
                     Text("就绪").foregroundStyle(.green)
                 } else {
                     Text("数据不完整").foregroundStyle(.orange)
@@ -89,7 +89,8 @@ struct StoreDataView: View {
         } header: {
             Text("状态")
         } footer: {
-            Text("三个文件存放在 App 的 Documents/store-data 目录，也可以用「文件」App 直接放入。")
+            Text(Features.bluetooth ? "三个文件存放在 App 的 Documents/store-data 目录，也可以用「文件」App 直接放入。"
+                                    : "地图文件存放在 App 的 Documents/store-data 目录，也可以用「文件」App 直接放入。")
         }
     }
 
@@ -260,7 +261,7 @@ struct StoreDataView: View {
                 }
             }
             LoggedButton(name: "下载全部") {
-                download(StoreDataStore.FileKind.allCases)
+                download(StoreDataStore.FileKind.visible)
             } label: {
                 Text("下载全部").frame(maxWidth: .infinity).fontWeight(.semibold)
             }
@@ -268,7 +269,7 @@ struct StoreDataView: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("分别下载每一项").font(.caption).foregroundStyle(.secondary)
-                ForEach(StoreDataStore.FileKind.allCases) { kind in
+                ForEach(StoreDataStore.FileKind.visible) { kind in
                     LoggedButton(name: "下载\(kind.title)", detail: kind.rawValue) {
                         download([kind])
                     } label: {
@@ -298,7 +299,7 @@ struct StoreDataView: View {
             if let importError {
                 Text(importError).font(.caption).foregroundStyle(.red)
             }
-            ForEach(StoreDataStore.FileKind.allCases) { kind in
+            ForEach(StoreDataStore.FileKind.visible) { kind in
                 HStack {
                     Text(kind.title)
                     Spacer()

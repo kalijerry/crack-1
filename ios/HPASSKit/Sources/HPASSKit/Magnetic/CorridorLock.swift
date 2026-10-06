@@ -20,9 +20,9 @@ public final class CorridorLock {
 
     public let crosses: [CrossSegment]
     /// 用最近多少路程（cm）的轨迹估方向
-    public var windowCm = 600.0
+    public var windowCm = 800.0
     /// 至少走了这么远才开始估
-    public var minWindowCm = 400.0
+    public var minWindowCm = 500.0
     /// 两次修正之间至少走多远（cm）
     public var everyCm = 100.0
     /// 轨迹方向和通道方向最多差多少才认为在沿这条通道走（弧度，约 12°）
@@ -35,11 +35,18 @@ public final class CorridorLock {
     /// 拉中心线会带来偏差（回放实测：拉中心线中位误差 29 cm，只拉出界的 23 cm）
     public var lateralMarginCm = 30.0
     public var angleGain = 0.5
+    /// 一次最多转这么多（弧度，约 1.5°）：绕开推车、侧身让人这种真的横移，不会被当成朝向错了把整条轨迹转歪。
+    /// 真的朝向误差是持续的，每米 1.5° 也很快就修回来。
+    public var maxStepAngle = 0.026
+    /// 已经在沿着走的通道：离中心线 半宽 + 这个（cm）以内都继续认它，不跳到旁边平行的短通道上
+    public var stickyOutsideCm = 250.0
     public var lateralGain = 0.3
 
     private var pts: [(p: Point2, s: Double)] = []
     private var path = 0.0
     private var lastFixPath = -Double.infinity
+    /// 正在沿着走的通道（拐弯、修正之后清掉）
+    private var current: String?
 
     public private(set) var corrections = 0
     public private(set) var totalAbsAngle = 0.0
@@ -52,6 +59,7 @@ public final class CorridorLock {
     public func reset() {
         pts.removeAll()
         lastFixPath = -Double.infinity
+        current = nil
     }
 
     /// 喂当前位置（已经包含之前的修正）。需要修正时返回修正量，调用方把它应用到对齐参数上。
@@ -74,7 +82,7 @@ public final class CorridorLock {
         let theta = 0.5 * atan2(2 * sxy, sxx - syy)
         let u = Point2(cos(theta), sin(theta))
         let rms = (pts.reduce(0.0) { let d = $1.p - c; let e = d.x * u.y - d.y * u.x; return $0 + e * e } / n).squareRoot()
-        guard rms <= maxStraightRmsCm else { return nil }
+        guard rms <= maxStraightRmsCm else { current = nil; return nil }   // 在拐弯
 
         // 找方向接近、离得够近的通道
         var best: (cross: CrossSegment, dA: Double, dist: Double)?
@@ -85,17 +93,20 @@ public final class CorridorLock {
             guard t > -0.05, t < 1.05 else { continue }
             let foot = Point2(x.a.x + d.x * t, x.a.y + d.y * t)
             let dist = c.distance(to: foot)
-            guard dist <= max(x.lineWidth, 0) / 2 + maxOutsideCm else { continue }
+            let sticky = x.code == current
+            guard dist <= max(x.lineWidth, 0) / 2 + (sticky ? stickyOutsideCm : maxOutsideCm) else { continue }
             var dA = atan2(d.y, d.x) - theta                 // 把轨迹方向转到通道方向
             while dA > Double.pi / 2 { dA -= Double.pi }      // 方向不分正反
             while dA < -Double.pi / 2 { dA += Double.pi }
             guard abs(dA) <= maxAngle else { continue }
+            if sticky { best = (x, dA, -1); break }          // 还在原来的通道上：就认它
             if best == nil || dist < best!.dist { best = (x, dA, dist) }
         }
         guard let b = best else { return nil }
+        current = b.cross.code
 
         // 先绕当前位置转，再看窗口中心离中心线多远
-        let rot = angleGain * b.dA
+        let rot = min(max(angleGain * b.dA, -maxStepAngle), maxStepAngle)
         let co = cos(rot), si = sin(rot)
         func turn(_ q: Point2) -> Point2 { let r = q - p; return Point2(p.x + r.x * co - r.y * si, p.y + r.x * si + r.y * co) }
         let c2 = turn(c)

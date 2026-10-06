@@ -621,7 +621,7 @@ struct MagneticView: View {
                 }
                 if let e = exportError { Text(e).font(.footnote).foregroundStyle(.red) }
             } header: { Text("导出给电脑建图") } footer: {
-                Text("导出的 zip 用隔空投送或「文件」发到电脑，在电脑上运行 tools/magmap.py，生成磁场图后再导入这里。也可以在「采集 → 历史会话」里找到所有会话。")
+                Text("导出的 zip 用隔空投送或「文件」发到电脑，在电脑上运行 tools/magmap.py，生成磁场图后再导入这里。也可以在「数据管理」里找到所有会话。")
             }
         }
 

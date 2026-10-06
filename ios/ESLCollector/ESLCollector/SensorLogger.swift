@@ -8,6 +8,8 @@ import UIKit
 /// DeviceMotion 与蓝牙仍由 MotionRecorder / BLEScanner 负责。
 @MainActor
 final class SensorLogger: NSObject, CLLocationManagerDelegate {
+    /// 原始磁力计顺带转出去（建图时的地磁定位用）
+    var tap: SensorTap?
     private let motionManager: CMMotionManager
     private let altimeter = CMAltimeter()
     private let pedometer = CMPedometer()
@@ -59,9 +61,11 @@ final class SensorLogger: NSObject, CLLocationManagerDelegate {
            let w = magWriter {
             motionManager.magnetometerUpdateInterval = 1.0 / magHz
             let counter = self.counter
+            let tap = self.tap
             motionManager.startMagnetometerUpdates(to: queue) { d, _ in
                 guard let d else { return }
                 let t = Int64(((epochOffset + d.timestamp) * 1000).rounded())
+                tap?.raw?(t, (d.magneticField.x, d.magneticField.y, d.magneticField.z))
                 w.append("\(t),\(Fmt.f(d.magneticField.x, 3)),\(Fmt.f(d.magneticField.y, 3)),\(Fmt.f(d.magneticField.z, 3))")
                 counter.add()
             }

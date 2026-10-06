@@ -12,7 +12,7 @@ public struct SurveySession {
 
     public struct Anchor {
         public var tMs: Int64
-        /// start / reanchor 是真值；heading / end 不是
+        /// start / reanchor 是真值；heading / end 不是；align 的 heading 字段是 ARKit → 地图的旋转 φ（自动起点写的）
         public var kind: String
         public var map: Point2
         public var ar: Point2
@@ -169,7 +169,9 @@ public final class SurveyMapBuilder {
         guard !truth.isEmpty else { rep.warnings.append("没有起点锚点（长按定点）"); return [] }
         // 首段旋转：设朝向锚点 + 之后走出 1.5 m 的方向
         var phiPrev: Double?
-        for h in anchors where h.kind == "heading" && h.heading != nil {
+        // 自动起点（地磁定位）直接给出 ARKit → 地图的旋转
+        if let al = anchors.first(where: { $0.kind == "align" && $0.heading != nil }) { phiPrev = al.heading }
+        for h in anchors where phiPrev == nil && h.kind == "heading" && h.heading != nil {
             guard let i0 = poses.firstIndex(where: { $0.tMs >= h.tMs }) else { continue }
             let a0 = poses[i0].a
             if let j = poses[i0...].firstIndex(where: { $0.a.distance(to: a0) >= 150 }) {

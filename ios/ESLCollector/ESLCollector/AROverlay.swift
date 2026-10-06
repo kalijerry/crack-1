@@ -15,6 +15,8 @@ final class AROverlayScene {
     private let trailNode = SCNNode()
     private var builtCenter: Point2?
     private var builtKey = ""
+    private var trailCount = -1
+    private var trailLast: Point2?
 
     /// 只画这个半径内的东西（cm）。整张图一千多个货架都叠上去，远处的会穿墙乱成一片。
     var radiusCm: Double = 1500
@@ -110,8 +112,13 @@ final class AROverlayScene {
     }
 
     /// 走过的路：地上一条绿带。
+    /// 位置每帧都在变，轨迹不用每帧重建：末端挪了 50 cm 以上（或轨迹被清空、变短）才重建，只画最近 300 个点。
     func setTrail(_ trail: [Point2]) {
+        if let l = trailLast, let n = trail.last, trail.count >= trailCount, n.distance(to: l) < 50 { return }
+        trailCount = trail.count
+        trailLast = trail.last
         trailNode.childNodes.forEach { $0.removeFromParentNode() }
+        let trail = Array(trail.suffix(300))
         guard trail.count >= 2 else { return }
         let m = SCNMaterial()
         m.diffuse.contents = UIColor.systemGreen.withAlphaComponent(0.7)

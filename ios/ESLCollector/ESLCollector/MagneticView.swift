@@ -508,11 +508,19 @@ struct MagneticView: View {
                     .autocorrectionDisabled()
                 Toggle("LiDAR 实景扫描（结束时导出网格，文件较大）", isOn: $survey.scanMesh)
                     .disabled(!ARKitLogger.supportsMesh)
+                if store.field != nil {
+                    Toggle("同时测地磁定位精度", isOn: $survey.evaluate)
+                }
                 bigButton("开始建图采集", name: "建图·开始") { survey.start(note: surveyNote) }
                     .disabled(!store.usesStoreMap)
             } else {
                 Text(surveyInstruction).font(.callout)
-                if survey.position != nil && survey.stage != .needPosition {
+                if survey.stage == .needPosition && survey.canUseShadow {
+                    bigButton("自动定位起点（不用长按）", name: "建图·自动起点") { survey.startAutoLocate() }
+                        .tint(.indigo)
+                }
+                if let s = survey.shadowStatus { Text(s).font(.footnote).foregroundStyle(.indigo) }
+                if survey.position != nil && survey.stage != .needPosition && survey.stage != .autoLocating {
                     bigButton(survey.headingEditing ? "确定朝向" : "设朝向", name: "建图·朝向") { survey.toggleHeadingEdit() }
                 }
                 bigButton("结束采集", name: "建图·结束") { survey.stop() }.tint(.red)
@@ -555,6 +563,12 @@ struct MagneticView: View {
                 }
                 row("已走 / 距上次修正", "\(Int(survey.totalWalkedM)) m / \(Int(survey.walkedSinceAnchorM)) m")
                 row("修正次数 / 自动贴通道", "\(survey.anchorCount) / \(survey.lockFixes)")
+                if survey.evaluate {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("地磁定位精度（采集轨迹当参考）").font(.footnote.bold())
+                        Text(survey.evalSummary ?? "开始走之后显示").font(.footnote.monospacedDigit())
+                    }
+                }
                 Toggle("自动贴通道（实时）", isOn: $survey.corridorLock)
                 if let p = survey.position, let todo = survey.coverage.nearestTodo(from: p) {
                     row("最近没采完", "\(todo.code) · \(Int(todo.distanceM)) m" + (todo.oneWay ? " · 差一个方向" : ""))
@@ -653,7 +667,8 @@ struct MagneticView: View {
 
     private var surveyInstruction: String {
         switch survey.stage {
-        case .needPosition: return "长按地图：我现在在这里。找一个路口或已知点位站着。"
+        case .needPosition: return "长按地图：我现在在这里。找一个路口或已知点位站着。已经有磁场图的区域也可以点「自动定位起点」直接走。"
+        case .autoLocating: return "沿采集过的通道正常往前走，地磁定位成功后会自动设好起点和方向（震动提示）。想手动也可以随时长按地图。"
         case .needHeading: return "点「设朝向」（或双击地图），在地图上点或拖动，让橙色箭头指向你要走的方向，再点「确定朝向」（或再双击）。"
         case .aligning: return "朝箭头方向直线走 1.5 m，App 会自动对齐 ARKit 轨迹。"
         case .tracking: return "沿通道走。长按修正是可选的：到路口时修一下更准，不修也能建图（会自动贴到通道上）。"

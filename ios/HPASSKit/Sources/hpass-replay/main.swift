@@ -4,7 +4,7 @@ import HPASSKit
 // 离线回放：用采集到的会话重跑「惯导 + 地磁粒子滤波」，和位置真值比。
 //
 //   swift run hpass-replay --session <会话目录> --map map.json --truth truth.csv \
-//        [--magmap magmap.json] [--cold] [--out replay.csv]
+//        [--magmap magmap.json] [--cold] [--depth depth_lateral.csv] [--out replay.csv]
 //
 // truth.csv 由 `tools/magmap.py --truth-dir` 导出。不给 --magmap 时只回放惯导（通道约束），
 // 用来看惯导本身的漂移；给了就同时输出地磁滤波的结果，两者对比能看出地磁纠偏带来多少。
@@ -117,5 +117,26 @@ stats("惯导（通道约束）", pdrErr)
 if localizer != nil {
     stats("地磁粒子滤波  ", pfErr)
     if cold { print(convergedAtMs.map { "冷启动在第 \(Double($0 - truth[0].t) / 1000) 秒收敛" } ?? "冷启动没有收敛") }
+}
+// 激光雷达横向距离核对：用真值轨迹的行进方向，在地图货架上射线投射，与实测的左右货架距离比
+if let depthPath = arg("--depth"), !storeMap.shelves.isEmpty {
+    let rc = ShelfRaycaster(shelves: storeMap.shelves, widthCm: storeMap.width, heightCm: storeMap.height)
+    var errL: [Double] = [], errR: [Double] = [], gapMeasured: [Double] = [], gapPredicted: [Double] = []
+    for r in rows(depthPath) {
+        guard r.count >= 5, let t = Int64(r[0]), let p = truthAt(t),
+              let a = truthAt(t - 500), let b = truthAt(t + 500), a.distance(to: b) > 40 else { continue }
+        let heading = atan2(b.x - a.x, b.y - a.y)
+        let (pl, pr) = rc.lateral(from: p, headingRad: heading, maxCm: 450)
+        let ml = Double(r[1]), mr = Double(r[2])
+        if let ml, let pl { errL.append(abs(ml - pl)) }
+        if let mr, let pr { errR.append(abs(mr - pr)) }
+        if let ml, let mr, let pl, let pr { gapMeasured.append(ml + mr); gapPredicted.append(pl + pr) }
+    }
+    print("\n激光雷达横向距离 vs 地图货架（沿真值轨迹）")
+    stats("  左侧距离误差", errL)
+    stats("  右侧距离误差", errR)
+    stats("  通道净宽误差 ", zip(gapMeasured, gapPredicted).map { abs($0 - $1) })
+    print("  判读：中位误差在 30 cm 以内，且样本数足够，才适合把「激光雷达」切到「参与定位」；")
+    print("        误差很大说明深度换算、货架摆放与地图不一致，先不要打开。")
 }
 if let path = arg("--out") { try? out.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8) }

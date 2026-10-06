@@ -92,3 +92,20 @@ jobs:
           python-version: "3.12"
       - name: Tests
         run: python -m unittest discover -s tools/tests -v
+
+  telemetry:
+    name: Telemetry worker (syntax)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check
+        working-directory: server/telemetry
+        run: |
+          node --check src/hub.js
+          sed 's#import DASHBOARD from "./dashboard.html";#const DASHBOARD="";#; s#import { Hub } from "./hub.js";#class Hub{}#' src/index.js > /tmp/index.mjs
+          node --check /tmp/index.mjs
+          python3 -c "import re;s=open('src/dashboard.html').read();open('/tmp/dash.js','w').write(re.search(r'<script>(.*)</script>',s,re.S).group(1))"
+          node --check /tmp/dash.js

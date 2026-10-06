@@ -12,6 +12,8 @@ final class SurveyMapService: ObservableObject {
     }
 
     @Published private(set) var items: [Item] = []
+    /// 当前地图的测试会话（不参与生成磁场图）
+    @Published private(set) var testItems: [Item] = []
     @Published var selected: Set<String> = []
     @Published private(set) var running = false
     @Published private(set) var lines: [String] = []
@@ -33,7 +35,15 @@ final class SurveyMapService: ObservableObject {
             guard let w, let h else { return true }
             return abs(w - store.widthCm) < 1 && abs(h - store.heightCm) < 1
         }
-        items = dirs.filter { $0.hasDirectoryPath && SurveySessionLoader.isSurvey($0) && belongs($0) }
+        func isTest(_ d: URL) -> Bool {
+            guard let data = try? Data(contentsOf: d.appendingPathComponent("meta.json")),
+                  let meta = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+            return meta["purpose"] as? String == "test"
+        }
+        let mine = dirs.filter { $0.hasDirectoryPath && SurveySessionLoader.isSurvey($0) && belongs($0) }
+        testItems = mine.filter(isTest).sorted { $0.lastPathComponent > $1.lastPathComponent }
+            .map { Item(url: $0, sizeBytes: SessionsView.dirSize($0), hasMesh: false) }
+        items = mine.filter { !isTest($0) }
             .sorted { $0.lastPathComponent > $1.lastPathComponent }
             .map { Item(url: $0, sizeBytes: SessionsView.dirSize($0),
                         hasMesh: fm.fileExists(atPath: $0.appendingPathComponent("mesh.ply").path)) }

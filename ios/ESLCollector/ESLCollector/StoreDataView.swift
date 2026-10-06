@@ -39,6 +39,7 @@ struct StoreDataView: View {
     var body: some View {
         Form {
             MapLibrarySection()
+            TelemetrySection()
             statusSection
             if Features.bluetooth { selfCheckSection }
             serverSection
@@ -439,5 +440,33 @@ struct StoreDataView: View {
     private static func dateText(_ date: Date?) -> String {
         guard let date else { return "时间未知" }
         return dateFormatter.string(from: date)
+    }
+}
+
+/// 云端后台设置：地址、口令、开关、状态
+struct TelemetrySection: View {
+    @ObservedObject private var tel = Telemetry.shared
+    @State private var token = Telemetry.shared.token
+
+    var body: some View {
+        Section {
+            TextField("后台地址，例如 hpass-telemetry.xxx.workers.dev", text: $tel.serverURL)
+                .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+            SecureField("口令", text: $token)
+                .onSubmit { tel.token = token }
+                .onChange(of: token) { tel.token = $0 }
+            Toggle("连接后台（实时日志和定位状态）", isOn: $tel.enabled)
+            Toggle("采集结束自动上传会话", isOn: $tel.autoUpload)
+            HStack {
+                Text("状态")
+                Spacer()
+                Text(tel.statusText).font(.footnote).foregroundStyle(tel.status == .connected ? .green : .secondary)
+            }
+            if tel.queued > 0 { Text("待发 \(tel.queued) 条（断网时攒着，连上补发）").font(.caption).foregroundStyle(.secondary) }
+            if let u = tel.lastUpload { Text(u).font(.caption).foregroundStyle(.secondary) }
+            Text("设备名：\(tel.deviceName)").font(.caption).foregroundStyle(.secondary)
+        } header: { Text("云端后台") } footer: {
+            Text("在电脑浏览器打开后台地址、输入同一个口令，就能实时看到这台手机的位置、日志，下载上传的会话和评估报告。只在 App 打开时发送。")
+        }
     }
 }

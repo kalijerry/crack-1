@@ -123,6 +123,7 @@ struct MagneticView: View {
             if startId.isEmpty { startId = store.points.first?.id ?? "" }
         }
         .onChange(of: storeData.mapSignature) { _ in
+            Telemetry.shared.mapChanged()
             survey.coverage.invalidate()
             store.adopt(map: storeData.map)
             mapService.refresh()
@@ -284,8 +285,22 @@ struct MagneticView: View {
         .onChange(of: arDX) { _ in syncAR() }
         .onChange(of: arDY) { _ in syncAR() }
         .onChange(of: arSessionNow == nil) { gone in if gone { showAR = false } }
-        .onChange(of: engine.position) { _ in sync3D(full: false) }
-        .onChange(of: survey.position) { _ in sync3D(full: false) }
+        .onChange(of: engine.position) { _ in
+            sync3D(full: false)
+            let loc: String = { switch engine.locState { case .tracking: return "tracking"; case .searching: return "searching"; case .lost: return "lost"; default: return "idle" } }()
+            Telemetry.shared.state(mode: "live", position: engine.position, uncertaintyCm: engine.uncertaintyCm,
+                                   headingRad: engine.headingRad, loc: loc, ble: engine.bleTagsHeard,
+                                   extra: ["visualFixes": engine.visualFixes])
+        }
+        .onChange(of: survey.position) { _ in
+            sync3D(full: false)
+            Telemetry.shared.state(mode: survey.isTestSession ? "survey-test" : "survey", position: survey.position,
+                                   uncertaintyCm: nil, headingRad: survey.headingRad,
+                                   loc: survey.stage == .tracking ? "tracking" : "searching",
+                                   paint: survey.coverage.paintGrid?.fraction,
+                                   extra: ["speed": (survey.speedMS * 10).rounded() / 10, "lockFixes": survey.lockFixes,
+                                           "eval": survey.evalSummary ?? ""])
+        }
         .onChange(of: engine.trail.count) { _ in sync3D(full: false) }
         .onChange(of: survey.coverage.revision) { _ in sync3D(full: false) }
         .onChange(of: survey.coverage.paintLayer.map(ObjectIdentifier.init)) { _ in sync3D(full: false) }
@@ -581,6 +596,8 @@ struct MagneticView: View {
                 Toggle("LiDAR 实景扫描（结束时导出网格，文件较大）", isOn: $survey.scanMesh)
                     .disabled(!ARKitLogger.supportsMesh)
                 if store.field != nil {
+                    Toggle("这次是测试会话（不参与建图，只测精度）", isOn: $survey.isTestSession)
+                        .onChange(of: survey.isTestSession) { on in if on { survey.evaluate = true } }
                     Toggle("同时测地磁定位精度", isOn: $survey.evaluate)
                 }
                 bigButton("开始建图采集", name: "建图·开始") { survey.start(note: surveyNote) }
@@ -668,6 +685,9 @@ struct MagneticView: View {
                 if mapService.items.isEmpty {
                     Text("还没有建图采集会话。").foregroundStyle(.secondary)
                 }
+                if !mapService.testItems.isEmpty {
+                    Text("另有 \(mapService.testItems.count) 个测试会话（不参与建图，可上传到后台评估）").font(.caption).foregroundStyle(.secondary)
+                }
                 ForEach(mapService.items) { it in
                     Toggle(isOn: Binding(get: { mapService.selected.contains(it.id) },
                                          set: { on in if on { mapService.selected.insert(it.id) } else { mapService.selected.remove(it.id) } })) {
@@ -701,6 +721,10 @@ struct MagneticView: View {
                     }
                 }
                 if let e = exportError { Text(e).font(.footnote).foregroundStyle(.red) }
+                if Telemetry.shared.enabled {
+                    Button("上传到云端后台") { Task { _ = await Telemetry.shared.upload(sessionDir: dir) } }
+                    if let u = Telemetry.shared.lastUpload { Text(u).font(.footnote).foregroundStyle(.secondary) }
+                }
             } header: { Text("导出给电脑建图") } footer: {
                 Text("导出的 zip 用隔空投送或「文件」发到电脑，在电脑上运行 tools/magmap.py，生成磁场图后再导入这里。也可以在「数据管理」里找到所有会话。")
             }

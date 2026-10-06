@@ -99,6 +99,7 @@ final class AppLog: ObservableObject {
         if let h = mirrorHandle, let data = (entry.line + "\n").data(using: .utf8) {
             try? h.write(contentsOf: data)
         }
+        Telemetry.shared.log(entry)
     }
 
     // MARK: 镜像到会话目录

@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>定位后台</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #6b7280; --line: #e3e6eb;
+    --accent: #2563eb; --ok: #16a34a; --warn: #d97706; --err: #dc2626;
+    --shelf: #9aa3af; --cross: rgba(37, 99, 235, .14); --floor: rgba(37, 99, 235, .06); --wall: #374151;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1218; --panel: #171b23; --text: #e6e9ef; --muted: #9aa3b2; --line: #2a303b;
+      --accent: #60a5fa; --shelf: #5b6472; --cross: rgba(96, 165, 250, .16); --floor: rgba(96, 165, 250, .07); --wall: #cbd2dc;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 -apple-system, "PingFang SC", "Helvetica Neue", sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; gap: 12px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: var(--err); }
+  .dot.on { background: var(--ok); }
+  main { display: grid; grid-template-columns: 300px 1fr 380px; gap: 12px; padding: 12px 16px; height: calc(100vh - 54px); }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; height: auto; } #mapWrap { height: 60vh; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px; overflow: auto; min-height: 0; }
+  .panel h2 { font-size: 13px; margin: 2px 0 8px; color: var(--muted); font-weight: 600; }
+  .dev { border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin-bottom: 8px; cursor: pointer; }
+  .dev.sel { border-color: var(--accent); }
+  .dev .name { font-weight: 600; display: flex; gap: 6px; align-items: center; }
+  .kv { color: var(--muted); font-size: 12px; }
+  #mapWrap { position: relative; padding: 0; overflow: hidden; }
+  canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+  #mapInfo { position: absolute; left: 10px; bottom: 8px; font-size: 12px; color: var(--muted); }
+  .log { font: 12px/1.4 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-all; border-bottom: 1px dashed var(--line); padding: 2px 0; }
+  .log.warn { color: var(--warn); } .log.error { color: var(--err); }
+  input, select, button { font: inherit; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+  button { cursor: pointer; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+  .tabs button.on { border-color: var(--accent); color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  td, th { border-bottom: 1px solid var(--line); padding: 4px; text-align: left; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>定位后台</h1>
+  <span class="dot" id="conn"></span><span id="connText" class="kv">未连接</span>
+  <input id="token" type="password" placeholder="口令" style="width:160px">
+  <button id="connect">连接</button>
+  <span class="kv" id="summary"></span>
+</header>
+<main>
+  <section class="panel">
+    <h2>设备</h2>
+    <div id="devices"><div class="kv">还没有设备。App 里「门店数据 → 云端后台」填好地址和口令就会出现。</div></div>
+  </section>
+  <section class="panel" id="mapWrap">
+    <canvas id="map"></canvas>
+    <div id="mapInfo">选一台设备显示它的地图；滚轮缩放、拖动平移</div>
+  </section>
+  <section class="panel">
+    <div class="tabs">
+      <button data-tab="logs" class="on">日志</button>
+      <button data-tab="sessions">会话</button>
+      <button data-tab="reports">评估</button>
+    </div>
+    <div id="tab-logs">
+      <div style="display:flex; gap:6px; margin-bottom:6px">
+        <input id="filter" placeholder="过滤（关键字）" style="flex:1">
+        <select id="level"><option value="">全部</option><option value="warn">警告+</option><option value="error">错误</option></select>
+      </div>
+      <div id="logs"></div>
+    </div>
+    <div id="tab-sessions" hidden><button id="reloadSessions">刷新</button><table id="sessions"></table></div>
+    <div id="tab-reports" hidden><button id="reloadReports">刷新</button><div id="reports"></div></div>
+  </section>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const state = { ws: null, devices: {}, hellos: {}, online: new Set(), logs: [], sel: null, maps: {}, trails: {},
+                view: { s: 0.05, ox: 20, oy: 20, fitted: null } };
+try { $("token").value = localStorage.getItem("hpassToken") || ""; } catch (_) {}
+const token = () => $("token").value.trim();
+const api = (p, opt = {}) => fetch(p, { ...opt, headers: { ...(opt.headers || {}), authorization: "Bearer " + token() } });
+
+function connect() {
+  try { localStorage.setItem("hpassToken", token()); } catch (_) {}
+  if (state.ws) try { state.ws.close(); } catch (_) {}
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(proto + "://" + location.host + "/ws?role=viewer&token=" + encodeURIComponent(token()));
+  state.ws = ws;
+  ws.onopen = () => { $("conn").classList.add("on"); $("connText").textContent = "已连接"; };
+  ws.onclose = () => { $("conn").classList.remove("on"); $("connText").textContent = "断开，5 秒后重连"; setTimeout(() => { if (state.ws === ws) connect(); }, 5000); };
+  ws.onmessage = (e) => onMsg(JSON.parse(e.data));
+}
+$("connect").onclick = connect;
+if (token()) connect();
+
+function onMsg(m) {
+  switch (m.type) {
+    case "snapshot":
+      state.devices = m.states || {}; state.hellos = m.hellos || {}; state.online = new Set(m.online || []);
+      state.logs = (m.recent || []).slice(-500);
+      Object.values(state.devices).forEach((s) => pushTrail(s));
+      renderDevices(); renderLogs(); draw(); break;
+    case "hello": state.hellos[m.device] = m; state.online.add(m.device); renderDevices(); break;
+    case "online": m.online ? state.online.add(m.device) : state.online.delete(m.device); renderDevices(); break;
+    case "state": state.devices[m.device] = m; pushTrail(m); renderDevices(); draw(); break;
+    case "log": state.logs.push(m); if (state.logs.length > 2000) state.logs.splice(0, 500); appendLog(m); break;
+    case "event": appendLog({ t: m.t, level: "info", cat: "后台", msg: "事件：" + m.name + (m.session ? " " + m.session : ""), device: m.device || "" }); break;
+  }
+  $("summary").textContent = Object.keys(state.hellos).length + " 台设备，" + state.online.size + " 台在线";
+}
+
+function pushTrail(s) {
+  if (s.x == null) return;
+  const t = (state.trails[s.device] ||= []);
+  const last = t[t.length - 1];
+  if (!last || Math.hypot(last.x - s.x, last.y - s.y) > 10) t.push({ x: s.x, y: s.y });
+  if (t.length > 600) t.splice(0, t.length - 600);
+}
+
+function fmtT(ms) { const d = new Date(ms); return d.toLocaleTimeString("zh-CN", { hour12: false }); }
+
+function renderDevices() {
+  const box = $("devices");
+  const names = [...new Set([...Object.keys(state.hellos), ...Object.keys(state.devices)])];
+  if (!names.length) return;
+  if (!state.sel) { state.sel = names[0]; loadMapFor(state.sel); }
+  box.innerHTML = "";
+  for (const n of names) {
+    const h = state.hellos[n] || {}, s = state.devices[n] || {};
+    const d = document.createElement("div");
+    d.className = "dev" + (n === state.sel ? " sel" : "");
+    const loc = { tracking: "跟踪中", searching: "搜索中", lost: "丢失", idle: "空闲" }[s.loc] || s.loc || "—";
+    d.innerHTML = `<div class="name"><span class="dot ${state.online.has(n) ? "on" : ""}"></span>${esc(n)}</div>
+      <div class="kv">${esc(h.model || "")} · 地图 ${esc(h.mapName || s.mapName || "—")}</div>
+      <div class="kv">${esc(s.mode || "—")} · ${loc}${s.unc != null ? " · ±" + Math.round(s.unc) + " cm" : ""}${s.src ? " · " + esc(s.src) : ""}</div>
+      <div class="kv">${s.x != null ? "位置 (" + Math.round(s.x) + ", " + Math.round(s.y) + ")" : "无位置"}${s.ble != null ? " · 蓝牙 " + s.ble : ""}${s.paint != null ? " · 涂色 " + (s.paint * 100).toFixed(1) + "%" : ""}</div>
+      <div class="kv">${s.t ? "更新 " + fmtT(s.t) : ""}</div>`;
+    d.onclick = () => { state.sel = n; renderDevices(); loadMapFor(n); draw(); };
+    box.appendChild(d);
+  }
+}
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function logLine(m) {
+  const lv = m.level || "info";
+  const d = document.createElement("div");
+  d.className = "log " + lv;
+  d.textContent = fmtT(m.t || m.recv) + " [" + (m.device || "") + "] " + (m.cat ? m.cat + "：" : "") + (m.msg || "");
+  return d;
+}
+function passes(m) {
+  const f = $("filter").value.trim(), lv = $("level").value;
+  if (lv === "warn" && !["warn", "error"].includes(m.level)) return false;
+  if (lv === "error" && m.level !== "error") return false;
+  if (f && !((m.msg || "") + (m.cat || "") + (m.device || "")).includes(f)) return false;
+  return true;
+}
+function renderLogs() { const box = $("logs"); box.innerHTML = ""; state.logs.filter(passes).slice(-400).forEach((m) => box.appendChild(logLine(m))); box.scrollTop = box.scrollHeight; }
+function appendLog(m) { if (!passes(m)) return; const box = $("logs"); const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 40; box.appendChild(logLine(m)); while (box.childNodes.length > 600) box.removeChild(box.firstChild); if (atEnd) box.scrollTop = box.scrollHeight; }
+$("filter").oninput = renderLogs; $("level").onchange = renderLogs;
+
+for (const b of document.querySelectorAll(".tabs button")) {
+  b.onclick = () => {
+    document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("on", x === b));
+    for (const t of ["logs", "sessions", "reports"]) $("tab-" + t).hidden = t !== b.dataset.tab;
+    if (b.dataset.tab === "sessions") loadSessions();
+    if (b.dataset.tab === "reports") loadReports();
+  };
+}
+async function loadSessions() {
+  const r = await api("/api/sessions"); if (!r.ok) return;
+  const list = await r.json();
+  $("sessions").innerHTML = "<tr><th>会话</th><th>大小</th><th>上传</th></tr>" + list.map((o) => {
+    const name = o.key.replace("sessions/", "");
+    return `<tr><td><a href="#" data-dl="${esc(name)}">${esc(name)}</a></td><td>${(o.size / 1e6).toFixed(1)} MB</td><td>${new Date(o.uploaded).toLocaleString("zh-CN")}</td></tr>`;
+  }).join("");
+  for (const a of document.querySelectorAll("[data-dl]")) a.onclick = async (e) => {
+    e.preventDefault();
+    const r = await api("/api/sessions/" + encodeURIComponent(a.dataset.dl)); if (!r.ok) return;
+    const u = URL.createObjectURL(await r.blob()); const x = document.createElement("a"); x.href = u; x.download = a.dataset.dl; x.click(); URL.revokeObjectURL(u);
+  };
+}
+$("reloadSessions").onclick = loadSessions;
+async function loadReports() {
+  const r = await api("/api/reports"); if (!r.ok) return;
+  const list = await r.json();
+  const box = $("reports"); box.innerHTML = list.length ? "" : '<div class="kv">还没有报告。电脑上跑 hpass-eval --json 后上传（见 server/telemetry/README.md）。</div>';
+  for (const o of list.slice(0, 20)) {
+    const rr = await api("/api/" + o.key); if (!rr.ok) continue;
+    const rows = await rr.json();
+    const div = document.createElement("div");
+    div.innerHTML = `<h2>${esc(o.key.replace("reports/", ""))}</h2><table><tr><th>测试会话</th><th>中位</th><th>P90</th><th>≤1m</th><th>跳</th><th>首次定位</th></tr>` +
+      rows.map((x) => `<tr><td>${esc(x.session)}</td><td>${x.medianCm != null ? Math.round(x.medianCm) + " cm" : "—"}</td><td>${x.p90Cm != null ? Math.round(x.p90Cm) + " cm" : "—"}</td><td>${x.within1m != null ? Math.round(x.within1m * 100) + "%" : "—"}</td><td>${x.jumps}</td><td>${x.firstFixM != null ? x.firstFixM.toFixed(1) + " m" : "没定到"}</td></tr>`).join("") + "</table>";
+    box.appendChild(div);
+  }
+}
+$("reloadReports").onclick = loadReports;
+
+// ---- 地图 ----
+async function loadMapFor(dev) {
+  const h = state.hellos[dev]; const id = h && h.mapId; if (!id || state.maps[id]) return;
+  const r = await api("/api/maps/" + encodeURIComponent(id)); if (!r.ok) { $("mapInfo").textContent = "后台还没有这张地图（App 连上时会自动上传）"; return; }
+  let j = await r.json(); if (j && j.data && j.data.mapElementList) j = j.data;
+  state.maps[id] = parseMap(j); state.view.fitted = null; draw();
+}
+function parseMap(j) {
+  const shelves = [], crosses = [], walls = [];
+  for (const e of j.mapElementList || []) {
+    const w = +e.width || 0, h = +e.height || 0, r = (+e.rotation || 0) * Math.PI / 180;
+    if (e.shapeType === "MapShelf") {
+      const c = Math.cos(r), s = Math.sin(r);   // 左上角 + 绕左上角转 → 中心
+      shelves.push({ cx: +e.x + c * w / 2 - s * h / 2, cy: +e.y + s * w / 2 + c * h / 2, w, h, r });
+    } else if (e.shapeType === "MapCross" && e.points && e.points.length >= 4) {
+      crosses.push({ a: [e.points[0], e.points[1]], b: [e.points[2], e.points[3]], lw: +e.lineWidth || 0 });
+    } else if (["MapWall", "MapDoor", "MapWindow"].includes(e.shapeType)) {
+      walls.push({ cx: +e.x, cy: +e.y, w, h: Math.max(h, 8), r, type: e.shapeType });
+    }
+  }
+  const floor = (j.floorPolygons || []).map((p) => { const out = []; for (let i = 0; i + 1 < p.length; i += 2) out.push([p[i], p[i + 1]]); return out; });
+  return { width: +j.width || 1000, height: +j.height || 1000, shelves, crosses, walls, floor, name: j.floorName };
+}
+const cv = $("map"), ctx = cv.getContext("2d");
+function draw() {
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const css = getComputedStyle(document.documentElement), col = (n) => css.getPropertyValue(n).trim();
+  ctx.fillStyle = col("--panel"); ctx.fillRect(0, 0, W, H);
+  const h = state.hellos[state.sel] || {}, m = state.maps[h.mapId];
+  const v = state.view;
+  if (m && v.fitted !== h.mapId) { v.s = Math.min(W / m.width, H / m.height) * 0.95; v.ox = (W - m.width * v.s) / 2; v.oy = (H - m.height * v.s) / 2; v.fitted = h.mapId; }
+  const X = (x) => v.ox + x * v.s, Y = (y) => v.oy + y * v.s;
+  if (m) {
+    ctx.fillStyle = col("--floor");
+    for (const p of m.floor) { ctx.beginPath(); p.forEach(([x, y], i) => (i ? ctx.lineTo(X(x), Y(y)) : ctx.moveTo(X(x), Y(y)))); ctx.closePath(); ctx.fill(); }
+    ctx.strokeStyle = col("--cross"); ctx.lineCap = "round";
+    for (const c of m.crosses) { ctx.lineWidth = Math.max(c.lw * v.s, 1); ctx.beginPath(); ctx.moveTo(X(c.a[0]), Y(c.a[1])); ctx.lineTo(X(c.b[0]), Y(c.b[1])); ctx.stroke(); }
+    const rect = (o, fill) => { ctx.save(); ctx.translate(X(o.cx), Y(o.cy)); ctx.rotate(o.r); ctx.fillStyle = fill; ctx.fillRect(-o.w * v.s / 2, -o.h * v.s / 2, o.w * v.s, o.h * v.s); ctx.restore(); };
+    for (const s of m.shelves) rect(s, col("--shelf"));
+    for (const w of m.walls) rect(w, w.type === "MapWall" ? col("--wall") : w.type === "MapDoor" ? "#a16207" : "#22d3ee");
+    $("mapInfo").textContent = (m.name || h.mapName || "") + " · " + (m.width / 100).toFixed(0) + " × " + (m.height / 100).toFixed(0) + " m";
+  }
+  for (const [dev, s] of Object.entries(state.devices)) {
+    if ((state.hellos[dev] || {}).mapId !== h.mapId || s.x == null) continue;
+    const t = state.trails[dev] || [];
+    ctx.strokeStyle = "rgba(22,163,74,.7)"; ctx.lineWidth = 2; ctx.beginPath();
+    t.forEach((p, i) => (i ? ctx.lineTo(X(p.x), Y(p.y)) : ctx.moveTo(X(p.x), Y(p.y)))); ctx.stroke();
+    if (s.unc) { ctx.fillStyle = "rgba(37,99,235,.15)"; ctx.beginPath(); ctx.arc(X(s.x), Y(s.y), Math.max(s.unc * v.s, 4), 0, 7); ctx.fill(); }
+    ctx.fillStyle = s.loc === "lost" ? "#9ca3af" : dev === state.sel ? col("--accent") : "#f59e0b";
+    ctx.beginPath(); ctx.arc(X(s.x), Y(s.y), 6, 0, 7); ctx.fill();
+    if (s.heading != null) { ctx.strokeStyle = ctx.fillStyle; ctx.beginPath(); ctx.moveTo(X(s.x), Y(s.y)); ctx.lineTo(X(s.x) + 18 * Math.sin(s.heading), Y(s.y) + 18 * Math.cos(s.heading)); ctx.stroke(); }
+    ctx.fillStyle = col("--text"); ctx.font = "12px sans-serif"; ctx.fillText(dev, X(s.x) + 9, Y(s.y) - 9);
+  }
+}
+let drag = null;
+cv.onpointerdown = (e) => { drag = { x: e.clientX, y: e.clientY }; cv.setPointerCapture(e.pointerId); };
+cv.onpointermove = (e) => { if (!drag) return; state.view.ox += e.clientX - drag.x; state.view.oy += e.clientY - drag.y; drag = { x: e.clientX, y: e.clientY }; draw(); };
+cv.onpointerup = () => { drag = null; };
+cv.onwheel = (e) => { e.preventDefault(); const k = Math.exp(-e.deltaY * 0.0015), r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top, v = state.view; v.ox = mx - (mx - v.ox) * k; v.oy = my - (my - v.oy) * k; v.s *= k; draw(); };
+window.onresize = draw;
+draw();
+</script>
+</body>
+</html>

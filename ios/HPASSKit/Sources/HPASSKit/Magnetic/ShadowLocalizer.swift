@@ -28,6 +28,10 @@ public final class ShadowLocalizer {
 
     /// 每走这么远（cm）送一次滤波器
     public var stepCm = 20.0
+    /// 蓝牙指纹（有就每秒用最近 2.5 秒的价签读数当粗定位，和实时定位页一样）
+    public var bleMap: BLEFingerprintMap?
+    private var bleWindow: [(t: Int64, id: String, rssi: Double)] = []
+    private var lastBle: Int64 = 0
 
     public init(field: MagneticFieldMap, walkable: WalkableMap?, useRawMag: Bool) {
         var cfg = MagneticConfig()
@@ -56,9 +60,27 @@ public final class ShadowLocalizer {
         if useRawMag, let m = bias.corrected(v) { latest = extractor.process(magnetic: m, tMs: tMs) ?? latest }
     }
 
-    /// ARKit 位姿。送进滤波器时返回新的估计。
+    public func bleReading(tMs: Int64, id: String, rssi: Double) {
+        guard bleMap != nil else { return }
+        bleWindow.append((tMs, id, rssi))
+        if bleWindow.count > 3000 { bleWindow.removeFirst(bleWindow.count - 3000) }
+    }
+
+    private func bleTick(_ t: Int64) {
+        guard let m = bleMap, t - lastBle >= 1000 else { return }
+        lastBle = t
+        bleWindow.removeAll { $0.t < t - 2500 || $0.t > t }
+        var acc: [String: (Double, Int)] = [:]
+        for r in bleWindow { let a = acc[r.id] ?? (0, 0); acc[r.id] = (a.0 + r.rssi, a.1 + 1) }
+        guard let e = m.estimateByTags(acc.mapValues { $0.0 / Double($0.1) }) else { return }
+        let conv = localizer.isConverged
+        localizer.applyPositionPrior(e.position, sigmaCm: max(e.spreadCm, conv ? 500 : 400),
+                                     weight: conv ? 0.3 : 1, injectFraction: conv ? 0 : 0.2)
+    }
+
+    /// ARKit 位姿。送进滤波器时返回新的估计。`tMs` 给了才会用蓝牙。
     @discardableResult
-    public func pose(a: Point2, normal: Bool) -> MagneticEstimate? {
+    public func pose(a: Point2, normal: Bool, tMs: Int64? = nil) -> MagneticEstimate? {
         guard normal else { lastA = nil; return nil }
         defer { lastA = a }
         guard let l = lastA else { return nil }
@@ -69,6 +91,7 @@ public final class ShadowLocalizer {
         let step = accum
         accum = .zero
         let prev = estimate
+        if let t = tMs { bleTick(t) }
         let e = localizer.step(delta: step, feature: latest, trust: 1)
         estimate = e
         estimateA = a

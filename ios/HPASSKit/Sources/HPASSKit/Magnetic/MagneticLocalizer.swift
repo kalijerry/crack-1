@@ -46,6 +46,13 @@ public struct MagneticConfig {
     /// 走向先验的整体强度，0 关闭。
     public var corridorHeadingWeight: Double = 1.0
 
+    /// 横向距离（深度相机量到的左右货架距离）观测的权重，0 = 不用。需要设置 `raycaster`。
+    public var lateralWeight: Double = 0
+    /// 横向距离观测的 1σ（cm），再加上距离的 15%。
+    public var lateralSigmaCm: Double = 35
+    /// 超过这个距离的墙不参与比较（深度相机量程之外）。
+    public var lateralMaxCm: Double = 450
+
     /// 有效粒子数低于 N × 该比例时重采样。
     public var resampleThreshold: Double = 0.5
     /// 重采样后的位置抖动（cm），以及注入的随机粒子比例（用于跟丢后重新找回）。
@@ -101,6 +108,8 @@ public final class MagneticLocalizer {
     public let field: MagneticFieldMap
     /// 可走区域。nil 表示整张地图都能走（10×10 m 测试区）。
     public let walkable: WalkableMap?
+    /// 货架射线投射，用于横向距离观测。
+    public var raycaster: ShelfRaycaster?
 
     private var rng: MagRNG
     private var xs: [Double] = []
@@ -112,6 +121,10 @@ public final class MagneticLocalizer {
     private var travelledCm = 0.0
     private var featureSum = MagneticFeature(total: 0, vertical: 0, horizontal: 0)
     private var featureCount = 0
+    private var trustSum = 0.0
+    private var latLeftSum = 0.0, latLeftN = 0
+    private var latRightSum = 0.0, latRightN = 0
+    private var latHeadingSin = 0.0, latHeadingCos = 0.0, latN = 0
     private var updateCount = 0
     private var lastEffectiveRatio = 1.0
     private var coldStart = false
@@ -160,6 +173,8 @@ public final class MagneticLocalizer {
         travelledCm = 0
         featureSum = MagneticFeature(total: 0, vertical: 0, horizontal: 0)
         featureCount = 0
+        trustSum = 0
+        clearLateral()
         updateCount = 0
         lastEffectiveRatio = 1
         convergedStreak = 0
@@ -167,23 +182,80 @@ public final class MagneticLocalizer {
     }
 
     /// 送入一次惯导位移增量（cm，地图系）和这段时间内最新的磁场特征，返回当前估计。
+    ///
+    /// - Parameter trust: 这一刻磁场读数可信度 0...1（见 `MagneticTrustMonitor`）。
+    ///   可信度低时观测更新的权重按比例缩小，为 0 时这段读数完全不参与；位置预测不受影响。
     @discardableResult
-    public func step(delta: Point2, feature: MagneticFeature?) -> MagneticEstimate {
+    public func step(delta: Point2, feature: MagneticFeature?, trust: Double = 1,
+                     lateral: LateralObservation? = nil) -> MagneticEstimate {
         let dist = delta.length
+        if let l = lateral {
+            if let v = l.leftCm { latLeftSum += v; latLeftN += 1 }
+            if let v = l.rightCm { latRightSum += v; latRightN += 1 }
+            latHeadingSin += sin(l.headingRad); latHeadingCos += cos(l.headingRad); latN += 1
+        }
         if dist > 0 { predict(delta: delta, dist: dist) }
 
         travelledCm += dist
         if let f = feature {
-            featureSum = featureSum + f
+            let t = min(max(trust, 0), 1)
+            featureSum = featureSum + f * t
+            trustSum += t
             featureCount += 1
         }
+        let due = travelledCm >= config.updateDistanceCm
+        if due, config.lateralWeight > 0, raycaster != nil, latN > 0 {
+            updateLateral()
+        }
         if travelledCm >= config.updateDistanceCm, featureCount > 0 {
-            update(feature: featureSum * (1 / Double(featureCount)))
+            // 特征按可信度加权平均；整体似然再乘以平均可信度
+            if trustSum > 1e-6 {
+                update(feature: featureSum * (1 / trustSum), trust: trustSum / Double(featureCount))
+            }
             travelledCm = 0
             featureSum = MagneticFeature(total: 0, vertical: 0, horizontal: 0)
             featureCount = 0
+            trustSum = 0
         }
+        if due { clearLateral() }
         return estimate()
+    }
+
+    private func clearLateral() {
+        latLeftSum = 0; latLeftN = 0; latRightSum = 0; latRightN = 0
+        latHeadingSin = 0; latHeadingCos = 0; latN = 0
+    }
+
+    /// 横向距离观测：每个粒子在自己位置、自己的行进方向上射线投射，与实测的左右距离比较。
+    private func updateLateral() {
+        guard let rc = raycaster else { return }
+        let left = latLeftN > 0 ? latLeftSum / Double(latLeftN) : nil
+        let right = latRightN > 0 ? latRightSum / Double(latRightN) : nil
+        guard left != nil || right != nil else { return }
+        let heading = atan2(latHeadingSin, latHeadingCos)
+        let maxCm = config.lateralMaxCm
+        let nu = 4.0
+        func t(_ d2: Double) -> Double { -(nu + 1) / 2 * log(1 + d2 / nu) }
+        func side(_ measured: Double?, _ predicted: Double?) -> Double {
+            switch (measured, predicted) {
+            case let (m?, p?):
+                let sigma = config.lateralSigmaCm + 0.15 * p
+                let d = (m - p) / sigma
+                return t(d * d)
+            case (_?, nil): return -2           // 实测有墙，模型里这个位置前方没墙
+            case (nil, let p?): return p < maxCm * 0.7 ? -1 : 0   // 模型里该有墙，实测没看到（可能被视野挡了，轻罚）
+            default: return 0
+            }
+        }
+        for i in 0..<xs.count {
+            let h = heading + bias[i]
+            let (pl, pr) = rc.lateral(from: Point2(xs[i], ys[i]), headingRad: h, maxCm: maxCm)
+            logw[i] += config.lateralWeight * (side(left, pl) + side(right, pr)) / config.likelihoodTemperature
+        }
+        normalize()
+        let neff = effectiveCount()
+        lastEffectiveRatio = neff / Double(xs.count)
+        if lastEffectiveRatio < config.resampleThreshold { resample(to: xs.count) }
     }
 
     // MARK: 预测
@@ -229,7 +301,7 @@ public final class MagneticLocalizer {
 
     // MARK: 观测更新
 
-    private func update(feature f: MagneticFeature) {
+    private func update(feature f: MagneticFeature, trust: Double = 1) {
         let nu = 4.0
         let w = config.featureWeights
         let floor2 = config.observationSigmaFloorUT * config.observationSigmaFloorUT
@@ -245,7 +317,7 @@ public final class MagneticLocalizer {
             let v1 = m.sigma.vertical * m.sigma.vertical + floor2
             let v2 = m.sigma.horizontal * m.sigma.horizontal + floor2
             let ll = w.0 * t(d0 * d0 / v0) + w.1 * t(d1 * d1 / v1) + w.2 * t(d2 * d2 / v2)
-            logw[i] += ll / config.likelihoodTemperature
+            logw[i] += trust * ll / config.likelihoodTemperature
         }
         normalize()
         updateCount += 1

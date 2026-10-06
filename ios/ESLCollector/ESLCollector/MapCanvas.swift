@@ -57,8 +57,10 @@ struct MapCanvas: View {
     var highlightId: String?
     /// 画 1 m 方格（没有货架的小测试区用）
     var gridCm: Double?
-    /// 每条通道的采集进度 0...1（数量须与 map.crosses 一致）；用来给通道上色
-    var crossCoverage: [Double] = []
+    /// 建图采集进度：每条通道每 `crossBinCm` 一段（数量须与 map.crosses 一致）。
+    /// 采过的段都带一条半透明绿带：中间是绿色实线 = 还是孤立的一段；黑色虚线 = 已经和别的路段关联起来。
+    var crossStates: [[CoverageState]] = []
+    var crossBinCm: Double = 100
     var showHeading = true
     /// 设朝向中：箭头画长、橙色；拖动 / 点击不再平移，而是把方向交给 onHeadingPoint
     var headingEditing = false
@@ -274,20 +276,19 @@ struct MapCanvas: View {
         }
 
         // 通道：半透明粗线
-        let colored = crossCoverage.count == m.crosses.count && !crossCoverage.isEmpty
+        let coloring = crossStates.count == m.crosses.count && !crossStates.isEmpty
         for (i, c) in m.crosses.enumerated() {
+            if coloring {
+                drawCoverage(ctx: ctx, t: t, cross: c, states: crossStates[i])
+                continue
+            }
             var p = Path()
             p.move(to: t.toScreen(c.a))
             p.addLine(to: t.toScreen(c.b))
             let w = Swift.max(t.len(c.lineWidth), 1.5)
-            var base = Color.blue
-            if colored {
-                let f = crossCoverage[i]
-                base = f >= 0.9 ? .green : (f >= 0.25 ? .orange : .red)
-            }
-            ctx.stroke(p, with: .color(base.opacity(colored ? 0.30 : 0.14)),
+            ctx.stroke(p, with: .color(Color.blue.opacity(0.14)),
                        style: StrokeStyle(lineWidth: w, lineCap: .round))
-            ctx.stroke(p, with: .color(base.opacity(colored ? 0.7 : 0.35)), lineWidth: 0.6)
+            ctx.stroke(p, with: .color(Color.blue.opacity(0.35)), lineWidth: 0.6)
         }
 
         // 其他元素（柱子等）：浅浅画一下
@@ -404,6 +405,39 @@ struct MapCanvas: View {
             let rect = CGRect(x: c.x - 6, y: c.y - 6, width: 12, height: 12)
             ctx.fill(Path(ellipseIn: rect), with: .color(.accentColor))
             ctx.stroke(Path(ellipseIn: rect), with: .color(.white), lineWidth: 1.5)
+        }
+    }
+
+    /// 一条通道的采集进度。采过的段带一条半透明绿带；带中间的线：
+    /// 绿色实线 = 孤立的一段，黑色虚线 = 已经和别的路段关联起来。没采完的段只画一条淡淡的细线。
+    private func drawCoverage(ctx: GraphicsContext, t: MapTransform, cross c: CrossSegment, states: [CoverageState]) {
+        let len = c.a.distance(to: c.b)
+        guard len > 1, !states.isEmpty else { return }
+        func point(_ s: Double) -> CGPoint {
+            let f = Swift.min(Swift.max(s / len, 0), 1)
+            return t.toScreen(Point2(c.a.x + (c.b.x - c.a.x) * f, c.a.y + (c.b.y - c.a.y) * f))
+        }
+        let band = Swift.max(t.len(c.lineWidth), 3)
+        var k = 0
+        while k < states.count {
+            let state = states[k]
+            var e = k
+            while e + 1 < states.count && states[e + 1] == state { e += 1 }
+            var p = Path()
+            p.move(to: point(Double(k) * crossBinCm))
+            p.addLine(to: point(Swift.min(Double(e + 1) * crossBinCm, len)))
+            switch state {
+            case .none:
+                ctx.stroke(p, with: .color(Color.secondary.opacity(0.35)), style: StrokeStyle(lineWidth: 0.8, lineCap: .butt))
+            case .isolated:
+                ctx.stroke(p, with: .color(Color.green.opacity(0.28)), style: StrokeStyle(lineWidth: band, lineCap: .butt))
+                ctx.stroke(p, with: .color(Color.green), style: StrokeStyle(lineWidth: 1.8, lineCap: .butt))
+            case .linked:
+                ctx.stroke(p, with: .color(Color.green.opacity(0.28)), style: StrokeStyle(lineWidth: band, lineCap: .butt))
+                ctx.stroke(p, with: .color(Color.primary.opacity(0.9)),
+                           style: StrokeStyle(lineWidth: 1.4, lineCap: .butt, dash: [5, 4]))
+            }
+            k = e + 1
         }
     }
 

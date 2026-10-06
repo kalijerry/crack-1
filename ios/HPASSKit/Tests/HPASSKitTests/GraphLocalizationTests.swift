@@ -132,3 +132,58 @@ final class GraphLocalizationTests: XCTestCase {
         XCTAssertLessThanOrEqual(Double(r.wrongAisle) / Double(max(r.total, 1)), 0.1)
     }
 }
+
+final class CoverageLinkerTests: XCTestCase {
+    /// 一横两竖：两条竖通道各与横通道交叉。
+    private let crosses = [
+        CrossSegment(code: "H", a: Point2(0, 500), b: Point2(2000, 500), lineWidth: 140),
+        CrossSegment(code: "V1", a: Point2(500, 0), b: Point2(500, 1000), lineWidth: 140),
+        CrossSegment(code: "V2", a: Point2(1500, 0), b: Point2(1500, 1000), lineWidth: 140),
+    ]
+
+    private func done(_ lists: [[Int]]) -> [[Bool]] {
+        zip(crosses, lists).map { c, bins in
+            let n = Int((c.a.distance(to: c.b) / 100).rounded(.up))
+            var a = [Bool](repeating: false, count: n)
+            for b in bins { a[b] = true }
+            return a
+        }
+    }
+
+    func testJunctionFindsCrossingsAndTJunctions() {
+        let (s1, s2) = CoverageLinker.junction(crosses[0], crosses[1], tol: 80)!
+        XCTAssertEqual(s1, 500, accuracy: 1e-6)
+        XCTAssertEqual(s2, 500, accuracy: 1e-6)
+        XCTAssertNil(CoverageLinker.junction(crosses[1], crosses[2], tol: 80))           // 平行
+        // T 形口：竖通道只到横通道下方 30 cm 处，容差内算相接
+        let t = CrossSegment(code: "T", a: Point2(900, 0), b: Point2(900, 470), lineWidth: 140)
+        XCTAssertNotNil(CoverageLinker.junction(crosses[0], t, tol: 80))
+        let far = CrossSegment(code: "F", a: Point2(900, 0), b: Point2(900, 300), lineWidth: 140)
+        XCTAssertNil(CoverageLinker.junction(crosses[0], far, tol: 80))
+    }
+
+    func testIsolatedUntilCrossingIsCoveredThenLinked() {
+        // 只采了竖通道 V1 的上半段：孤立
+        var st = CoverageLinker.link(crosses: crosses, done: done([[], [0, 1, 2], []]), binCm: 100)
+        XCTAssertEqual(st[1][0], .isolated)
+        XCTAssertEqual(st[1][5], .none)
+        // 再采横通道 H 的左半段，但没碰到交叉口附近（x = 500 附近没采）：各自孤立
+        st = CoverageLinker.link(crosses: crosses, done: done([[10, 11, 12], [0, 1, 2], []]), binCm: 100)
+        XCTAssertEqual(st[0][10], .isolated)
+        XCTAssertEqual(st[1][1], .isolated)
+        // H 采到 x = 500 附近，V1 的路口在 y = 500（第 5 小段）附近也采到：关联
+        st = CoverageLinker.link(crosses: crosses, done: done([[3, 4, 5, 6, 7], [3, 4, 5, 6], []]), binCm: 100)
+        XCTAssertEqual(st[0][5], .linked)
+        XCTAssertEqual(st[1][4], .linked)
+        // V2 和它们没有任何相连的采集：仍然孤立
+        st = CoverageLinker.link(crosses: crosses, done: done([[3, 4, 5, 6, 7], [3, 4, 5, 6], [0, 1, 2]]), binCm: 100)
+        XCTAssertEqual(st[2][0], .isolated)
+        XCTAssertEqual(st[1][4], .linked)
+    }
+
+    func testFullyCoveredNetworkIsAllLinked() {
+        let all = crosses.map { [Bool](repeating: true, count: Int(($0.a.distance(to: $0.b) / 100).rounded(.up))) }
+        let st = CoverageLinker.link(crosses: crosses, done: all, binCm: 100)
+        XCTAssertTrue(st.allSatisfy { $0.allSatisfy { $0 == .linked } })
+    }
+}

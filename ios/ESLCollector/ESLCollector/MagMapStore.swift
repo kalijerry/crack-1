@@ -23,6 +23,8 @@ final class MagMapStore: ObservableObject {
     /// 地图的真实朝向：地图 +y 轴的磁罗盘方位角（度）。第一次「定点 + 设朝向」时自动记下，之后冷启动用。
     @Published private(set) var declinationDeg: Double?
     private var walkableCache: WalkableMap?
+    private var shelves: [ShelfRect] = []
+    private var raycasterCache: ShelfRaycaster?
 
     private var builder = MagneticFieldBuilder(widthCm: 1000, heightCm: 1000)
     /// 导入的地图里自带的磁场（没有累积统计，只能用来定位）。
@@ -50,7 +52,8 @@ final class MagMapStore: ObservableObject {
         let sameSize = abs(m.width - widthCm) < 1 && abs(m.height - heightCm) < 1
         let sameCrosses = m.crosses.count == crosses.count
         crosses = m.crosses
-        if !sameCrosses { walkableCache = nil }
+        if !sameCrosses || m.shelves.count != shelves.count { walkableCache = nil; raycasterCache = nil }
+        shelves = m.shelves
         if sameSize { return }
         widthCm = m.width
         heightCm = m.height
@@ -71,6 +74,16 @@ final class MagMapStore: ObservableObject {
         walkableCache = w
         AppLog.i("地磁", "可走区域：\(w.walkableCellCount) 格，\(Int(w.walkableAreaM2)) m²")
         return w
+    }
+
+    /// 货架射线投射（深度相机横向距离用），首次使用时生成并缓存。没有货架时为 nil。
+    func raycaster() -> ShelfRaycaster? {
+        if let r = raycasterCache { return r }
+        guard !shelves.isEmpty else { return nil }
+        let r = ShelfRaycaster(shelves: shelves, widthCm: widthCm, heightCm: heightCm)
+        raycasterCache = r
+        AppLog.i("地磁", "货架射线投射：\(r.shelfCount) 个货架")
+        return r
     }
 
     func setDeclination(_ deg: Double) {

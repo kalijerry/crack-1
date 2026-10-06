@@ -50,6 +50,8 @@ public struct FusionConfig {
     public var corridorMarginCm: Double = 30
     /// 是否用磁罗盘持续修正航向。室内钢结构附近罗盘常偏几十度，手动设航向时建议关闭，只靠陀螺。
     public var useMagneticHeading: Bool = true
+    /// 步长整体缩放（默认 1）。用计步器的距离校正步长时，由调用方调整。
+    public var stepLengthScale: Double = 1
     /// 是否启用通道约束。
     public var useCorridorConstraint: Bool = true
     /// confidence = 1 时单次定位结果的 1σ 误差（cm）。

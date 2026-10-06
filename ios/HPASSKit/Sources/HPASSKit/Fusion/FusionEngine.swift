@@ -257,7 +257,7 @@ public final class FusionEngine {
         }
 
         // --- 步伐检测（与是否初始化无关，先把滤波器状态推起来）---
-        let event = stepper.update(sample: s,
+        var event = stepper.update(sample: s,
                                    dt: max(dt, 1e-3),
                                    minStepIntervalMs: config.minStepIntervalMs,
                                    maxStepLengthM: config.maxStepLengthM)
@@ -275,6 +275,10 @@ public final class FusionEngine {
         if dt > 0 { interpolate(dt: dt, tMs: s.tMs) }
 
         // --- 检出脚步 → EKF 步进推算 ---
+        if var e = event, abs(config.stepLengthScale - 1) > 1e-9 {
+            e.lengthM = FusionMath.clamp(e.lengthM * config.stepLengthScale, 0.2, config.maxStepLengthM * 1.5)
+            event = e
+        }
         if let event = event {
             syncHeading()
             stepCountValue += 1

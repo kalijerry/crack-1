@@ -1,6 +1,20 @@
+import CoreMotion
 import Foundation
 import HPASSKit
 import UIKit
+
+/// 激光雷达（深度相机）测通道左右货架距离的使用方式。
+enum DepthMode: String, CaseIterable, Identifiable {
+    case off, logOnly, fuse
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .off: return "关"
+        case .logOnly: return "只记录"
+        case .fuse: return "参与定位"
+        }
+    }
+}
 
 /// 一次「我现在在点位 X」的验证结果。
 struct MagCheck: Identifiable {
@@ -39,6 +53,43 @@ private final class MagPipeline {
     var tracking = false
     var magAccuracy = -1
     var stepBase = 0
+
+    // 软件层：磁场可信度、持握姿态、推车嫌疑、计步器对照
+    let trustMon = MagneticTrustMonitor()
+    let hold = HoldClassifier()
+    var lastRaw: (Double, Double, Double)?
+    var trustNow = 1.0
+    var posture: HoldPosture = .unknown
+    var lastStepCount = 0
+    var lastStepChangeMs: Int64 = 0
+    var cartSuspected = false
+    var pdrDistanceCm = 0.0
+
+    /// 不用惯导以外的来源时，自己积分出来的位置。
+    var pos: Point2?
+    var lastShown: Point2?
+    var lastHeadingRad = 0.0
+
+    // 视觉里程计（ARKit）
+    enum VioPending {
+        case fresh(Point2, Double)      // 在这个位置、这个朝向重新锚定并重新对齐
+        case keep(Point2)               // 保持旋转，只把位置拉到这里（长按修正）
+    }
+    let aligner = VisualOdometryAligner()
+    var vioEnabled = false
+    var vioPending: VioPending?
+    var vioActive = false
+    var vioAccum = Point2.zero
+    var vioHeadingVec = Point2.zero
+    var latestA: Point2?
+    var vioTracking = 0
+    var vioProgress = 0.0
+
+    // 深度横向距离
+    var lateralMode: DepthMode = .off
+    var pendingLateral: LateralObservation?
+    var lastLatLeft: Double?
+    var lastLatRight: Double?
 }
 
 /// 地磁模式：校准（现场建磁场图）和定位（惯导 + 磁场地图的粒子滤波）。
@@ -82,15 +133,70 @@ final class MagneticEngine: ObservableObject {
     @Published var useCompassHeading = false
     /// 有磁场地图时，用地磁粒子滤波纠偏。
     @Published var useMagCorrection = false
+    /// 用摄像头 + ARKit 视觉里程计做运动模型（取代计步）。丢跟踪时自动退回计步。
+    @Published var useVisualOdometry = true
+    /// 激光雷达测左右货架距离：关 / 只记录（用来核对）/ 参与定位。
+    @Published var depthMode: DepthMode = .logOnly
+    /// 用计步器的距离校正步长（默认关；只显示比值）。
+    @Published var usePedometerScale = false
+
+    // 状态
+    @Published private(set) var magTrust = 1.0
+    @Published private(set) var posture: HoldPosture = .unknown
+    @Published private(set) var thermal: ProcessInfo.ThermalState = .nominal
+    @Published private(set) var activityText = ""
+    @Published private(set) var cartSuspected = false
+    @Published private(set) var pedometerRatio: Double?
+    @Published private(set) var vioTracking = 0      // 0 不可用 1 受限 2 正常
+    @Published private(set) var vioAligned = false
+    @Published private(set) var vioProgress = 0.0
+    @Published private(set) var lateralText = ""
 
     static let trailCapacity = 600
     private static let arriveCm: Double = 100
 
     private let motion = MotionRecorder()
+    private let ar = ARKitLogger()
+    private var arRunning = false
+    private let pedometer = CMPedometer()
+    private let activityManager = CMMotionActivityManager()
+    private let rawMagQueue: OperationQueue = {
+        let q = OperationQueue()
+        q.name = "mag.raw"
+        q.maxConcurrentOperationCount = 1
+        return q
+    }()
+    private var thermalTimer: Timer?
+    private var pedDistanceM: Double?
+    private var pedBaseDist = 0.0
+    private var pdrBaseCm = 0.0
+    private var stepScale = 1.0
+    private var trackStem: String?
     private nonisolated let queue = DispatchQueue(label: "mag.pipeline", qos: .userInitiated)
     private let pipe = MagPipeline()
     private var calWaypoints: [MagneticFieldBuilder.Waypoint] = []
     private var route: [MarkPoint] = []
+
+    init() {
+        let pipe = self.pipe
+        let queue = self.queue
+        ar.onPose = { [weak self] t, x, z, state in
+            guard let self else { return }
+            queue.async { self.handlePose(t: t, a: Point2(x, z), state: state, pipe: pipe) }
+        }
+        ar.onLateral = { [weak self] lat in
+            guard let self else { return }
+            queue.async { self.handleLateral(lat, pipe: pipe) }
+        }
+        ar.onError = { [weak self] msg in
+            Task { @MainActor in
+                guard let self else { return }
+                self.lastError = msg
+                AppLog.e("地磁", msg)
+                queue.async { pipe.vioEnabled = false; pipe.vioActive = false }
+            }
+        }
+    }
 
     // MARK: - 校准
 
@@ -173,11 +279,30 @@ final class MagneticEngine: ObservableObject {
         let warmup = makeFusion(at: Point2(store.widthCm / 2, store.heightCm / 2), heading: nil)
         let writer = Self.makeTrackWriter()
         trackFileName = writer?.name
+        trackStem = writer.map { ($0.name as NSString).deletingPathExtension }
+        stepScale = 1
+        pedometerRatio = nil
+        pedDistanceM = nil
+        pedBaseDist = 0
+        pdrBaseCm = 0
         queue.sync {
             pipe.fusion = warmup
             pipe.localizer = nil
             pipe.tracking = false
             pipe.stepBase = 0
+            pipe.pos = nil
+            pipe.lastShown = nil
+            pipe.pdrDistanceCm = 0
+            pipe.cartSuspected = false
+            pipe.lastStepCount = 0
+            pipe.vioEnabled = false
+            pipe.vioActive = false
+            pipe.vioPending = nil
+            pipe.aligner.anchor(map: .zero, ar: .zero, headingRad: nil)
+            pipe.pendingLateral = nil
+            pipe.lateralMode = depthMode
+            pipe.trustMon.reset()
+            pipe.hold.reset()
             pipe.lastFusedPos = nil
             pipe.lastOut = nil
             pipe.estimate = nil
@@ -196,7 +321,8 @@ final class MagneticEngine: ObservableObject {
         hint = nil
         targetId = nil
         startMotion(mode: .live)
-        AppLog.i("地磁", "实时定位：打开传感器，罗盘修正 \(useCompassHeading ? "开" : "关")，地磁纠偏 \(useMagCorrection ? "开" : "关")")
+        startPedometerAndActivity()
+        AppLog.i("地磁", "实时定位：打开传感器，视觉里程计 \(useVisualOdometry ? "开" : "关")，深度 \(depthMode.title)，罗盘修正 \(useCompassHeading ? "开" : "关")，地磁纠偏 \(useMagCorrection ? "开" : "关")")
     }
 
     func stopLive() {
@@ -229,7 +355,7 @@ final class MagneticEngine: ObservableObject {
             let err = cur.distance(to: target)
             checks.append(MagCheck(pointId: label, errorCm: err))
             AppLog.i("地磁", "修正位置到 \(label)：修正前估计 \(cur)，偏差 \(Fmt.f(err, 0)) cm")
-            restartTracking(at: target, heading: headingRad, checkLabel: label)
+            restartTracking(at: target, heading: headingRad, checkLabel: label, isCorrection: true)
         } else {
             AppLog.i("地磁", "定点：\(label)")
         }
@@ -257,10 +383,13 @@ final class MagneticEngine: ObservableObject {
         let deg = Int((headingRad * 180 / Double.pi).rounded())
         if isTracking {
             let h = headingRad
-            queue.async { [pipe] in pipe.fusion?.setHeading(h) }
+            queue.async { [pipe] in
+                pipe.fusion?.setHeading(h)
+                if pipe.vioEnabled, let p = pipe.lastShown ?? pipe.pos { pipe.vioPending = .fresh(p, h) }
+            }
             AppLog.i("地磁", "重新设朝向：\(deg)°")
         } else {
-            restartTracking(at: p, heading: headingRad, checkLabel: nil)
+            restartTracking(at: p, heading: headingRad, checkLabel: nil, isCorrection: false)
             isTracking = true
             AppLog.i("地磁", "开始推算：起点 \(p)，朝向 \(deg)°")
         }
@@ -323,6 +452,7 @@ final class MagneticEngine: ObservableObject {
         // 有门店通道时，惯导位置被限制在通道里（与蓝牙定位页一致）
         cfg.useCorridorConstraint = store.usesStoreMap
         cfg.useMagneticHeading = useCompassHeading
+        cfg.stepLengthScale = stepScale
         if let d = declinationDeg { cfg.magneticDeclinationDeg = d }
         let f = FusionEngine(corridors: store.crosses, config: cfg)
         f.setInitialPosition(p, headingRad: heading)
@@ -333,18 +463,29 @@ final class MagneticEngine: ObservableObject {
         var cfg = MagneticConfig()
         // 冷启动时航向只来自罗盘，偏差可能很大
         if start == nil { cfg.initialHeadingBiasSigmaDeg = 30 }
+        if useVisualOdometry && start != nil {
+            // 视觉里程计的位移和航向都比计步准得多，粒子不用撒那么开；丢跟踪退回计步时仍留有余量
+            cfg.initialHeadingBiasSigmaDeg = 5
+            cfg.headingBiasWalkDegPerM = 1
+            cfg.positionNoiseFraction = 0.04
+            cfg.initialScaleSigma = 0.03
+            cfg.scaleWalkPerM = 0.003
+        }
+        cfg.lateralWeight = depthMode == .fuse ? 1 : 0
         let loc = MagneticLocalizer(field: field, walkable: MagMapStore.shared.walkableMap(), config: cfg)
+        loc.raycaster = MagMapStore.shared.raycaster()
         loc.reset(start: start, spreadCm: 50)
         return loc
     }
 
     /// 在 p 以朝向 heading 重新开始推算（换一个新引擎，步数累加）。
-    private func restartTracking(at p: Point2, heading: Double, checkLabel: String?) {
+    private func restartTracking(at p: Point2, heading: Double, checkLabel: String?, isCorrection: Bool) {
         let fusion = makeFusion(at: p, heading: heading)
         var localizer: MagneticLocalizer?
         if useMagCorrection, let field = MagMapStore.shared.field {
             localizer = makeLocalizer(field: field, start: p)
         }
+        if useVisualOdometry { startVisualOdometry() }
         queue.sync {
             pipe.stepBase += pipe.lastOut?.stepCount ?? 0
             if !pipe.tracking { pipe.stepBase = 0 }
@@ -353,8 +494,95 @@ final class MagneticEngine: ObservableObject {
             pipe.lastFusedPos = nil
             pipe.lastOut = nil
             pipe.tracking = true
+            pipe.pos = p
+            pipe.lastShown = p
+            pipe.vioAccum = .zero
+            if pipe.vioEnabled {
+                // 修正位置且旋转已经对齐：只拉位置；其他情况重新对齐
+                pipe.vioPending = (isCorrection && pipe.aligner.isAligned) ? .keep(p) : .fresh(p, heading)
+            }
             if let c = checkLabel { pipe.pendingCheck = c }
         }
+    }
+
+    /// 打开 ARKit（只在开始推算时，不在检查传感器时占用摄像头）。
+    private func startVisualOdometry() {
+        guard !arRunning else { return }
+        guard ARKitLogger.isSupported else {
+            lastError = "这台设备不支持 ARKit，只用计步推算"
+            return
+        }
+        var dir: URL?
+        var lateralFile: URL?
+        if let stem = trackStem {
+            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let d = docs.appendingPathComponent("mag-tracks", isDirectory: true).appendingPathComponent(stem + "_files", isDirectory: true)
+            try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+            dir = d
+            lateralFile = d.appendingPathComponent("depth_lateral.csv")
+        }
+        do {
+            try ar.start(dir: dir, wantsDepth: depthMode != .off, lateralFile: lateralFile)
+            arRunning = true
+            queue.sync { pipe.vioEnabled = true; pipe.lateralMode = depthMode }
+            AppLog.i("地磁", "视觉里程计已启动，LiDAR 深度 \(ARKitLogger.supportsLiDAR ? depthMode.title : "不支持")")
+        } catch {
+            lastError = "启动视觉里程计失败：\(error.localizedDescription)，只用计步推算"
+            AppLog.e("地磁", lastError ?? "")
+        }
+    }
+
+    private func stopVisualOdometry() {
+        guard arRunning else { return }
+        ar.stop()
+        arRunning = false
+        queue.async { [pipe] in pipe.vioEnabled = false; pipe.vioActive = false; pipe.vioPending = nil }
+        vioTracking = 0
+        vioAligned = false
+    }
+
+    // MARK: - 计步器 / 运动类型 / 温度
+
+    private func startPedometerAndActivity() {
+        if CMPedometer.isStepCountingAvailable() {
+            pedometer.startUpdates(from: Date()) { [weak self] d, _ in
+                guard let d, let dist = d.distance?.doubleValue else { return }
+                Task { @MainActor in self?.pedDistanceM = dist }
+            }
+        }
+        if CMMotionActivityManager.isActivityAvailable() {
+            activityManager.startActivityUpdates(to: .main) { [weak self] a in
+                guard let a else { return }
+                var text = "未知"
+                if a.stationary { text = "静止" } else if a.walking { text = "步行" } else if a.running { text = "跑步" }
+                else if a.automotive { text = "乘车" } else if a.cycling { text = "骑行" }
+                let conf = a.confidence == .high ? "高" : (a.confidence == .medium ? "中" : "低")
+                self?.activityText = "\(text)（\(conf)）"
+            }
+        }
+    }
+
+    private func stopPedometerAndActivity() {
+        pedometer.stopUpdates()
+        activityManager.stopActivityUpdates()
+    }
+
+    /// 用计步器的距离核对自己的步长：每累计 20 m 比一次。打开「用计步器校正步长」才会真的调整。
+    private func comparePedometer(pdrCm: Double) {
+        guard let d = pedDistanceM else { return }
+        let dp = d - pedBaseDist
+        let dm = (pdrCm - pdrBaseCm) / 100
+        guard dm >= 20, dp >= 10 else { return }
+        let r = dp / dm
+        pedometerRatio = r
+        if usePedometerScale {
+            stepScale = min(max(stepScale * (1 + 0.5 * (r - 1)), 0.8), 1.25)
+            let sc = stepScale
+            queue.async { [pipe] in pipe.fusion?.config.stepLengthScale = sc }
+            AppLog.i("地磁", "计步器距离比 \(Fmt.f(r, 2))，步长缩放调整为 \(Fmt.f(sc, 3))")
+        }
+        pedBaseDist = d
+        pdrBaseCm = pdrCm
     }
 
     // MARK: - 定位
@@ -456,6 +684,26 @@ final class MagneticEngine: ObservableObject {
             self.queue.async { self.handleIMU(s, pipe: pipe) }
         }
         motion.start(hz: 50)
+        // 原始磁力计：和校准后磁场的差就是系统当前估计的偏置，用来发现重新校准
+        if motion.manager.isMagnetometerAvailable && mode != .calibrating {
+            motion.manager.magnetometerUpdateInterval = 0.02
+            let queue = self.queue
+            motion.manager.startMagnetometerUpdates(to: rawMagQueue) { d, _ in
+                guard let d else { return }
+                let v = (d.magneticField.x, d.magneticField.y, d.magneticField.z)
+                queue.async { pipe.lastRaw = v }
+            }
+        }
+        thermal = ProcessInfo.processInfo.thermalState
+        thermalTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.thermal = ProcessInfo.processInfo.thermalState
+                if self.thermal == .serious || self.thermal == .critical {
+                    AppLog.w("地磁", "手机发热（\(self.thermal.rawValue)），ARKit 可能降频、定位会变差")
+                }
+            }
+        }
         phase = mode
         UIApplication.shared.isIdleTimerDisabled = true
     }
@@ -463,6 +711,11 @@ final class MagneticEngine: ObservableObject {
     private func stopMotion() {
         motion.stop()
         motion.onSample = nil
+        motion.manager.stopMagnetometerUpdates()
+        stopVisualOdometry()
+        stopPedometerAndActivity()
+        thermalTimer?.invalidate()
+        thermalTimer = nil
         queue.async { [pipe] in pipe.mode = .idle }
         phase = .idle
         feature = nil
@@ -475,63 +728,54 @@ final class MagneticEngine: ObservableObject {
                                         mx: s.mag.0, my: s.mag.1, mz: s.mag.2)
         let feat = pipe.extractor.process(sample)
         pipe.latest = feat
+        pipe.magAccuracy = s.magAccuracy
+        pipe.trustNow = pipe.trustMon.update(tMs: s.tMs, calibrated: s.mag, raw: pipe.lastRaw, accuracy: s.magAccuracy)
+        pipe.posture = pipe.hold.process(sample)
         switch pipe.mode {
         case .idle:
             return
         case .calibrating:
-            // 25 Hz 足够，省内存
-            if let f = feat, s.tMs - pipe.lastCalSampleMs >= 40 {
+            // 25 Hz 足够，省内存。磁场不可信的时刻不记，免得把坏数据写进地图
+            if let f = feat, pipe.trustNow > 0.5, s.tMs - pipe.lastCalSampleMs >= 40 {
                 pipe.calSamples.append(.init(tMs: s.tMs, feature: f))
                 pipe.lastCalSampleMs = s.tMs
             }
             publishLive(pipe: pipe, tMs: s.tMs)
         case .live:
-            pipe.magAccuracy = s.magAccuracy
             guard let fusion = pipe.fusion, let out = fusion.process(sample) else {
                 publishLive(pipe: pipe, tMs: s.tMs)
                 return
             }
             pipe.lastOut = out
+            // 推车嫌疑：在动，但三秒以上没有脚步
+            if out.stepCount != pipe.lastStepCount { pipe.lastStepCount = out.stepCount; pipe.lastStepChangeMs = out.tMs }
+            pipe.cartSuspected = out.isMoving && out.tMs - pipe.lastStepChangeMs > 3000
             guard pipe.tracking else {
                 publishLive(pipe: pipe, tMs: s.tMs)
                 return
             }
             let delta = pipe.lastFusedPos.map { out.position - $0 } ?? .zero
             pipe.lastFusedPos = out.position
-            var shown = out.position
+            pipe.pdrDistanceCm += delta.length
+            if pipe.vioActive {
+                // 视觉里程计在带位移，计步这路只更新统计
+                publishLive(pipe: pipe, tMs: s.tMs)
+                return
+            }
+            pipe.pos = (pipe.pos ?? out.position) + delta
+            var shown = pipe.pos ?? out.position
             var unc = out.uncertaintyCm
             var est: MagneticEstimate?
             if let loc = pipe.localizer {
-                let e = loc.step(delta: delta, feature: feat)
+                let e = loc.step(delta: delta, feature: feat, trust: pipe.trustNow)
                 est = e
                 shown = e.position
                 unc = e.uncertaintyCm
             }
-            let steps = pipe.stepBase + out.stepCount
-            if let w = pipe.trackWriter {
-                let check = pipe.pendingCheck ?? ""
-                pipe.pendingCheck = nil
-                w.append([
-                    "\(out.tMs)", Fmt.f(shown.x, 1), Fmt.f(shown.y, 1),
-                    Fmt.f(unc, 1), Fmt.f(est?.confidence ?? -1, 3),
-                    Fmt.f(out.position.x, 1), Fmt.f(out.position.y, 1), Fmt.f(out.headingDeg, 1),
-                    "\(steps)",
-                    Fmt.f(feat?.total ?? 0, 2), Fmt.f(feat?.vertical ?? 0, 2), Fmt.f(feat?.horizontal ?? 0, 2),
-                    Fmt.csv(check),
-                ].joined(separator: ","))
-            }
-            let heading = out.headingRad, acc = pipe.magAccuracy
-            Task { @MainActor in
-                self.magAccuracy = acc
-                if self.searching {
-                    self.stepCount = steps
-                    self.estimate = est
-                    guard est?.converged == true else { return }
-                    self.searching = false
-                    AppLog.i("地磁", "冷启动收敛：\(shown)，步数 \(steps)")
-                }
-                self.applyFix(position: shown, uncertainty: unc, heading: heading, steps: steps, feature: feat, estimate: est)
-            }
+            pipe.lastShown = shown
+            pipe.lastHeadingRad = out.headingRad
+            emit(pipe: pipe, tMs: out.tMs, shown: shown, unc: unc, est: est, heading: out.headingRad,
+                 headingDeg: out.headingDeg, src: "pdr", feature: feat)
         case .localizing:
             guard let fusion = pipe.fusion, let loc = pipe.localizer, let out = fusion.process(sample) else {
                 publishLive(pipe: pipe, tMs: s.tMs)
@@ -540,43 +784,153 @@ final class MagneticEngine: ObservableObject {
             let delta = pipe.lastFusedPos.map { out.position - $0 } ?? .zero
             pipe.lastFusedPos = out.position
             pipe.lastOut = out
-            let est = loc.step(delta: delta, feature: feat)
+            let est = loc.step(delta: delta, feature: feat, trust: pipe.trustNow)
             pipe.estimate = est
-            if let w = pipe.trackWriter {
-                let check = pipe.pendingCheck ?? ""
-                pipe.pendingCheck = nil
-                w.append([
-                    "\(out.tMs)", Fmt.f(est.position.x, 1), Fmt.f(est.position.y, 1),
-                    Fmt.f(est.uncertaintyCm, 1), Fmt.f(est.confidence, 3),
-                    Fmt.f(out.position.x, 1), Fmt.f(out.position.y, 1), Fmt.f(out.headingDeg, 1),
-                    "\(out.stepCount)",
-                    Fmt.f(feat?.total ?? 0, 2), Fmt.f(feat?.vertical ?? 0, 2), Fmt.f(feat?.horizontal ?? 0, 2),
-                    check,
-                ].joined(separator: ","))
-            }
-            let heading = out.headingRad, steps = out.stepCount
-            Task { @MainActor in
-                self.applyFix(position: est.position, uncertainty: est.uncertaintyCm, heading: heading,
-                              steps: steps, feature: feat, estimate: est)
-            }
+            emit(pipe: pipe, tMs: out.tMs, shown: est.position, unc: est.uncertaintyCm, est: est,
+                 heading: out.headingRad, headingDeg: out.headingDeg, src: "pdr", feature: feat)
         }
     }
 
-    /// 校准时刷新实时磁场读数，最多 5 Hz。
+    /// 写轨迹一行，并把位置送到界面。惯导路径和视觉里程计路径共用。
+    private nonisolated func emit(pipe: MagPipeline, tMs: Int64, shown: Point2, unc: Double, est: MagneticEstimate?,
+                                  heading: Double, headingDeg: Double, src: String, feature feat: MagneticFeature?) {
+        let steps = pipe.stepBase + (pipe.lastOut?.stepCount ?? 0)
+        if let w = pipe.trackWriter {
+            let check = pipe.pendingCheck ?? ""
+            pipe.pendingCheck = nil
+            w.append([
+                "\(tMs)", Fmt.f(shown.x, 1), Fmt.f(shown.y, 1),
+                Fmt.f(unc, 1), Fmt.f(est?.confidence ?? -1, 3),
+                Fmt.f(pipe.lastOut?.position.x ?? 0, 1), Fmt.f(pipe.lastOut?.position.y ?? 0, 1), Fmt.f(headingDeg, 1),
+                "\(steps)",
+                Fmt.f(feat?.total ?? 0, 2), Fmt.f(feat?.vertical ?? 0, 2), Fmt.f(feat?.horizontal ?? 0, 2),
+                Fmt.csv(check), src, Fmt.f(pipe.trustNow, 2), pipe.posture.rawValue,
+                pipe.lastLatLeft.map { Fmt.f($0, 0) } ?? "", pipe.lastLatRight.map { Fmt.f($0, 0) } ?? "",
+            ].joined(separator: ","))
+        }
+        let acc = pipe.magAccuracy
+        Task { @MainActor in
+            self.magAccuracy = acc
+            if self.searching {
+                self.stepCount = steps
+                self.estimate = est
+                guard est?.converged == true else { return }
+                self.searching = false
+                AppLog.i("地磁", "冷启动收敛：\(shown)，步数 \(steps)")
+            }
+            self.applyFix(position: shown, uncertainty: unc, heading: heading, steps: steps, feature: feat, estimate: est)
+        }
+    }
+
+    // MARK: 视觉里程计与深度
+
+    /// ARKit 位姿（在引擎队列上）。对齐之后用它的位移当运动模型；跟踪变差或还没对齐时由计步顶上。
+    private nonisolated func handlePose(t: Int64, a: Point2, state: Int, pipe: MagPipeline) {
+        pipe.latestA = a
+        pipe.vioTracking = state
+        guard pipe.vioEnabled, pipe.mode == .live, pipe.tracking else { return }
+
+        if let pending = pipe.vioPending, state == 2 {
+            switch pending {
+            case .fresh(let p, let h): pipe.aligner.anchor(map: p, ar: a, headingRad: h)
+            case .keep(let p): pipe.aligner.reanchorKeepingRotation(map: p, ar: a)
+            }
+            pipe.vioPending = nil
+            pipe.vioAccum = .zero
+        }
+        guard pipe.vioPending == nil else { return }
+
+        let out = pipe.aligner.process(ar: a, trackingNormal: state == 2,
+                                       headingHint: pipe.lastOut?.headingRad,
+                                       currentMap: pipe.lastShown ?? pipe.pos)
+        switch out {
+        case .unaligned(let progress):
+            pipe.vioActive = false
+            pipe.vioProgress = progress
+        case .aligned(let position, let delta):
+            if !pipe.vioActive {
+                // 刚切到视觉里程计：用它的位置接着走，不跳变（对齐输出的位置从锚点算起，与我们已显示的位置一致）
+                pipe.vioActive = true
+            }
+            pipe.vioProgress = 1
+            pipe.vioAccum = pipe.vioAccum + delta
+            if delta.length > 1 {
+                let u = delta * (1 / delta.length)
+                pipe.vioHeadingVec = pipe.vioHeadingVec * 0.92 + u * 0.08
+            }
+            // 每走 20 cm 才往滤波器送一次，免得 30 Hz 的小步把位置噪声累积得太大
+            guard pipe.vioAccum.length >= 20 else { return }
+            let step = pipe.vioAccum
+            pipe.vioAccum = .zero
+            pipe.pos = position
+            var shown = position
+            var unc = 30.0
+            var est: MagneticEstimate?
+            if let loc = pipe.localizer {
+                let lat = pipe.pendingLateral
+                pipe.pendingLateral = nil
+                let e = loc.step(delta: step, feature: pipe.latest, trust: pipe.trustNow, lateral: lat)
+                est = e
+                shown = e.position
+                unc = e.uncertaintyCm
+            }
+            pipe.lastShown = shown
+            let h = pipe.vioHeadingVec.length > 0.3 ? atan2(pipe.vioHeadingVec.x, pipe.vioHeadingVec.y) : pipe.lastHeadingRad
+            pipe.lastHeadingRad = h
+            var hd = h * 180 / Double.pi
+            if hd < 0 { hd += 360 }
+            emit(pipe: pipe, tMs: t, shown: shown, unc: unc, est: est, heading: h, headingDeg: hd,
+                 src: "vio", feature: pipe.latest)
+        }
+    }
+
+    /// 深度相机量到的左右货架距离（在引擎队列上）。
+    private nonisolated func handleLateral(_ lat: DepthLateral, pipe: MagPipeline) {
+        pipe.lastLatLeft = lat.leftCm
+        pipe.lastLatRight = lat.rightCm
+        guard pipe.mode == .live, pipe.vioActive, let phi = pipe.aligner.rotationRad else { return }
+        // 相机朝向换到地图系，再得到行进方向角
+        let c = cos(phi), s = sin(phi)
+        let mx = lat.forwardAR.x * c - lat.forwardAR.z * s
+        let my = lat.forwardAR.x * s + lat.forwardAR.z * c
+        if pipe.lateralMode == .fuse {
+            pipe.pendingLateral = LateralObservation(leftCm: lat.leftCm, rightCm: lat.rightCm, headingRad: atan2(mx, my))
+        }
+    }
+
+    /// 刷新实时磁场读数和各路状态，最多 5 Hz。
     private nonisolated func publishLive(pipe: MagPipeline, tMs: Int64) {
         guard tMs - pipe.lastPublishMs >= 200 else { return }
         pipe.lastPublishMs = tMs
         let f = pipe.latest, n = pipe.calSamples.count
         let acc = pipe.magAccuracy, steps = pipe.stepBase + (pipe.lastOut?.stepCount ?? 0)
         let tracking = pipe.tracking
+        let trust = pipe.trustNow, posture = pipe.posture, cart = pipe.cartSuspected
+        let vioT = pipe.vioEnabled ? pipe.vioTracking : 0
+        let aligned = pipe.vioActive, progress = pipe.vioProgress
+        let pdr = pipe.pdrDistanceCm
+        let lat = Self.lateralDescription(pipe.lastLatLeft, pipe.lastLatRight)
         Task { @MainActor in
             self.feature = f
+            self.magTrust = trust
+            self.posture = posture
             if self.phase == .calibrating { self.calSampleCount = n }
             if self.phase == .live {
                 self.magAccuracy = acc
                 if !tracking { self.stepCount = steps }
+                self.cartSuspected = cart
+                self.vioTracking = vioT
+                self.vioAligned = aligned
+                self.vioProgress = progress
+                self.lateralText = lat
+                self.comparePedometer(pdrCm: pdr)
             }
         }
+    }
+
+    private nonisolated static func lateralDescription(_ l: Double?, _ r: Double?) -> String {
+        guard l != nil || r != nil else { return "" }
+        return "左 \(l.map { String(Int($0)) } ?? "—") / 右 \(r.map { String(Int($0)) } ?? "—") cm"
     }
 
     private func applyFix(position p: Point2, uncertainty: Double, heading: Double, steps: Int,
@@ -629,7 +983,7 @@ final class MagneticEngine: ObservableObject {
         fmt.locale = Locale(identifier: "en_US_POSIX")
         let name = "mag_\(fmt.string(from: Date())).csv"
         guard let w = try? CSVWriter(url: dir.appendingPathComponent(name),
-                                     header: "t_ms,x_cm,y_cm,unc_cm,conf,pdr_x,pdr_y,heading_deg,steps,b_total,b_vert,b_horiz,check") else {
+                                     header: "t_ms,x_cm,y_cm,unc_cm,conf,pdr_x,pdr_y,heading_deg,steps,b_total,b_vert,b_horiz,check,src,trust,posture,lat_left_cm,lat_right_cm") else {
             return nil
         }
         return (w, name)

@@ -62,6 +62,16 @@ final class SurveyCoverage: ObservableObject {
 
     var fractions: [Double] { segments.indices.map { fraction($0) } }
 
+    /// 每条通道每 1 m 一段的状态：没采完 / 已采完但孤立 / 已采完且已和别的路段关联（共用路口）。
+    var states: [[CoverageState]] {
+        CoverageLinker.link(crosses: segments, done: doneBins, binCm: Self.binCm)
+    }
+
+    /// 每条通道每 1 m 一段：两个方向都走过才算采完。
+    var doneBins: [[Bool]] {
+        forward.indices.map { i in zip(forward[i], backward[i]).map { $0 && $1 } }
+    }
+
     /// 已走过的通道长度（m），按「通道长度 × 覆盖率」累计；双向都走完才算满。
     var coveredMeters: Double { segments.indices.reduce(0) { $0 + fraction($1) * lengths[$1] / 100 } }
     var totalMeters: Double { lengths.reduce(0, +) / 100 }
@@ -181,7 +191,7 @@ final class SurveyEngine: ObservableObject {
         do {
             anchorsWriter = try CSVWriter(url: dir.appendingPathComponent("anchors.csv"),
                                           header: "t_ms,kind,map_x_cm,map_y_cm,ar_x_cm,ar_z_cm,heading_rad,note")
-            try ar.start(dir: dir)
+            try ar.start(dir: dir, wantsDepth: true, lateralFile: dir.appendingPathComponent("depth_lateral.csv"))
         } catch {
             lastError = "启动失败：\(error.localizedDescription)"
             recorder.stopRecording()

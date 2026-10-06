@@ -96,7 +96,8 @@ struct MagneticView: View {
                          targetId: showsTrack && !isSurvey ? engine.targetId : nil,
                          highlightId: calibrationHighlight,
                          gridCm: storeData.map == nil ? 100 : nil,
-                         crossCoverage: isSurvey ? survey.coverage.fractions : [],
+                         crossStates: isSurvey ? survey.coverage.states : [],
+                         crossBinCm: SurveyCoverage.binCm,
                          showHeading: isSurvey ? (survey.stage != .needPosition)
                              : (!live || engine.isTracking || engine.headingEditing),
                          headingEditing: isSurvey ? survey.headingEditing : (live && engine.headingEditing),
@@ -239,7 +240,7 @@ struct MagneticView: View {
             let done = survey.coverage.coveredMeters
             row("已覆盖（双向算满）", "\(Int(done)) / \(Int(total)) m")
             ProgressView(value: total > 0 ? done / total : 0)
-            Text("地图上通道颜色：红 = 没走，橙 = 走了一部分或只走了一个方向，绿 = 双向都走完。")
+            Text("地图上：带绿带的是已经采过的段（两个方向都走完才算）。中间的线：绿色实线 = 这一段还是孤立的；黑色虚线 = 已经和别的路段通过路口关联起来了。全场采完、连通之后，会全部变成黑色虚线。")
                 .font(.footnote).foregroundStyle(.secondary)
             if !survey.isRunning {
                 Button("清空采集进度", role: .destructive) { confirmResetCoverage = true }

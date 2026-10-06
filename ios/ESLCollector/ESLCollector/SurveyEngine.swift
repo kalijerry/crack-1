@@ -28,7 +28,13 @@ final class SurveyCoverage: ObservableObject {
     /// 给 2D / 3D 画的涂色图（只含有通道的那块），每秒最多重画一次
     @Published private(set) var paintLayer: PaintLayer?
     /// 当前所在通道的涂色比例（采集时显示）
-    @Published private(set) var currentCorridorPaint: (code: String, fraction: Double)?
+    @Published private(set) var currentCorridorPaint: (code: String, fraction: Double, widthCm: Double)?
+    /// 离我最近的还没涂的地方（找 30 m 以内），地图上画个橙色圈指过去
+    @Published private(set) var nextUnpainted: Point2?
+    /// 通道（> 1 m 宽）的建议走线：去程贴一边、回程贴另一边（地图坐标线段）
+    @Published private(set) var laneGuides: [(Point2, Point2)] = []
+    /// 比这个宽的通道，走中间一趟涂不满（圆圈直径 80 cm），要分两边走
+    static let wideCorridorCm = 100.0
     private var paintDirty = false
     private var lastPaintImage = Date.distantPast
 
@@ -53,12 +59,39 @@ final class SurveyCoverage: ObservableObject {
         guard let pt = paintGrid else { return }
         if pt.paint(at: p) { paintDirty = true }
         if paintDirty && Date().timeIntervalSince(lastPaintImage) > 1 { rebuildPaintImage() }
-        if Date().timeIntervalSince(lastPaintImage) > 1 || currentCorridorPaint == nil {
-            currentCorridorPaint = pt.corridorIndex(at: p).map { (pt.crosses[$0].code, pt.fraction(corridor: $0)) }
+        if Date().timeIntervalSince(lastGuide) > 1 || currentCorridorPaint == nil {
+            lastGuide = Date()
+            let ci = pt.corridorIndex(at: p)
+            currentCorridorPaint = ci.map { (pt.crosses[$0].code, pt.fraction(corridor: $0), pt.crosses[$0].lineWidth) }
+            nextUnpainted = pt.nearestUnpainted(from: p, maxCm: 3000)
+            laneGuides = ci.map { Self.lanes(pt.crosses[$0], radiusCm: pt.radiusCm) } ?? []
         }
     }
 
     func breakPaintStroke() { paintGrid?.breakStroke() }
+
+    /// 不在采集时清掉引导
+    func clearGuides() {
+        nextUnpainted = nil
+        laneGuides = []
+        currentCorridorPaint = nil
+    }
+
+    private var lastGuide = Date.distantPast
+
+    /// 建议走线：离两边各留一个圆圈半径，两趟就能把边上涂到（正好去程一边、回程一边，两个方向也都有了）；
+    /// 宽度超过 4 个半径（两边各一趟中间还会漏）时再加一条中线。窄通道不画。
+    static func lanes(_ c: CrossSegment, radiusCm r: Double) -> [(Point2, Point2)] {
+        let half = c.lineWidth / 2
+        guard c.lineWidth > wideCorridorCm else { return [] }
+        let d = c.b - c.a
+        let len = d.length
+        guard len > 1 else { return [] }
+        let n = Point2(-d.y / len, d.x / len)
+        var offs = [half - r, -(half - r)]
+        if c.lineWidth > 4 * r { offs.append(0) }
+        return offs.map { o in (c.a + n * o, c.b + n * o) }
+    }
 
     func rebuildPaintImage() {
         paintDirty = false
@@ -385,6 +418,7 @@ final class SurveyEngine: ObservableObject {
         anchorsWriter = nil
         recorder.stopRecording()
         coverage.save()
+        coverage.clearGuides()
         stage = .idle
         headingEditing = false
         SensorArbiter.shared.release("建图采集")

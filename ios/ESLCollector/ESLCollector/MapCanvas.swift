@@ -65,6 +65,10 @@ struct MapCanvas: View {
     var paintLayer: PaintLayer?
     /// 当前位置画一个涂色圆圈（cm）；nil 不画
     var paintRadiusCm: Double?
+    /// 最近没涂的地方：橙色圈 + 从我这里指过去的虚线
+    var nextTarget: Point2?
+    /// 宽通道的建议走线（虚线）
+    var laneGuides: [(Point2, Point2)] = []
     var showHeading = true
     /// 位置已冻结（定位丢失）：画成灰色
     var positionStale = false
@@ -381,6 +385,24 @@ struct MapCanvas: View {
             let c = t.toScreen(raw)
             let rect = CGRect(x: c.x - 6, y: c.y - 6, width: 12, height: 12)
             ctx.stroke(Path(ellipseIn: rect), with: .color(.orange), lineWidth: 2)
+        }
+
+        // 宽通道建议走线
+        if !laneGuides.isEmpty {
+            var lp = Path()
+            for (a, b) in laneGuides { lp.move(to: t.toScreen(a)); lp.addLine(to: t.toScreen(b)) }
+            ctx.stroke(lp, with: .color(Color.green.opacity(0.8)), style: StrokeStyle(lineWidth: 1.2, dash: [6, 5]))
+        }
+        // 最近没涂的地方
+        if let tg = nextTarget {
+            let c = t.toScreen(tg)
+            if let pos = position {
+                var lp = Path()
+                lp.move(to: t.toScreen(pos)); lp.addLine(to: c)
+                ctx.stroke(lp, with: .color(Color.orange.opacity(0.8)), style: StrokeStyle(lineWidth: 1.2, dash: [3, 4]))
+            }
+            let rect = CGRect(x: c.x - 7, y: c.y - 7, width: 14, height: 14)
+            ctx.stroke(Path(ellipseIn: rect), with: .color(.orange), lineWidth: 2.5)
         }
 
         // 当前位置：不确定度圆 + 实心点 + 航向箭头

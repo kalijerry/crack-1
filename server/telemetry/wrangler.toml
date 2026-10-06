@@ -3,6 +3,9 @@
 name = "hpass-telemetry"
 main = "src/index.js"
 compatibility_date = "2026-09-01"
+# 自定义域名（gui.ink 要在同一个 Cloudflare 账号里）；workers.dev 地址也保留
+routes = [{ pattern = "hpass.gui.ink", custom_domain = true }]
+workers_dev = true
 
 # 看板网页按文本模块打包进 Worker
 [[rules]]

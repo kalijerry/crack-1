@@ -260,6 +260,7 @@ final class SurveyEngine: ObservableObject {
         coverage.configure(crosses: store.crosses)
         lastError = nil
         recorder.deviceLabel = "survey"
+        recorder.recordBLE = Features.bluetooth
         recorder.arbiterName = ""
         SensorArbiter.shared.claim("建图采集") { [weak self] in self?.stop() }
         recorder.setupNote = note

@@ -120,6 +120,8 @@ final class Recorder: ObservableObject {
     private let ble = BLEScanner()
     private let motion = MotionRecorder()
     let tap = SensorTap()
+    /// 录制时是否扫蓝牙（建图采集不需要）
+    var recordBLE = true
     private let shared = SharedState()
     private lazy var sensors = SensorLogger(motionManager: motion.manager)
     private var bleWriter: CSVWriter?
@@ -201,7 +203,7 @@ final class Recorder: ObservableObject {
                 imuW.append(line)
                 shared.addImu(magAcc: s.magAccuracy)
             }
-            ble.start()
+            if recordBLE { ble.start() }
             motion.start(hz: 50)
             try sensors.start(dir: dir)
             try writeMeta(endMs: nil)

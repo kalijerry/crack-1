@@ -21,6 +21,11 @@ struct RoomScanItem: Identifiable {
     var id: String { dir.lastPathComponent }
     var mapURL: URL { dir.appendingPathComponent("map.json") }
     var usdzURL: URL { dir.appendingPathComponent("room.usdz") }
+    /// 加进地图库时的编号
+    var libraryId: String? {
+        (try? String(contentsOf: dir.appendingPathComponent("library_id.txt"), encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 /// 房间扫描：用 Apple RoomPlan（激光雷达）扫出墙、门、窗、家具，生成 2D / 3D 地图。
@@ -126,6 +131,8 @@ final class RoomScanModel: ObservableObject {
             if let raw = try? JSONEncoder().encode(room) { try? raw.write(to: dir.appendingPathComponent("captured_room.json")) }
             result = map
             resultItem = RoomScanItem(dir: dir)
+            // 直接加进地图库并切换过去：到「地磁定位」页就是这个房间
+            addToLibrary(RoomScanItem(dir: dir), name: title)
             let furniture = Dictionary(grouping: input.objects, by: \.category)
                 .map { "\(RoomCategory.label($0.key)) \($0.value.count)" }.sorted().joined(separator: "、")
             let area = WalkableMap(floor: map.floor, obstacles: map.physicalShelves, widthCm: map.width, heightCm: map.height).walkableAreaM2
@@ -137,6 +144,26 @@ final class RoomScanModel: ObservableObject {
         } catch {
             phase = .failed("生成地图失败：\(error)")
             AppLog.e("房间扫描", "生成地图失败：\(error)")
+        }
+    }
+
+    @Published private(set) var libraryMessage: String?
+
+    /// 加进地图库（已经在库里就只切换）
+    func addToLibrary(_ it: RoomScanItem, name: String? = nil) {
+        let lib = MapLibrary.shared
+        do {
+            if let id = it.libraryId, lib.entries.contains(where: { $0.id == id }) {
+                try lib.activate(id)
+            } else {
+                let d = try Data(contentsOf: it.mapURL)
+                let n = name ?? (try? StoreDataLoader.loadMap(d))?.floorName ?? it.id
+                let e = try lib.importAndActivate(data: d, name: n, kind: "room")
+                try? Data(e.id.utf8).write(to: it.dir.appendingPathComponent("library_id.txt"))
+            }
+            libraryMessage = "已加入地图库并切换到这个房间。到「地磁定位」页建图采集、定位。"
+        } catch {
+            libraryMessage = "加入地图库失败：\(error.localizedDescription)"
         }
     }
 
@@ -194,11 +221,9 @@ struct RoomCaptureContainer: UIViewRepresentable {
 
 struct RoomScanView: View {
     @StateObject private var model = RoomScanModel()
-    @ObservedObject private var storeData = StoreDataStore.shared
+    @ObservedObject private var lib = MapLibrary.shared
     @StateObject private var model3D = Store3DModel()
     @State private var show3D = false
-    @State private var message: String?
-    @State private var shareURL: URL?
 
     var body: some View {
         NavigationStack {
@@ -272,36 +297,23 @@ struct RoomScanView: View {
                     .onChange(of: model.resultItem?.id) { _ in if let r = model.result { model3D.ensure(map: r) } }
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     Text(model.summary).font(.footnote)
-                    Button {
-                        do {
-                            let d = try Data(contentsOf: it.mapURL)
-                            try storeData.useRoomMap(d)
-                            message = "已设为当前地图。到「地磁定位」页开始建图采集。"
-                        } catch { message = "失败：\(error.localizedDescription)" }
-                    } label: { Label("设为当前地图", systemImage: "checkmark.circle") }
+                    if let id = it.libraryId, id == lib.activeId {
+                        Label("当前在用这张地图", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                    } else {
+                        Button { model.addToLibrary(it) } label: {
+                            Label(it.libraryId.map { id in lib.entries.contains { $0.id == id } } == true
+                                  ? "切换到这个房间" : "加入地图库并切换", systemImage: "arrow.triangle.swap")
+                        }
+                    }
                     if FileManager.default.fileExists(atPath: it.usdzURL.path) {
                         ShareLink(item: it.usdzURL) { Label("导出 3D 模型（USDZ）", systemImage: "cube") }
                     }
                     ShareLink(item: it.mapURL) { Label("导出 2D 地图（JSON）", systemImage: "map") }
-                    if let msg = message { Text(msg).font(.footnote).foregroundStyle(.green) }
+                    if let msg = model.libraryMessage { Text(msg).font(.footnote).foregroundStyle(.green) }
                 } header: { Text(m.floorName ?? it.id) }
             }
 
-            if storeData.currentMapIsRoom || storeData.hasMapBackup {
-                Section {
-                    if storeData.currentMapIsRoom {
-                        Text("当前地图：\(storeData.map?.floorName ?? "房间")（房间扫描）").font(.footnote)
-                    }
-                    if storeData.hasMapBackup && storeData.currentMapIsRoom {
-                        Button("恢复原来的门店地图") {
-                            do { try storeData.restoreMapBackup(); message = "已恢复门店地图" }
-                            catch { message = "恢复失败：\(error.localizedDescription)" }
-                        }
-                    }
-                } header: { Text("当前地图") } footer: {
-                    Text("换地图会让地磁页的点位、磁场图跟着换（尺寸不同时会清掉）。门店地图在第一次换成房间时自动备份。")
-                }
-            }
+            MapLibrarySection()
 
             if !model.items.isEmpty {
                 Section("扫过的房间") {

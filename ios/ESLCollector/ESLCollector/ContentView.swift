@@ -48,6 +48,7 @@ struct ContentView: View {
         }
         .onAppear {
             AppLog.i("应用", "启动")
+            _ = MapLibrary.shared          // 第一次用：把现在的地图收进地图库
         }
     }
 

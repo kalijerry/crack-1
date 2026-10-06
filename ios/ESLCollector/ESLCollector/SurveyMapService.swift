@@ -22,7 +22,18 @@ final class SurveyMapService: ObservableObject {
     func refresh() {
         let fm = FileManager.default
         let dirs = (try? fm.contentsOfDirectory(at: Recorder.sessionsRoot, includingPropertiesForKeys: nil)) ?? []
-        items = dirs.filter { $0.hasDirectoryPath && SurveySessionLoader.isSurvey($0) }
+        let store = MagMapStore.shared
+        let active = MapLibrary.shared.activeId
+        // 只列当前地图的会话：会话里记了地图编号就按编号；旧会话没记，就按地图尺寸对
+        func belongs(_ d: URL) -> Bool {
+            guard let data = try? Data(contentsOf: d.appendingPathComponent("meta.json")),
+                  let meta = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return true }
+            if let id = meta["map_id"] as? String, !id.isEmpty { return id == active }
+            let w = meta["map_width_cm"] as? Double, h = meta["map_height_cm"] as? Double
+            guard let w, let h else { return true }
+            return abs(w - store.widthCm) < 1 && abs(h - store.heightCm) < 1
+        }
+        items = dirs.filter { $0.hasDirectoryPath && SurveySessionLoader.isSurvey($0) && belongs($0) }
             .sorted { $0.lastPathComponent > $1.lastPathComponent }
             .map { Item(url: $0, sizeBytes: SessionsView.dirSize($0),
                         hasMesh: fm.fileExists(atPath: $0.appendingPathComponent("mesh.ply").path)) }

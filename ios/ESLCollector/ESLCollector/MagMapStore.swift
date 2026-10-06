@@ -109,6 +109,26 @@ final class MagMapStore: ObservableObject {
         return r
     }
 
+    /// 切换地图之后：工作区文件已经换成新地图的，丢掉内存里的旧状态，从文件重新读。
+    func reloadFromDisk() {
+        points = []
+        mapUpBearingDeg = nil
+        importedField = nil
+        magSource = "calibrated"
+        crosses = []
+        floor = []
+        shelves = []
+        walkableCache = nil
+        raycasterCache = nil
+        builder = MagneticFieldBuilder(widthCm: widthCm, heightCm: heightCm)
+        if let data = try? Data(contentsOf: Self.fileURL) {
+            do { try load(data) } catch { lastError = "读取地图工作区失败：\(error)" }
+        } else {
+            refreshField()
+        }
+        fieldSource = UserDefaults.standard.string(forKey: "magFieldSource")
+    }
+
     func setMapUpBearing(_ deg: Double?) {
         let norm = deg.map { (($0.truncatingRemainder(dividingBy: 360)) + 360).truncatingRemainder(dividingBy: 360) }
         guard norm != mapUpBearingDeg else { return }

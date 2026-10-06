@@ -68,6 +68,13 @@ struct MagneticView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                HStack {
+                    Text("地图").font(.footnote).foregroundStyle(.secondary)
+                    MapPickerMenu(disabled: engine.phase != .idle || survey.isRunning)
+                    Spacer()
+                }
+                .padding(.horizontal)
+                .padding(.top, 4)
                 Picker("步骤", selection: $step) {
                     ForEach(Step.main) { Text($0.rawValue).tag($0) }
                 }
@@ -116,7 +123,11 @@ struct MagneticView: View {
             if startId.isEmpty { startId = store.points.first?.id ?? "" }
         }
         .onChange(of: storeData.mapSignature) { _ in
+            survey.coverage.invalidate()
             store.adopt(map: storeData.map)
+            mapService.refresh()
+            mapUpText = store.mapUpBearingDeg.map { Fmt.f($0, 0) } ?? ""
+            startId = store.points.first?.id ?? ""
             survey.coverage.configure(crosses: store.crosses)
             survey.coverage.configurePaint(crosses: store.crosses, widthCm: store.widthCm, heightCm: store.heightCm,
                                            walkable: store.walkableMap())

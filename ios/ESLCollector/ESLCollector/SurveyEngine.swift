@@ -107,6 +107,18 @@ final class SurveyCoverage: ObservableObject {
         paintLayer = paintGrid.flatMap(PaintLayer.make)
     }
 
+    /// 换了地图：下次 configure / configurePaint 一定重建并从（新地图的）文件读
+    func invalidate() {
+        segments = []
+        lengths = []
+        forward = []
+        backward = []
+        paintGrid = nil
+        paintLayer = nil
+        clearGuides()
+        revision += 1
+    }
+
     func configure(crosses: [CrossSegment]) {
         guard crosses.count != segments.count || zip(crosses, segments).contains(where: { $0.a != $1.a || $0.b != $1.b }) else { return }
         segments = crosses
@@ -362,6 +374,7 @@ final class SurveyEngine: ObservableObject {
         recorder.extraMeta = [
             "survey": true,
             "map_width_cm": store.widthCm, "map_height_cm": store.heightCm,
+            "map_id": MapLibrary.shared.activeId ?? "",
             "arkit": true,
             "arkit_frame": "gravity-aligned, x right, y up, z toward viewer; map = pRef + R(phi)(a - aRef), a = (x, z) cm",
         ]

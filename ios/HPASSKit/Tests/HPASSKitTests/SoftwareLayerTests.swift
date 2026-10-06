@@ -199,3 +199,35 @@ final class LateralRangeTests: XCTestCase {
         XCTAssertLessThan(run(weight: 1), run(weight: 0) + 1)
     }
 }
+
+final class MapARTransformTests: XCTestCase {
+    func testRoundTripAndAlignerAgreement() {
+        let al = VisualOdometryAligner()
+        let p0 = Point2(2000, 1000), a0 = Point2(123, -456), phi = 0.9
+        func ar(_ p: Point2) -> Point2 {                 // 与对齐器测试里同一种构造
+            let d = p - p0, c = cos(-phi), s = sin(-phi)
+            return Point2(a0.x + d.x * c - d.y * s, a0.y + d.x * s + d.y * c)
+        }
+        al.anchor(map: p0, ar: a0, headingRad: Double.pi / 2)
+        for k in 1...30 { _ = al.process(ar: ar(Point2(p0.x + Double(k) * 10, p0.y)), trackingNormal: true) }
+        let t = try! XCTUnwrap(al.transform)
+        let m = Point2(2500, 1400)
+        XCTAssertEqual(t.toAR(m).x, ar(m).x, accuracy: 1e-6)
+        XCTAssertEqual(t.toAR(m).y, ar(m).y, accuracy: 1e-6)
+        XCTAssertEqual(t.toMap(t.toAR(m)).x, m.x, accuracy: 1e-6)
+        XCTAssertEqual(t.toMap(t.toAR(m)).y, m.y, accuracy: 1e-6)
+    }
+
+    /// SceneKit 根节点的「绕 y 旋转 + 平移」与 toAR 一致：场景坐标 c = 地图 cm / 100。
+    func testSceneRootMatchesToAR() {
+        let t = MapARTransform(pRef: Point2(3000, 800), aRef: Point2(-50, 700), phi: -1.2)
+        for m in [Point2(0, 0), Point2(3000, 800), Point2(4200, 2500), Point2(100, 9000)] {
+            let a = t.sceneRotationY
+            let cx = m.x / 100, cz = m.y / 100
+            let rx = cx * cos(a) + cz * sin(a), rz = -cx * sin(a) + cz * cos(a)   // SceneKit 绕 +y 转 α
+            let tr = t.sceneTranslationM
+            XCTAssertEqual((rx + tr.x) * 100, t.toAR(m).x, accuracy: 1e-6)
+            XCTAssertEqual((rz + tr.z) * 100, t.toAR(m).y, accuracy: 1e-6)
+        }
+    }
+}

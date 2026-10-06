@@ -26,9 +26,9 @@ public final class VisualOdometryAligner {
     /// 恢复跟踪后，ARKit 位置比上一帧跳得比这个远（cm）就当作坐标系已重置。
     public var jumpCm: Double = 300
 
-    private var aRef = Point2.zero
-    private var pRef = Point2.zero
-    private var phi: Double?
+    private(set) var aRef = Point2.zero
+    private(set) var pRef = Point2.zero
+    private(set) var phi: Double?
     private var headingHint: Double?
     private var lastMap: Point2?
     private var lastA: Point2?

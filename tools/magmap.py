@@ -36,7 +36,7 @@ FILL_RADIUS_CM = 150.0     # 补格子时只看这个半径内的有效格
 MIN_SPEED_CM_S = 30.0      # 走得比这慢的样本不要（站着会在一个格子里堆很多重复样本）
 MIN_ANCHOR_GAP_CM = 500.0  # 两个锚点相距小于这个值，不用它们拟合旋转
 SCALE_RANGE = (0.9, 1.1)   # 锚点间距 / ARKit 位移 超出这个范围，说明锚点点错了或跟踪出了问题
-TAIL_MAX_CM = 3000.0       # 最后一个锚点之后最多沿用多远（超过的丢掉）
+TAIL_MAX_CM = 6000.0       # 最后一个锚点之后最多沿用多长的路径（cm，按走过的路程算；ARKit 漂移约路程的 1%）
 JUMP_GUARD_S = 2           # 校准跳变前后丢掉多少秒
 TRUTH_KINDS = ("start", "reanchor")   # heading / end 记的是当时的估计位置，不是真值
 
@@ -74,6 +74,14 @@ class Pose:
         self.x = [float(r["x_m"]) * 100 for r in rows]
         self.z = [float(r["z_m"]) * 100 for r in rows]
         self.state = [int(r["tracking"]) for r in rows]
+        # 累计水平路程（cm）。尾段用「路程」而不是直线距离限制：绕一圈回来，直线距离很小，但漂移照样在累积
+        self.cum = [0.0]
+        for i in range(1, len(self.t)):
+            self.cum.append(self.cum[-1] + math.hypot(self.x[i] - self.x[i - 1], self.z[i] - self.z[i - 1]))
+
+    def path_at(self, t):
+        i = bisect.bisect_left(self.t, t)
+        return self.cum[min(max(i, 0), len(self.cum) - 1)]
 
     def at(self, t):
         """返回 (x, z, 状态是否正常)；时间超出范围或相邻位姿间隔太大返回 None。"""
@@ -180,7 +188,7 @@ def to_map(seg, pose_xy, t):
     return (seg["p"][0] + r[0] + f * seg["resid"][0], seg["p"][1] + r[1] + f * seg["resid"][1])
 
 
-def session_samples(dir_, report_sessions):
+def session_samples(dir_, report_sessions, tail_max_cm=TAIL_MAX_CM):
     """一个会话 → [(x_cm, y_cm, |B|, Bz, Bh, t_ms)]。"""
     rep = {"name": dir_.name, "segments": [], "warnings": [], "samples": 0, "dropped": {}}
     report_sessions.append(rep)
@@ -235,8 +243,7 @@ def session_samples(dir_, report_sessions):
             continue
         xy = to_map(seg, (p[0], p[1]), ti)
         if seg["tail"]:
-            a0 = seg["a"]
-            if math.hypot(p[0] - a0[0], p[1] - a0[1]) > TAIL_MAX_CM:
+            if pose.path_at(ti) - pose.path_at(seg["t0"]) > tail_max_cm:
                 drop["超出最后锚点太远"] = drop.get("超出最后锚点太远", 0) + 1
                 continue
         # 速度：与 0.5 s 前的位置比
@@ -394,13 +401,13 @@ def discriminability(grid, cells, sigmas, crosses, window_m=10.0, min_len_m=20.0
 # ---------------------------------------------------------------- 主流程
 
 def run(map_path, session_paths, out_path=None, cell=50.0, points_path=None, report_path=None, do_disc=True,
-        truth_dir=None):
+        truth_dir=None, tail_max_cm=TAIL_MAX_CM):
     width, height, crosses = load_map(map_path)
     grid = Grid(width, height, cell)
     report = {"map": {"width_cm": width, "height_cm": height, "crosses": len(crosses)}, "sessions": [], "warnings": []}
     for sp in session_paths:
         d = resolve_session_dir(Path(sp))
-        samples = session_samples(d, report["sessions"])
+        samples = session_samples(d, report["sessions"], tail_max_cm)
         for x, y, b, bz, bh, _ in samples:
             grid.add(x, y, (b, bz, bh))
         if truth_dir and samples:
@@ -483,9 +490,11 @@ def main():
     ap.add_argument("--cell", type=float, default=50.0, help="磁场格子边长 cm（默认 50）")
     ap.add_argument("--report", type=Path, help="质检报告 JSON")
     ap.add_argument("--truth-dir", type=Path, help="把对齐后的位置真值导出到这个目录（每个会话一个 csv）")
+    ap.add_argument("--tail-max-m", type=float, default=TAIL_MAX_CM / 100,
+                    help="最后一个锚点之后最多沿用多少米路程（默认 60）。锚点越多越可以放大这个数，只有一个锚点时别超过 80")
     ap.add_argument("--no-discriminability", action="store_true", help="跳过平行通道相似度分析（大地图较慢）")
     a = ap.parse_args()
-    rep, _ = run(a.map, a.sessions, a.out, a.cell, a.points, a.report, not a.no_discriminability, a.truth_dir)
+    rep, _ = run(a.map, a.sessions, a.out, a.cell, a.points, a.report, not a.no_discriminability, a.truth_dir, a.tail_max_m * 100)
     print_report(rep)
     print(f"\n已写入 {a.out}")
 

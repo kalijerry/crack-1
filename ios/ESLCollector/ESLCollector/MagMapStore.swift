@@ -21,7 +21,10 @@ final class MagMapStore: ObservableObject {
     /// 门店地图里的通道（来自「门店数据」页导入的地图），用于通道约束。
     @Published private(set) var crosses: [CrossSegment] = []
     /// 地图的真实朝向：地图 +y 轴的磁罗盘方位角（度）。第一次「定点 + 设朝向」时自动记下，之后冷启动用。
-    @Published private(set) var declinationDeg: Double?
+    /// 地图朝向：地图「上方」（−y）指向的罗盘方位（度，顺时针，0 = 北）。由用户填写，例如 316。
+    @Published private(set) var mapUpBearingDeg: Double?
+    /// 融合引擎用的「地图 +y 轴的罗盘方位」= 上方 + 180°。
+    var declinationDeg: Double? { mapUpBearingDeg.map { ($0 + 180).truncatingRemainder(dividingBy: 360) } }
     private var walkableCache: WalkableMap?
     private var shelves: [ShelfRect] = []
     private var raycasterCache: ShelfRaycaster?
@@ -87,9 +90,10 @@ final class MagMapStore: ObservableObject {
         return r
     }
 
-    func setDeclination(_ deg: Double) {
-        declinationDeg = deg
+    func setMapUpBearing(_ deg: Double?) {
+        mapUpBearingDeg = deg.map { (($0.truncatingRemainder(dividingBy: 360)) + 360).truncatingRemainder(dividingBy: 360) }
         save()
+        AppLog.i("地磁", "地图朝向：" + (mapUpBearingDeg.map { "上方指向 \(Fmt.f($0, 0))°" } ?? "未设置"))
     }
 
     /// 用门店地图做底，还是没有门店地图时的小测试区。
@@ -174,7 +178,7 @@ final class MagMapStore: ObservableObject {
             "mapElementList": [Any](),
             "markPoints": points.map { ["id": $0.id, "x": Int($0.x.rounded()), "y": Int($0.y.rounded())] as [String: Any] },
         ]
-        if let d = declinationDeg { root["magDeclinationDeg"] = d }
+        if let d = mapUpBearingDeg { root["mapUpBearingDeg"] = d }
         if let f = field { root["magField"] = f.jsonObject() }
         if builder.sampleCount > 0 {
             let snap = try JSONEncoder().encode(builder.snapshot())
@@ -200,8 +204,9 @@ final class MagMapStore: ObservableObject {
         floorName = map.floorName ?? floorName
         points = try StoreDataLoader.loadMarkPoints(data)
         if let root = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) as? [String: Any],
-           let d = root["magDeclinationDeg"] as? Double {
-            declinationDeg = d
+           let d = root["mapUpBearingDeg"] as? Double {
+            // 旧版本存过一个错误的「magDeclinationDeg」（常常是 0），不再读取
+            mapUpBearingDeg = d
         }
         walkableCache = nil
         importedField = try StoreDataLoader.loadMagneticField(data)

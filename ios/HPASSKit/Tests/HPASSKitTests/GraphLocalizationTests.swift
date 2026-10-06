@@ -69,7 +69,7 @@ final class GraphLocalizationTests: XCTestCase {
 
     private struct Result { var errors: [Double]; var wrongAisle: Int; var total: Int; var convergedAt: Double? }
 
-    private func run(cold: Bool, useWalkable: Bool, seed: UInt64) -> Result {
+    private func run(cold: Bool, useWalkable: Bool, seed: UInt64, headingOffsetDeg: Double = 5) -> Result {
         let map = surveyMap(noise: 0.4, seed: seed)
         let walk = useWalkable ? WalkableMap(crosses: crosses, widthCm: width, heightCm: height) : nil
         let loc = MagneticLocalizer(field: map, walkable: walk, seed: seed)
@@ -83,7 +83,7 @@ final class GraphLocalizationTests: XCTestCase {
             for s in 1...n {
                 let d = Point2((b.x - a.x) / Double(n), (b.y - a.y) / Double(n))
                 let truth = Point2(a.x + d.x * Double(s), a.y + d.y * Double(s))
-                let ang = (5.0 + 0.5 * rng.normal()) * Double.pi / 180
+                let ang = (headingOffsetDeg + 0.5 * rng.normal()) * Double.pi / 180
                 let sc = 1.04 + 0.02 * rng.normal()
                 let delta = Point2((d.x * cos(ang) - d.y * sin(ang)) * sc, (d.x * sin(ang) + d.y * cos(ang)) * sc)
                 let f = field(truth)
@@ -121,6 +121,47 @@ final class GraphLocalizationTests: XCTestCase {
         XCTAssertLessThan(r.errors[r.errors.count / 2], 120)
         XCTAssertLessThan(r.errors[Int(Double(r.errors.count) * 0.9)], 250)
         XCTAssertEqual(r.wrongAisle, 0)
+    }
+
+    /// 冷启动时航向完全不知道：惯导给的方向整体偏了 160°（相当于罗盘 / 地图朝向全错），也要找对通道。
+    func testColdStartWithUnknownHeading() {
+        let r = run(cold: true, useWalkable: true, seed: 31, headingOffsetDeg: 160)
+        XCTAssertNotNil(r.convergedAt)
+        XCTAssertLessThan(r.convergedAt ?? 999, 80)
+        XCTAssertGreaterThan(r.total, 20)
+        XCTAssertLessThan(r.errors[r.errors.count / 2], 200)
+        XCTAssertLessThanOrEqual(Double(r.wrongAisle) / Double(max(r.total, 1)), 0.1)
+    }
+
+    /// 冷启动、站着不动：要做第一次观测更新，但不能宣布收敛（只靠一个读数不可能唯一）。
+    func testColdStartStandingStillNeverClaimsConvergence() {
+        let map = surveyMap(noise: 0.4, seed: 2)
+        let loc = MagneticLocalizer(field: map, walkable: WalkableMap(crosses: crosses, widthCm: width, heightCm: height), seed: 2)
+        loc.reset(start: nil)
+        let f = field(Point2(aisleXs[2], 1500))
+        var est = loc.estimate()
+        for _ in 0..<60 { est = loc.step(delta: .zero, feature: f) }
+        XCTAssertGreaterThanOrEqual(est.updates, 1)
+        XCTAssertFalse(est.converged)
+    }
+
+    /// 已收敛后走进没有磁场数据的地方，要判为丢失（converged 变回 false），回到有数据的地方再恢复。
+    func testLostWhenWalkingOutOfMappedArea() {
+        let b = MagneticFieldBuilder(widthCm: width, heightCm: height)
+        // 只有第 2 条通道有数据
+        for y in stride(from: topY, through: bottomY, by: 10.0) {
+            for dx in [-40.0, 0, 40] { let p = Point2(aisleXs[1] + dx, y); for _ in 0..<2 { b.add(position: p, feature: field(p)) } }
+        }
+        let map = b.build(minSamples: 3, fillRadiusCm: 60)
+        let loc = MagneticLocalizer(field: map, seed: 4)        // 不加通道约束，让它能走出去
+        loc.reset(start: Point2(aisleXs[1], 600), spreadCm: 40)
+        var est = loc.estimate()
+        for k in 1...20 { est = loc.step(delta: Point2(0, 70), feature: field(Point2(aisleXs[1], 600 + Double(k) * 70))) }
+        XCTAssertTrue(est.converged)
+        // 横穿到没有数据的地方（第 4 条通道方向），磁场读数随便给
+        for k in 1...30 { est = loc.step(delta: Point2(70, 0), feature: field(Point2(aisleXs[1] + Double(k) * 70, 2000))) }
+        XCTAssertFalse(est.converged)
+        XCTAssertGreaterThanOrEqual(loc.lostCount, 1)
     }
 
     func testColdStartFindsRightAisleAndConverges() {

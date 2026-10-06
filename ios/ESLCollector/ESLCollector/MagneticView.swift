@@ -36,6 +36,7 @@ struct MagneticView: View {
     @State private var show3D = false
     @State private var camera3D: Camera3D = .follow
     @State private var shelfHeight3D = 1.8
+    @State private var mapUpText = ""
     @State private var exportURL: URL?
     @State private var exportError: String?
 
@@ -77,6 +78,7 @@ struct MagneticView: View {
         }
         .onAppear {
             store.adopt(map: storeData.map)
+            if mapUpText.isEmpty, let v = store.mapUpBearingDeg { mapUpText = Fmt.f(v, 0) }
             if startId.isEmpty { startId = store.points.first?.id ?? "" }
         }
         .onChange(of: storeData.map?.crosses.count) { _ in store.adopt(map: storeData.map) }
@@ -110,6 +112,7 @@ struct MagneticView: View {
                          gridCm: storeData.map == nil ? 100 : nil,
                          crossStates: isSurvey ? survey.coverage.states : [],
                          crossBinCm: SurveyCoverage.binCm,
+                         positionStale: !isSurvey && engine.locState == .lost,
                          showHeading: isSurvey ? (survey.stage != .needPosition)
                              : (!live || engine.isTracking || engine.headingEditing),
                          headingEditing: isSurvey ? survey.headingEditing : (live && engine.headingEditing),
@@ -227,6 +230,18 @@ struct MagneticView: View {
                 row("地图尺寸", "\(Fmt.f(store.widthCm / 100, 1)) × \(Fmt.f(store.heightCm / 100, 1)) m（没有货架数据）")
                 Text("还没有货架和通道。在这里导入完整的门店地图 JSON，或到「门店数据」页导入。").font(.footnote).foregroundStyle(.orange)
             }
+            HStack {
+                Text("地图朝向（上方指向）")
+                Spacer()
+                TextField("例如 316", text: $mapUpText)
+                    .keyboardType(.numbersAndPunctuation)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 90)
+                    .onSubmit { store.setMapUpBearing(Double(mapUpText.trimmingCharacters(in: .whitespaces))) }
+                Text("°")
+            }
+            Text("地图上方指向的罗盘方位（0 = 北，90 = 东）。填了之后，自动定位会先按这个方向猜，更快找到你；不填也能用，只是慢一些。")
+                .font(.footnote).foregroundStyle(.secondary)
             Stepper("3D 货架高度 \(Fmt.f(shelfHeight3D, 1)) m", value: $shelfHeight3D, in: 0.8...3.0, step: 0.2)
                 .onChange(of: shelfHeight3D) { _ in sync3D(full: false) }
             Text("右上角的「3D」按钮切换立体视图：单指转、双指缩放和平移。立体视图里不能定点，回到 2D 操作。")
@@ -443,6 +458,10 @@ struct MagneticView: View {
                     bigButton("自动定位（不知道我在哪）", name: "实时·自动定位") { engine.startColdSearch() }
                 }
                 Text(liveInstruction).font(.callout)
+                if let t = engine.locStateText {
+                    Text(t).font(.callout.weight(.semibold))
+                        .foregroundStyle(engine.locState == .lost ? .orange : .blue)
+                }
                 if let p = engine.position {
                     row("位置", "x \(Int(p.x))  y \(Int(p.y)) cm")
                     row("朝向", "\(Int((engine.headingRad * 180 / Double.pi).rounded()))°")
@@ -615,6 +634,9 @@ struct MagneticView: View {
         }
 
         if engine.phase == .localizing {
+            if let t = engine.locStateText {
+                Section { Text(t).font(.callout.weight(.semibold)).foregroundStyle(engine.locState == .lost ? .orange : .blue) }
+            }
             Section("实时") {
                 if let p = engine.position { row("位置", "x \(Int(p.x))  y \(Int(p.y)) cm") }
                 if let e = engine.estimate {

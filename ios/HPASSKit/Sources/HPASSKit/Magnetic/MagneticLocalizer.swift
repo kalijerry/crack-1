@@ -17,6 +17,14 @@ public struct MagneticConfig {
     /// 收敛判据：簇内不确定度小于该值（cm）、置信度大于 `convergedConfidence`，连续 3 次更新。
     public var convergedUncertaintyCm: Double = 200
     public var convergedConfidence: Double = 0.6
+    /// 丢失判据：已经收敛之后，置信度低于 `lostConfidence`、或不确定度超过 `lostUncertaintyCm`，
+    /// 连续 `lostUpdates` 次更新，就认为丢了（`converged` 变回 false），要重新收敛才恢复。
+    public var lostConfidence: Double = 0.2
+    public var lostUncertaintyCm: Double = 600
+    public var lostUpdates: Int = 4
+    /// 不知道朝向（冷启动，或只知道位置不知道朝向）时，每个粒子的航向偏差在整圆上均匀取值，
+    /// 靠通道走向和磁场匹配把它挑出来；不依赖罗盘或「地图朝向」。
+    public var uniformHeadingWhenUnknown = true
 
     /// 累计位移达到多少 cm 才做一次观测更新。
     public var updateDistanceCm: Double = 50
@@ -130,6 +138,9 @@ public final class MagneticLocalizer {
     private var coldStart = false
     private var convergedStreak = 0
     private var hasConverged = false
+    private var lowStreak = 0
+    private var firstUpdateDone = false
+    private var headingUnknown = false
 
     public init(field: MagneticFieldMap, walkable: WalkableMap? = nil,
                 config: MagneticConfig = .init(), seed: UInt64 = 1) {
@@ -149,8 +160,15 @@ public final class MagneticLocalizer {
 
     /// 重新开始。start 为 nil 时在可走区域（没有通道信息就是整张图）均匀撒点；
     /// 否则以 start 为中心，spreadCm 为 1σ。
-    public func reset(start: Point2?, spreadCm: Double = 150) {
+    ///
+    /// - Parameter headingUnknown: 位置已知但朝向不知道（或冷启动）。此时粒子的航向偏差在整圆上均匀取值。
+    /// - Parameter priorFraction: 朝向不知道时，有一部分粒子仍按惯导给的方向（偏差 1σ = `initialHeadingBiasSigmaDeg`），
+    ///   其余在整圆上均匀。惯导方向来自罗盘 + 地图朝向时设 0.5 左右；完全没有参考时设 0。
+    public func reset(start: Point2?, spreadCm: Double = 150, headingUnknown: Bool = false, priorFraction: Double = 0) {
         coldStart = start == nil
+        self.headingUnknown = (start == nil || headingUnknown) && config.uniformHeadingWhenUnknown
+        firstUpdateDone = false
+        lowStreak = 0
         let n = max(coldStart ? config.coldStartParticleCount : config.particleCount, 10)
         xs = [Double](repeating: 0, count: n)
         ys = xs
@@ -167,7 +185,9 @@ public final class MagneticLocalizer {
             }
             xs[i] = min(max(p.x, 0), field.widthCm)
             ys[i] = min(max(p.y, 0), field.heightCm)
-            bias[i] = rng.normal() * config.initialHeadingBiasSigmaDeg * Double.pi / 180
+            let usePrior = !self.headingUnknown || Double(i) < Double(n) * min(max(priorFraction, 0), 1)
+            bias[i] = usePrior ? rng.normal() * config.initialHeadingBiasSigmaDeg * Double.pi / 180
+                               : (rng.uniform() * 2 - 1) * Double.pi
             scale[i] = 1 + rng.normal() * config.initialScaleSigma
         }
         travelledCm = 0
@@ -203,11 +223,14 @@ public final class MagneticLocalizer {
             trustSum += t
             featureCount += 1
         }
-        let due = travelledCm >= config.updateDistanceCm
+        // 冷启动时站着不动也要先做一次观测更新：把「全图任何地方」缩小到「磁场长这样的地方」，走起来才有的放矢
+        let firstDue = coldStart && !firstUpdateDone && featureCount >= 3
+        let due = travelledCm >= config.updateDistanceCm || firstDue
         if due, config.lateralWeight > 0, raycaster != nil, latN > 0 {
             updateLateral()
         }
-        if travelledCm >= config.updateDistanceCm, featureCount > 0 {
+        if due, featureCount > 0 {
+            if firstDue { firstUpdateDone = true }
             // 特征按可信度加权平均；整体似然再乘以平均可信度
             if trustSum > 1e-6 {
                 update(feature: featureSum * (1 / trustSum), trust: trustSum / Double(featureCount))
@@ -327,20 +350,33 @@ public final class MagneticLocalizer {
         checkConvergence()
     }
 
-    /// 冷启动：连续几次更新都落在一个小簇里，就认为收敛，把粒子数缩到 `particleCount`。
+    /// 收敛与丢失：
+    /// - 没收敛：连续几次更新都落在一个小簇里就算收敛，冷启动时同时把粒子数缩到 `particleCount`；
+    /// - 已收敛：置信度持续很低（走进没采过的地方、磁场对不上）就算丢失，`converged` 变回 false。
     private func checkConvergence() {
-        guard coldStart, !hasConverged else { return }
         let e = estimate()
-        if e.uncertaintyCm <= config.convergedUncertaintyCm && e.confidence >= config.convergedConfidence {
-            convergedStreak += 1
-        } else {
-            convergedStreak = 0
+        let good = e.uncertaintyCm <= config.convergedUncertaintyCm && e.confidence >= config.convergedConfidence
+        if !hasConverged {
+            convergedStreak = good ? convergedStreak + 1 : 0
+            if convergedStreak >= 3 {
+                hasConverged = true
+                lowStreak = 0
+                if coldStart && xs.count > config.particleCount { resample(to: config.particleCount) }
+            }
+            return
         }
-        if convergedStreak >= 3 {
-            hasConverged = true
-            if xs.count > config.particleCount { resample(to: config.particleCount) }
+        let bad = e.confidence < config.lostConfidence || e.uncertaintyCm > config.lostUncertaintyCm
+        lowStreak = bad ? lowStreak + 1 : 0
+        if lowStreak >= config.lostUpdates {
+            hasConverged = false
+            convergedStreak = 0
+            lowStreak = 0
+            lostCount += 1
         }
     }
+
+    /// 累计丢失过几次。
+    public private(set) var lostCount = 0
 
     /// 减去最大值再归一到 Σw = 1（对数域），防止下溢。
     private func normalize() {

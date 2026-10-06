@@ -62,6 +62,8 @@ struct MapCanvas: View {
     var crossStates: [[CoverageState]] = []
     var crossBinCm: Double = 100
     var showHeading = true
+    /// 位置已冻结（定位丢失）：画成灰色
+    var positionStale = false
     /// 设朝向中：箭头画长、橙色；拖动 / 点击不再平移，而是把方向交给 onHeadingPoint
     var headingEditing = false
     var onLongPress: ((Point2) -> Void)?
@@ -407,7 +409,7 @@ struct MapCanvas: View {
                 }
             }
             let rect = CGRect(x: c.x - 6, y: c.y - 6, width: 12, height: 12)
-            ctx.fill(Path(ellipseIn: rect), with: .color(.accentColor))
+            ctx.fill(Path(ellipseIn: rect), with: .color(positionStale ? .gray : .accentColor))
             ctx.stroke(Path(ellipseIn: rect), with: .color(.white), lineWidth: 1.5)
         }
     }

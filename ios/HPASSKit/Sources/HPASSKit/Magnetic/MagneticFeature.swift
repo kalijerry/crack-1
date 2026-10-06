@@ -45,6 +45,41 @@ public final class MagneticFeatureExtractor {
         up = nil
         smoothed = nil
         lastTMs = nil
+        gravityT = nil
+    }
+
+    /// 只更新重力方向（用加速度），不出特征。磁场来自别处（比如原始磁力计）时，先用它更新「向上」方向。
+    public func updateGravity(_ s: IMUSample) {
+        let a = FusionVec3(s.ax, s.ay, s.az)
+        guard a.norm.isFinite, a.norm > 1.0 else { return }
+        var dt = 0.0
+        if let last = gravityT { dt = Double(s.tMs - last) / 1000.0 }
+        gravityT = s.tMs
+        if dt <= 0 || dt > 1.0 { up = a; return }
+        let ag = FusionMath.lpfAlpha(dt: dt, tau: gravityTauS)
+        up = up.map { $0 * (1 - ag) + a * ag } ?? a
+    }
+    private var gravityT: Int64?
+
+    /// 用当前的重力方向，把一个磁场读数（设备坐标系，µT）变成特征。要先调用过 `updateGravity`。
+    public func process(magnetic m3: (Double, Double, Double), tMs: Int64) -> MagneticFeature? {
+        let m = FusionVec3(m3.0, m3.1, m3.2)
+        guard let u = up, m.norm.isFinite, m.norm > 1.0 else { return smoothed }
+        let un = u.normalized
+        guard un.norm > 0.5 else { return smoothed }
+        var dt = 0.0
+        if let last = lastTMs { dt = Double(tMs - last) / 1000.0 }
+        lastTMs = tMs
+        let b = m.norm
+        let bz = m.dot(un)
+        let raw = MagneticFeature(total: b, vertical: bz, horizontal: (max(b * b - bz * bz, 0)).squareRoot())
+        if let prev = smoothed, dt > 0, dt <= 1.0 {
+            let af = FusionMath.lpfAlpha(dt: dt, tau: featureTauS)
+            smoothed = prev * (1 - af) + raw * af
+        } else {
+            smoothed = raw
+        }
+        return smoothed
     }
 
     public func process(_ s: IMUSample) -> MagneticFeature? {

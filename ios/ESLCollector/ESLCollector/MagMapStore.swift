@@ -29,6 +29,9 @@ final class MagMapStore: ObservableObject {
     private var shelves: [ShelfRect] = []
     private var raycasterCache: ShelfRaycaster?
 
+    /// 磁场图的来源：电脑上 tools/magmap.py 建的是 raw（原始磁力计减偏置），App 里按点位校准的是 calibrated。
+    @Published private(set) var magSource = "calibrated"
+
     private var builder = MagneticFieldBuilder(widthCm: 1000, heightCm: 1000)
     /// 导入的地图里自带的磁场（没有累积统计，只能用来定位）。
     private var importedField: MagneticFieldMap?
@@ -135,6 +138,7 @@ final class MagMapStore: ObservableObject {
     func addCalibration(waypoints: [MagneticFieldBuilder.Waypoint],
                         samples: [MagneticFieldBuilder.TimedFeature]) -> Int {
         let used = builder.addTrack(waypoints: waypoints, samples: samples)
+        magSource = "calibrated"                 // App 里按点位校准用的是 iOS 校准后磁场
         refreshField()
         save()
         AppLog.i("地磁", "并入校准数据：\(used) 个样本，累计 \(builder.sampleCount)，有效格 \(validCells)/\(builder.totalCells)")
@@ -180,6 +184,7 @@ final class MagMapStore: ObservableObject {
         ]
         if let d = mapUpBearingDeg { root["mapUpBearingDeg"] = d }
         if let f = field { root["magField"] = f.jsonObject() }
+        root["magSource"] = builder.sampleCount > 0 ? "calibrated" : magSource
         if builder.sampleCount > 0 {
             let snap = try JSONEncoder().encode(builder.snapshot())
             root["magStats"] = try JSONSerialization.jsonObject(with: snap)
@@ -210,6 +215,7 @@ final class MagMapStore: ObservableObject {
         }
         walkableCache = nil
         importedField = try StoreDataLoader.loadMagneticField(data)
+        magSource = importedField != nil ? StoreDataLoader.loadMagSource(data) : "calibrated"
 
         builder = MagneticFieldBuilder(widthCm: widthCm, heightCm: heightCm)
         if let root = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) as? [String: Any],

@@ -231,3 +231,33 @@ final class MapARTransformTests: XCTestCase {
         }
     }
 }
+
+final class RawBiasTrackerTests: XCTestCase {
+    /// iOS 的偏置估计在漂（±3 µT），原始读数 = 真实磁场 + 固定偏置；中位数应该接近固定偏置，校正后读数不漂。
+    func testMedianBiasIgnoresIOSDrift() {
+        let tr = RawBiasTracker()
+        let trueBias = (80.0, -112.0, -649.0)
+        var rng = MagRNG(seed: 9)
+        for i in 0..<(60 * 50) {
+            let t = Int64(i * 20)
+            let field = (20 + 5 * sin(Double(i) / 200), 5.0, -43.0)
+            let drift = i > 1100 && i < 1500 ? 3.5 : 0.4 * rng.normal()      // 中间有一段 iOS 估计偏了 3.5 µT
+            let raw = (field.0 + trueBias.0, field.1 + trueBias.1, field.2 + trueBias.2)
+            let cal = (field.0 - drift, field.1, field.2)
+            tr.add(tMs: t, raw: raw, calibrated: cal)
+        }
+        XCTAssertTrue(tr.isReady)
+        let b = tr.bias!
+        XCTAssertEqual(b.0, trueBias.0, accuracy: 0.3)
+        XCTAssertEqual(b.2, trueBias.2, accuracy: 0.3)
+        let c = tr.corrected((100, -107, -692))!
+        XCTAssertEqual(c.0, 20, accuracy: 0.3)
+    }
+
+    func testNotReadyBeforeMinSeconds() {
+        let tr = RawBiasTracker()
+        for i in 0..<100 { tr.add(tMs: Int64(i * 20), raw: (1, 1, 1), calibrated: (0, 0, 0)) }   // 2 秒
+        XCTAssertFalse(tr.isReady)
+        XCTAssertNil(tr.corrected((1, 1, 1)))
+    }
+}

@@ -38,7 +38,11 @@ MIN_ANCHOR_GAP_CM = 500.0  # 两个锚点相距小于这个值，不用它们拟
 SCALE_RANGE = (0.9, 1.1)   # 锚点间距 / ARKit 位移 超出这个范围，说明锚点点错了或跟踪出了问题
 TAIL_MAX_CM = 6000.0       # 最后一个锚点之后最多沿用多长的路径（cm，按走过的路程算；ARKit 漂移约路程的 1%）
 JUMP_GUARD_S = 2           # 校准跳变前后丢掉多少秒
-TRUTH_KINDS = ("start", "reanchor")   # heading / end 记的是当时的估计位置，不是真值
+TRUTH_KINDS = ("start", "reanchor")
+# 磁场来源：
+#   raw        = 原始磁力计 − 这次会话「原始 − 校准」的中位数（固定偏置）。不受 iOS 重新校准的跳变影响，默认用它；
+#   calibrated = iOS 校准后的磁场。iOS 的偏置估计会漂（实测一分钟内 3～4 µT），只在没有 mag_raw.csv 时用。
+MAG_SOURCE = "raw"   # heading / end 记的是当时的估计位置，不是真值
 
 
 # ---------------------------------------------------------------- 地图
@@ -188,7 +192,41 @@ def to_map(seg, pose_xy, t):
     return (seg["p"][0] + r[0] + f * seg["resid"][0], seg["p"][1] + r[1] + f * seg["resid"][1])
 
 
-def session_samples(dir_, report_sessions, tail_max_cm=TAIL_MAX_CM):
+def raw_field(dir_, t, cal):
+    """原始磁力计插值到 IMU 时刻，减去整次会话的偏置中位数。返回 (磁场列表, 偏置, 偏置漂移范围) 或 None。"""
+    path = dir_ / "mag_raw.csv"
+    if not path.exists():
+        return None
+    raw = read_csv(path)
+    rt = [int(r["t_ms"]) for r in raw]
+    rv = [(float(r["mx"]), float(r["my"]), float(r["mz"])) for r in raw]
+    if len(rt) < 10:
+        return None
+
+    def at(ti):
+        i = bisect.bisect_left(rt, ti)
+        if i <= 0 or i >= len(rt) or rt[i] - rt[i - 1] > 40:
+            return None
+        f = (ti - rt[i - 1]) / (rt[i] - rt[i - 1]) if rt[i] > rt[i - 1] else 0
+        return tuple(rv[i - 1][k] + f * (rv[i][k] - rv[i - 1][k]) for k in range(3))
+
+    rawi = [at(ti) for ti in t]
+    diffs = [tuple(r[k] - c[k] for k in range(3)) for r, c in zip(rawi, cal) if r is not None]
+    if len(diffs) < 50:
+        return None
+    bias = tuple(statistics.median(d[k] for d in diffs) for k in range(3))
+    # 每秒平均偏置的漂移范围（5%～95%），只用于报告
+    per_sec = {}
+    for ti, r, c in zip(t, rawi, cal):
+        if r is not None:
+            per_sec.setdefault(ti // 1000, []).append(math.sqrt(sum((r[k] - c[k] - bias[k]) ** 2 for k in range(3))))
+    drift = sorted(statistics.fmean(v) for v in per_sec.values())
+    spread = (drift[len(drift) // 20], drift[len(drift) * 19 // 20]) if drift else (0, 0)
+    field = [tuple(r[k] - bias[k] for k in range(3)) if r is not None else None for r in rawi]
+    return field, bias, spread
+
+
+def session_samples(dir_, report_sessions, tail_max_cm=TAIL_MAX_CM, mag_source=MAG_SOURCE):
     """一个会话 → [(x_cm, y_cm, |B|, Bz, Bh, t_ms)]。"""
     rep = {"name": dir_.name, "segments": [], "warnings": [], "samples": 0, "dropped": {}}
     report_sessions.append(rep)
@@ -200,13 +238,25 @@ def session_samples(dir_, report_sessions, tail_max_cm=TAIL_MAX_CM):
     anchors = load_anchors(dir_ / "anchors.csv")
     segs = build_segments(anchors, pose, rep)
     t, acc, mag, _ = load_imu(dir_)
-    feats = compute_features(t, acc, mag)
     jumps = calibration_jumps(dir_)
-    bad_secs = set()
-    if jumps:
-        for j in jumps["jumps"]:
-            bad_secs.update(range(j["t_s"] - JUMP_GUARD_S, j["t_s"] + JUMP_GUARD_S + 1))
     rep["calibration_jumps"] = len(jumps["jumps"]) if jumps else None
+    bad_secs = set()
+    rf = raw_field(dir_, t, mag) if mag_source == "raw" else None
+    if rf:
+        field, bias, spread = rf
+        rep["mag_source"] = "raw"
+        rep["raw_bias_uT"] = [round(b, 2) for b in bias]
+        rep["ios_bias_drift_uT"] = [round(spread[0], 2), round(spread[1], 2)]
+        # 原始磁力计没有 iOS 重新校准的跳变，不用丢那几秒；插值不到的样本用校准值顶上并标记
+        keep = [f is not None for f in field]
+        mag = [f if f is not None else m for f, m in zip(field, mag)]
+        rep["raw_missing"] = keep.count(False)
+    else:
+        rep["mag_source"] = "calibrated"
+        if jumps:
+            for j in jumps["jumps"]:
+                bad_secs.update(range(j["t_s"] - JUMP_GUARD_S, j["t_s"] + JUMP_GUARD_S + 1))
+    feats = compute_features(t, acc, mag)
 
     for s in segs:
         rep["segments"].append({
@@ -401,13 +451,13 @@ def discriminability(grid, cells, sigmas, crosses, window_m=10.0, min_len_m=20.0
 # ---------------------------------------------------------------- 主流程
 
 def run(map_path, session_paths, out_path=None, cell=50.0, points_path=None, report_path=None, do_disc=True,
-        truth_dir=None, tail_max_cm=TAIL_MAX_CM):
+        truth_dir=None, tail_max_cm=TAIL_MAX_CM, mag_source=MAG_SOURCE):
     width, height, crosses = load_map(map_path)
     grid = Grid(width, height, cell)
     report = {"map": {"width_cm": width, "height_cm": height, "crosses": len(crosses)}, "sessions": [], "warnings": []}
     for sp in session_paths:
         d = resolve_session_dir(Path(sp))
-        samples = session_samples(d, report["sessions"], tail_max_cm)
+        samples = session_samples(d, report["sessions"], tail_max_cm, mag_source)
         for x, y, b, bz, bh, _ in samples:
             grid.add(x, y, (b, bz, bh))
         if truth_dir and samples:
@@ -447,6 +497,8 @@ def run(map_path, session_paths, out_path=None, cell=50.0, points_path=None, rep
     out = {
         "mapId": 1, "floorId": 1, "floorName": "地磁地图",
         "width": width, "height": height, "mapElementList": [], "markPoints": markpoints,
+        # 磁场来源：App 实时定位要用同一种算法（raw = 原始磁力计减会话偏置中位数）
+        "magSource": "raw" if all(s.get("mag_source") == "raw" for s in report["sessions"]) else "calibrated",
         "magField": {"cellCm": cell, "cols": grid.cols, "rows": grid.rows,
                      "cells": [r3(c) for c in cells], "sigma": [r3(s) for s in sigmas], "counts": grid.n},
     }
@@ -461,7 +513,9 @@ def print_report(rep):
     f = rep["field"]
     print(f"地图 {rep['map']['width_cm'] / 100:.0f} × {rep['map']['height_cm'] / 100:.0f} m，{rep['map']['crosses']} 条通道")
     for s in rep["sessions"]:
-        print(f"\n会话 {s['name']}：用到 {s['samples']} 个样本，校准跳变 {s.get('calibration_jumps')}")
+        print(f"\n会话 {s['name']}：用到 {s['samples']} 个样本，磁场来源 {s.get('mag_source')}，iOS 重新校准 {s.get('calibration_jumps')} 次")
+        if s.get("raw_bias_uT"):
+            print(f"  手机自带磁场偏置 {s['raw_bias_uT']} µT；iOS 校准值相对它的漂移 {s['ios_bias_drift_uT'][0]}～{s['ios_bias_drift_uT'][1]} µT")
         for w in s["warnings"]:
             print(f"  ! {w}")
         for g in s["segments"]:
@@ -492,9 +546,11 @@ def main():
     ap.add_argument("--truth-dir", type=Path, help="把对齐后的位置真值导出到这个目录（每个会话一个 csv）")
     ap.add_argument("--tail-max-m", type=float, default=TAIL_MAX_CM / 100,
                     help="最后一个锚点之后最多沿用多少米路程（默认 60）。锚点越多越可以放大这个数，只有一个锚点时别超过 80")
+    ap.add_argument("--mag-source", choices=["raw", "calibrated"], default=MAG_SOURCE,
+                    help="raw = 原始磁力计减会话偏置中位数（默认，不受 iOS 重新校准影响）；calibrated = iOS 校准后磁场")
     ap.add_argument("--no-discriminability", action="store_true", help="跳过平行通道相似度分析（大地图较慢）")
     a = ap.parse_args()
-    rep, _ = run(a.map, a.sessions, a.out, a.cell, a.points, a.report, not a.no_discriminability, a.truth_dir, a.tail_max_m * 100)
+    rep, _ = run(a.map, a.sessions, a.out, a.cell, a.points, a.report, not a.no_discriminability, a.truth_dir, a.tail_max_m * 100, a.mag_source)
     print_report(rep)
     print(f"\n已写入 {a.out}")
 

@@ -86,10 +86,30 @@ let accuracyByT: [Int64: Int] = Dictionary(rows(sessionDir + "/imu.csv").compact
     return (t, a) }, uniquingKeysWith: { a, _ in a })
 var rawIdx = 0
 var trustNow = 1.0
+// 磁场来源与地图一致：地图是 raw（原始磁力计减偏置）时，这边也一样，偏置用开始以来的中位数（与 App 相同）
+let mapSource: String = arg("--magmap").flatMap { try? Data(contentsOf: URL(fileURLWithPath: $0)) }.map(StoreDataLoader.loadMagSource) ?? "calibrated"
+let useRaw = mapSource == "raw" && !rawMag.isEmpty && !CommandLine.arguments.contains("--calibrated")
+let biasTracker = RawBiasTracker()
+var featIdx = 0
+/// 处理一个 IMU 样本，返回最新特征。raw 模式：特征按原始磁力计的时刻逐个算，重力方向来自加速度。
+func featureStep(_ s: IMUSample) -> MagneticFeature? {
+    guard useRaw else { return extractor.process(s) }
+    extractor.updateGravity(s)
+    if let r = rawMag.isEmpty ? nil : rawMag[min(rawIdx, rawMag.count - 1)], abs(r.t - s.tMs) <= 20 {
+        biasTracker.add(tMs: s.tMs, raw: r.v, calibrated: (s.mx, s.my, s.mz))
+    }
+    guard biasTracker.isReady else { return extractor.process(magnetic: (s.mx, s.my, s.mz), tMs: s.tMs) }
+    var f: MagneticFeature?
+    while featIdx < rawMag.count && rawMag[featIdx].t <= s.tMs {
+        if let m = biasTracker.corrected(rawMag[featIdx].v) { f = extractor.process(magnetic: m, tMs: rawMag[featIdx].t) }
+        featIdx += 1
+    }
+    return f
+}
 func updateTrust(_ s: IMUSample) {
     while rawIdx + 1 < rawMag.count && rawMag[rawIdx + 1].t <= s.tMs { rawIdx += 1 }
     let raw = rawMag.isEmpty ? nil : (abs(rawMag[rawIdx].t - s.tMs) <= 20 ? rawMag[rawIdx].v : nil)
-    trustNow = trustMon.update(tMs: s.tMs, calibrated: (s.mx, s.my, s.mz), raw: raw, accuracy: accuracyByT[s.tMs] ?? 2)
+    trustNow = trustMon.update(tMs: s.tMs, calibrated: (s.mx, s.my, s.mz), raw: useRaw ? nil : raw, accuracy: accuracyByT[s.tMs] ?? 2)
 }
 var localizer: MagneticLocalizer?
 if let f = field {
@@ -143,7 +163,7 @@ if useVIO {
     var accum = Point2.zero
     var k = 0
     for p in poses {
-        while k < imu.count && imu[k].tMs <= p.t { updateTrust(imu[k]); latestFeature = extractor.process(imu[k]) ?? latestFeature; k += 1 }
+        while k < imu.count && imu[k].tMs <= p.t { updateTrust(imu[k]); latestFeature = featureStep(imu[k]) ?? latestFeature; k += 1 }
         var delta = Point2.zero
         if cold {
             if let la = lastA, p.ok { delta = p.a - la }
@@ -162,7 +182,8 @@ if useVIO {
 } else {
     for s in imu {
         updateTrust(s)
-        let feat = extractor.process(s)
+        if let f = featureStep(s) { latestFeature = f }
+        let feat = latestFeature
         guard let o = fusion.process(s) else { continue }
         let delta = lastPDR.map { o.position - $0 } ?? .zero
         lastPDR = o.position
@@ -206,5 +227,5 @@ if let depthPath = arg("--depth"), !storeMap.physicalShelves.isEmpty {
     print("  判读：中位误差在 30 cm 以内，且样本数足够，才适合把「激光雷达」切到「参与定位」；")
     print("        误差很大说明深度换算、货架摆放与地图不一致，先不要打开。")
 }
-print("磁场可信度：发现系统重新校准 \(trustMon.jumpCount) 次")
+print("磁场可信度：发现系统重新校准 \(trustMon.jumpCount) 次；磁场来源 \(useRaw ? "原始磁力计减偏置" : "iOS 校准后")")
 if let path = arg("--out") { try? out.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8) }

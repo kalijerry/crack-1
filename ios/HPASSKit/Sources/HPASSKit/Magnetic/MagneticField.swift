@@ -118,6 +118,12 @@ extension StoreDataLoader {
         return MagneticFieldMap(widthCm: w, heightCm: h, cellCm: cell, cells: cells, sigmas: sigmas)
     }
 
+    /// 地图里磁场的来源：`raw`（原始磁力计减会话偏置中位数）或 `calibrated`（iOS 校准后，旧地图）。
+    public static func loadMagSource(_ data: Data) -> String {
+        guard let root = try? unwrap(data) as? [String: Any] else { return "calibrated" }
+        return root["magSource"] as? String ?? "calibrated"
+    }
+
     /// 从地图 JSON 读手动定的点位（`markPoints`）。没有就返回空数组。
     public static func loadMarkPoints(_ data: Data) throws -> [MarkPoint] {
         guard let root = try unwrap(data) as? [String: Any] else {

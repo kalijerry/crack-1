@@ -554,6 +554,7 @@ struct MagneticView: View {
                         .foregroundStyle(engine.magTrust >= 0.8 ? .green : (engine.magTrust > 0 ? .orange : .red))
                 }
                 row("持握", engine.posture.title)
+                if !engine.magSourceText.isEmpty { row("磁场来源", engine.magSourceText).font(.footnote) }
                 if engine.useVisualOdometry {
                     HStack {
                         Text("视觉里程计")

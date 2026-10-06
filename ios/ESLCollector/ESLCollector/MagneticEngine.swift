@@ -89,6 +89,11 @@ private final class MagPipeline {
     var vioRaw = false
     var rawLastA: Point2?
 
+    // 磁场来源：地图用「原始磁力计减偏置」建的，实时也必须一样
+    var useRawMag = false
+    let biasTracker = RawBiasTracker()
+    var lastRawT: Int64?
+
     // 深度横向距离
     var lateralMode: DepthMode = .off
     var pendingLateral: LateralObservation?
@@ -158,6 +163,8 @@ final class MagneticEngine: ObservableObject {
     @Published private(set) var vioAligned = false
     @Published private(set) var vioProgress = 0.0
     @Published private(set) var lateralText = ""
+    /// 实时用的磁场来源（与地图一致）
+    @Published private(set) var magSourceText = ""
     /// 地图 → ARKit 的变换（视觉里程计已对齐、且不是冷启动的原始模式时才有），给 AR 叠加用
     @Published private(set) var arAlignment: MapARTransform?
     @Published private(set) var arFloorY: Double?
@@ -732,8 +739,14 @@ final class MagneticEngine: ObservableObject {
 
     private func startMotion(mode: Phase) {
         let pipe = self.pipe
+        let rawMode = mode != .calibrating && MagMapStore.shared.magSource == "raw"
+        magSourceText = rawMode ? "原始磁力计（估偏置中）" : "iOS 校准后"
         queue.sync {
             pipe.mode = mode
+            pipe.useRawMag = rawMode
+            pipe.biasTracker.reset()
+            pipe.lastRaw = nil
+            pipe.lastRawT = nil
             pipe.extractor.reset()
             pipe.latest = nil
             pipe.calSamples = []
@@ -749,10 +762,19 @@ final class MagneticEngine: ObservableObject {
         if motion.manager.isMagnetometerAvailable && mode != .calibrating {
             motion.manager.magnetometerUpdateInterval = 0.02
             let queue = self.queue
+            let epochOffset = Date().timeIntervalSince1970 - ProcessInfo.processInfo.systemUptime
             motion.manager.startMagnetometerUpdates(to: rawMagQueue) { d, _ in
                 guard let d else { return }
                 let v = (d.magneticField.x, d.magneticField.y, d.magneticField.z)
-                queue.async { pipe.lastRaw = v }
+                let t = Int64(((epochOffset + d.timestamp) * 1000).rounded())
+                queue.async {
+                    pipe.lastRaw = v
+                    pipe.lastRawT = t
+                    // raw 模式：特征按原始磁力计的时刻算（重力方向来自加速度），不受 iOS 重新校准影响
+                    if pipe.useRawMag, let m = pipe.biasTracker.corrected(v) {
+                        pipe.latest = pipe.extractor.process(magnetic: m, tMs: t) ?? pipe.latest
+                    }
+                }
             }
         }
         thermal = ProcessInfo.processInfo.thermalState
@@ -787,10 +809,27 @@ final class MagneticEngine: ObservableObject {
         let sample = HPASSKit.IMUSample(tMs: s.tMs, ax: s.acc.0, ay: s.acc.1, az: s.acc.2,
                                         gx: s.gyr.0, gy: s.gyr.1, gz: s.gyr.2,
                                         mx: s.mag.0, my: s.mag.1, mz: s.mag.2)
-        let feat = pipe.extractor.process(sample)
-        pipe.latest = feat
+        let feat: MagneticFeature?
+        if pipe.useRawMag {
+            pipe.extractor.updateGravity(sample)
+            if let r = pipe.lastRaw, let rt = pipe.lastRawT, abs(rt - s.tMs) <= 30 {
+                pipe.biasTracker.add(tMs: s.tMs, raw: r, calibrated: s.mag)
+            }
+            if pipe.biasTracker.isReady {
+                feat = pipe.latest
+            } else {
+                // 偏置还没估出来（开始的前几秒）：先用校准后磁场
+                feat = pipe.extractor.process(magnetic: s.mag, tMs: s.tMs)
+                pipe.latest = feat
+            }
+        } else {
+            feat = pipe.extractor.process(sample)
+            pipe.latest = feat
+        }
         pipe.magAccuracy = s.magAccuracy
-        pipe.trustNow = pipe.trustMon.update(tMs: s.tMs, calibrated: s.mag, raw: pipe.lastRaw, accuracy: s.magAccuracy)
+        // raw 模式下系统重新校准不影响读数，可信度只看精度和总强度
+        pipe.trustNow = pipe.trustMon.update(tMs: s.tMs, calibrated: s.mag, raw: pipe.useRawMag ? nil : pipe.lastRaw,
+                                             accuracy: s.magAccuracy)
         pipe.posture = pipe.hold.process(sample)
         switch pipe.mode {
         case .idle:
@@ -1015,6 +1054,8 @@ final class MagneticEngine: ObservableObject {
         let pdr = pipe.pdrDistanceCm
         let lat = Self.lateralDescription(pipe.lastLatLeft, pipe.lastLatRight)
         let alignment = (pipe.vioEnabled && !pipe.vioRaw && pipe.vioActive) ? pipe.aligner.transform : nil
+        let rawReady = pipe.useRawMag ? pipe.biasTracker.bias : nil
+        let rawMode = pipe.useRawMag
         Task { @MainActor in
             self.feature = f
             self.magTrust = trust
@@ -1029,6 +1070,10 @@ final class MagneticEngine: ObservableObject {
                 self.vioProgress = progress
                 self.lateralText = lat
                 if self.arAlignment != alignment { self.arAlignment = alignment }
+                if rawMode {
+                    let txt = rawReady.map { "原始磁力计（偏置 \(Int($0.0)), \(Int($0.1)), \(Int($0.2)) µT）" } ?? "原始磁力计（估偏置中）"
+                    if self.magSourceText != txt { self.magSourceText = txt }
+                }
                 self.comparePedometer(pdrCm: pdr)
             }
         }

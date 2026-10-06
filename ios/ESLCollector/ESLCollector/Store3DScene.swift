@@ -129,6 +129,8 @@ final class Store3DScene {
         let black = Self.material(S3Color(white: 0.05, alpha: 1), lit: false)
         let faint = Self.material(S3Color(red: 0.2, green: 0.4, blue: 0.9, alpha: 0.22), lit: false)
         let thin = Self.material(S3Color(white: 0.45, alpha: 0.5), lit: false)
+        let orangeBand = Self.material(S3Color(red: 1.0, green: 0.6, blue: 0.1, alpha: 0.40), lit: false)
+        let orange = Self.material(S3Color(red: 1.0, green: 0.55, blue: 0.0, alpha: 1), lit: false)
 
         for (i, c) in crosses.enumerated() {
             let len = c.a.distance(to: c.b)
@@ -160,6 +162,9 @@ final class Store3DScene {
                 switch st {
                 case .none:
                     piece(from: s0, to: s1, width: 8, y: 0.012, height: 0.004, material: thin)
+                case .partial:
+                    piece(from: s0, to: s1, width: c.lineWidth, y: 0.012, height: 0.004, material: orangeBand)
+                    piece(from: s0, to: s1, width: 22, y: 0.02, height: 0.006, material: orange)
                 case .isolated:
                     piece(from: s0, to: s1, width: c.lineWidth, y: 0.012, height: 0.004, material: band)
                     piece(from: s0, to: s1, width: 22, y: 0.02, height: 0.006, material: green)

@@ -64,8 +64,22 @@ final class SurveyCoverage: ObservableObject {
     var fractions: [Double] { segments.indices.map { fraction($0) } }
 
     /// 每条通道每 1 m 一段的状态：没采完 / 已采完但孤立 / 已采完且已和别的路段关联（共用路口）。
+    /// 每段的状态：双向采完的按是否关联分「孤立 / 已关联」；只走了一个方向的标「单向」；其余「没采」。
     var states: [[CoverageState]] {
-        CoverageLinker.link(crosses: segments, done: doneBins, binCm: Self.binCm)
+        var s = CoverageLinker.link(crosses: segments, done: doneBins, binCm: Self.binCm)
+        for i in s.indices {
+            for b in s[i].indices where s[i][b] == .none && (forward[i][b] || backward[i][b]) {
+                s[i][b] = .partial
+            }
+        }
+        return s
+    }
+
+    /// 只走了一个方向的长度（m）。
+    var oneWayMeters: Double {
+        forward.indices.reduce(0.0) { acc, i in
+            acc + Double(zip(forward[i], backward[i]).filter { $0 != $1 }.count) * Self.binCm / 100
+        }
     }
 
     /// 每条通道每 1 m 一段：两个方向都走过才算采完。

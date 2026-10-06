@@ -532,8 +532,17 @@ struct MagneticView: View {
             let done = survey.coverage.coveredMeters
             row("已覆盖（双向算满）", "\(Int(done)) / \(Int(total)) m")
             ProgressView(value: total > 0 ? done / total : 0)
-            Text("地图上：带绿带的是已经采过的段（两个方向都走完才算）。中间的线：绿色实线 = 这一段还是孤立的；黑色虚线 = 已经和别的路段通过路口关联起来了。全场采完、连通之后，会全部变成黑色虚线。")
-                .font(.footnote).foregroundStyle(.secondary)
+            let oneWay = survey.coverage.oneWayMeters
+            if oneWay > 0 {
+                row("只走了一个方向", "\(Int(oneWay)) m").foregroundStyle(.orange)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                legendRow(color: .secondary.opacity(0.5), dashed: false, band: false, text: "淡灰细线：还没走")
+                legendRow(color: .orange, dashed: false, band: true, text: "橙色：只走了一个方向，要反方向再走一遍")
+                legendRow(color: .green, dashed: false, band: true, text: "绿带 + 绿色实线：双向采完，还是孤立的一段")
+                legendRow(color: .primary, dashed: true, band: true, text: "绿带 + 黑色虚线：双向采完，已和别的路段关联")
+            }
+            .font(.footnote)
             if !survey.isRunning {
                 Button("清空采集进度", role: .destructive) { confirmResetCoverage = true }
                     .confirmationDialog("清空采集进度？已录的会话文件不受影响。", isPresented: $confirmResetCoverage, titleVisibility: .visible) {
@@ -541,6 +550,21 @@ struct MagneticView: View {
                     }
             }
         } header: { Text("采集进度") }
+    }
+
+    /// 采集进度图例的一行：一小段示意线 + 说明。
+    private func legendRow(color: Color, dashed: Bool, band: Bool, text: String) -> some View {
+        HStack(spacing: 8) {
+            ZStack {
+                if band {
+                    Capsule().fill((color == .primary ? Color.green : color).opacity(0.3)).frame(width: 34, height: 10)
+                }
+                Path { p in p.move(to: CGPoint(x: 0, y: 5)); p.addLine(to: CGPoint(x: 34, y: 5)) }
+                    .stroke(color, style: StrokeStyle(lineWidth: band ? 2 : 1, dash: dashed ? [5, 4] : []))
+                    .frame(width: 34, height: 10)
+            }
+            Text(text).foregroundStyle(.secondary)
+        }
     }
 
     private var surveyInstruction: String {

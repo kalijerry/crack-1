@@ -75,15 +75,6 @@ export default {
           method: "POST",
           body: JSON.stringify({ type: "event", name: "session_uploaded", session: name, t: Date.now() }),
         }));
-        // 通知 GitHub Actions 融合建图（配了 GITHUB_TOKEN 才发；连着传好几个会话时 Actions 只会排一个）
-        if (env.GITHUB_TOKEN) {
-          ctx.waitUntil(fetch(`https://api.github.com/repos/${env.GITHUB_REPO || "kalijerry/crack-1"}/dispatches`, {
-            method: "POST",
-            headers: { authorization: "Bearer " + env.GITHUB_TOKEN, accept: "application/vnd.github+json",
-                       "user-agent": "hpass-telemetry", "content-type": "application/json" },
-            body: JSON.stringify({ event_type: "session_uploaded", client_payload: { session: name } }),
-          }).catch(() => {}));
-        }
         return json({ ok: true, key });
       }
       if (request.method === "GET") {

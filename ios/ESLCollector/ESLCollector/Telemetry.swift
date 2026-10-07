@@ -21,7 +21,11 @@ final class Telemetry: ObservableObject {
         didSet { UserDefaults.standard.set(serverURL, forKey: "telemetryURL") }
     }
     @Published var enabled: Bool = UserDefaults.standard.bool(forKey: "telemetryEnabled") {
-        didSet { UserDefaults.standard.set(enabled, forKey: "telemetryEnabled"); enabled ? connect() : disconnect() }
+        didSet {
+            UserDefaults.standard.set(enabled, forKey: "telemetryEnabled")
+            enabled ? connect() : disconnect()
+            if enabled { Task { await CloudMaps.shared.refresh() } }     // 刚连上（比如重装后）就把云端地图装上
+        }
     }
     /// 采集结束自动上传会话
     @Published var autoUpload: Bool = UserDefaults.standard.object(forKey: "telemetryAutoUpload") as? Bool ?? true {

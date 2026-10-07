@@ -68,6 +68,8 @@ struct ContentView: View {
             AppLog.i("应用", "启动")
             _ = MapLibrary.shared          // 第一次用：把现在的地图收进地图库
         }
+        // 启动时拉一次云端：正常模式自动装上云端正式地图（含已采涂色、价签表），重装 App 后打开就有
+        .task { await CloudMaps.shared.refresh() }
     }
 
     private static func name(of tab: Tab) -> String {

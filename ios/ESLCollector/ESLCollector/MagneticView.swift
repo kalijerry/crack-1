@@ -183,6 +183,7 @@ struct MagneticView: View {
                          laneGuides: surveying && paintMode ? survey.coverage.laneGuides : [],
                          zoneSegments: isSurvey && paintMode ? survey.coverage.zoneSegments : [],
                          zoneEntry: isSurvey && paintMode ? survey.coverage.zoneEntry : nil,
+                         zoneLabels: isSurvey && paintMode ? survey.coverage.zoneLabels : [],
                          nextLane: surveying && paintMode ? survey.coverage.nextLane.map { ($0.from, $0.to) } : nil,
                          alertSpots: step == .live || isSurvey ? engine.changedSpots : [],
                          highlightShelf: step == .live ? engine.findTarget?.shelfCode : nil,
@@ -623,7 +624,18 @@ struct MagneticView: View {
                     Label("全部区域都采完了", systemImage: "checkmark.seal")
                 }
             }
-            Text("全店分成 \(cov.zoneStatus.count) 个区域（每块约 25 分钟），地图上紫色是本次区域，橙色箭头只在本区里规划。融合后各区域进度会更新，开了头的先采完，再接着采挨着已采部分的。")
+            let done = cov.zoneStatus.filter(\.done)
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(cov.zoneStatus, id: \.id) { z in
+                    HStack(spacing: 6) {
+                        Text(z.name).font(.caption.bold()).frame(width: 52, alignment: .leading)
+                        ProgressView(value: min(z.fraction / 0.85, 1)).tint(z.done ? .green : (z.id == cov.zoneId ? .purple : .gray))
+                        Text(z.done ? "已采好，不用采" : (z.id == cov.zoneId ? "本次 · \(Int(z.fraction * 100))%" : "\(Int(z.fraction * 100))%"))
+                            .font(.caption2).foregroundStyle(z.done ? .green : .secondary).frame(width: 92, alignment: .trailing)
+                    }
+                }
+            }
+            Text("全店 \(cov.zoneStatus.count) 个区域（每块约 25 分钟），已采好 \(done.count) 个。地图颜色：深 / 浅绿 = 云端确认已采好，不用再采；蓝 = 本机刚采、等云端融合确认；灰 = 还没采；紫 = 本次区域，紫色圈 = 进区入口。")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }

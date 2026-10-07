@@ -222,6 +222,9 @@ public final class CoveragePaint {
         return true
     }
 
+    /// 一份存盘涂色的每格趟数（尺寸 / 通道数和本网格一致才返回）
+    public func counts(of d: Data) -> [UInt8]? { CoveragePaint.counts(of: d, cols: cols, rows: rows, crosses: crosses.count) }
+
     /// 两份存盘数据直接按格取大（不用建网格；头不一致就用 b）
     public static func mergeSerialized(_ a: Data?, _ b: Data) -> Data {
         guard let a, a.count == b.count, a.prefix(12) == b.prefix(12) else { return b }

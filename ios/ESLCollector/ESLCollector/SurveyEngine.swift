@@ -56,6 +56,15 @@ final class SurveyCoverage: ObservableObject {
     @Published private(set) var zoneSegments: [(Point2, Point2, Double)] = []
     private var lastZoneStatus = Date.distantPast
     var zone: SurveyZones.Zone? { zones?.zone(zoneId) }
+    /// 地图上每个区域中心的标签：位置、编号、状态（done = 已采好不用采，current = 本次区域）
+    var zoneLabels: [(p: Point2, text: String, done: Bool, current: Bool)] {
+        guard let zs = zones else { return [] }
+        return zs.zones.map { z in
+            let st = zoneStatus.first { $0.id == z.id }
+            let pct = Int((st?.fraction ?? 0) * 100)
+            return (z.center, st?.done == true ? "\(z.id) ✓" : "\(z.id) · \(pct)%", st?.done == true, z.id == zoneId)
+        }
+    }
     var currentZoneStatus: SurveyZones.Status? { zoneStatus.first { $0.id == zoneId } }
     private var paintDirty = false
     private var lastPaintImage = Date.distantPast
@@ -83,9 +92,21 @@ final class SurveyCoverage: ObservableObject {
         zones = crosses.isEmpty ? nil : SurveyZones(crosses: crosses, radiusCm: p.radiusCm)
         zoneId = nil
         if let d = try? Data(contentsOf: Self.paintURL) { p.load(d) }
+        loadCloudPaint(into: p)
         paintGrid = p
         rebuildPaintImage()
         assignZone()
+    }
+
+    /// 云端确认过的涂色（每格趟数）；画图时这些格是绿色，本机涂了但云端没有的是蓝色（待确认）
+    private(set) var cloudCounts: [UInt8]?
+
+    private func loadCloudPaint(into p: CoveragePaint) {
+        cloudCounts = nil
+        guard let id = MapLibrary.shared.activeId,
+              let d = try? Data(contentsOf: MapLibrary.shared.cloudPaintURL(id)), let c = p.counts(of: d) else { return }
+        cloudCounts = c
+        p.merge(d)
     }
 
     // MARK: 采集分区
@@ -168,16 +189,24 @@ final class SurveyCoverage: ObservableObject {
     func rebuildPaintImage() {
         paintDirty = false
         lastPaintImage = Date()
-        paintLayer = paintGrid.flatMap(PaintLayer.make)
+        paintLayer = paintGrid.flatMap { PaintLayer.make($0, cloud: cloudCounts) }
     }
 
-    /// 云端地图包带来的涂色已经合并进文件，读回来（和内存里的取大，采集中刚涂的不丢）
+    /// 装上了新的云端版本：涂色 = 云端确认的；正在采集时本次已涂的保留（这次的会话云端还没判）
     func mergePaintFromDisk() {
-        guard let p = paintGrid, let d = try? Data(contentsOf: Self.paintURL), p.merge(d) else { return }
+        guard let p = paintGrid else { return }
+        let keep = p.serialized()
+        p.reset()
+        try? FileManager.default.removeItem(at: Self.paintURL)
+        loadCloudPaint(into: p)
+        if sessionActive { p.merge(keep) }
         rebuildPaintImage()
         refreshZone()
         revision += 1
     }
+
+    /// 采集中（SurveyEngine 开始 / 结束时设置）
+    var sessionActive = false
 
     /// 换了地图：下次 configure / configurePaint 一定重建并从（新地图的）文件读
     func invalidate() {
@@ -280,6 +309,7 @@ final class SurveyCoverage: ObservableObject {
     func reset() {
         paintGrid?.reset()
         try? FileManager.default.removeItem(at: Self.paintURL)
+        if let p = paintGrid { loadCloudPaint(into: p) }     // 云端确认的不清
         rebuildPaintImage()
         currentCorridorPaint = nil
         for i in forward.indices {
@@ -440,6 +470,7 @@ final class SurveyEngine: ObservableObject {
                                 walkable: store.walkableMap())
         coverage.breakPaintStroke()
         if coverage.zoneId == nil { coverage.assignZone() }
+        coverage.sessionActive = true
         lastError = nil
         recorder.deviceLabel = "survey"
         recorder.recordBLE = true          // 价签广播顺便录下来，生成磁场图时自动做成蓝牙指纹
@@ -497,6 +528,7 @@ final class SurveyEngine: ObservableObject {
     }
 
     func stop() {
+        coverage.sessionActive = false
         guard stage != .idle else { return }
         if stage == .tracking, let p = position, let a = latestA {
             writeAnchor(kind: "end", map: p, ar: a, heading: nil, note: "")
@@ -793,8 +825,9 @@ final class PaintLayer {
         self.radiusCm = radiusCm
     }
 
-    /// 通道里没涂：淡灰；走过一趟：浅绿；两趟以上：深绿。通道外透明。
-    static func make(_ p: CoveragePaint) -> PaintLayer? {
+    /// 通道里没涂：淡灰；云端确认已采好：浅绿（一趟）/ 深绿（两趟以上）；本机涂了、云端还没确认：蓝。通道外透明。
+    /// cloud = nil（开发模式本机建图、还没融合过）时按本机趟数画绿色。
+    static func make(_ p: CoveragePaint, cloud: [UInt8]? = nil) -> PaintLayer? {
         let b = p.bbox
         let w = b.i1 - b.i0 + 1, h = b.j1 - b.j0 + 1
         guard w > 0, h > 0 else { return nil }
@@ -806,9 +839,11 @@ final class PaintLayer {
                 let o = (j * w + i) * 4
                 // 预乘 alpha
                 let (r, g, bl, a): (Double, Double, Double, Double)
-                switch p.counts[k] {
-                case 0: (r, g, bl, a) = (0.55, 0.55, 0.58, 0.18)
-                case 1: (r, g, bl, a) = (0.20, 0.78, 0.35, 0.45)
+                let confirmed = cloud.map { $0[k] } ?? p.counts[k]
+                switch (confirmed, p.counts[k]) {
+                case (0, 0): (r, g, bl, a) = (0.55, 0.55, 0.58, 0.18)
+                case (0, _): (r, g, bl, a) = (0.20, 0.55, 0.95, 0.55)
+                case (1, _): (r, g, bl, a) = (0.20, 0.78, 0.35, 0.45)
                 default: (r, g, bl, a) = (0.10, 0.55, 0.22, 0.80)
                 }
                 px[o] = UInt8(r * a * 255); px[o + 1] = UInt8(g * a * 255); px[o + 2] = UInt8(bl * a * 255); px[o + 3] = UInt8(a * 255)

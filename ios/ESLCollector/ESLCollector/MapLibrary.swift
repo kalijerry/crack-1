@@ -56,6 +56,8 @@ final class MapLibrary: ObservableObject {
 
     private func dir(_ id: String) -> URL { Self.root.appendingPathComponent(id, isDirectory: true) }
     func mapURL(_ id: String) -> URL { dir(id).appendingPathComponent("map.json") }
+    /// 云端融合确认过的采集涂色（地图包带的）
+    func cloudPaintURL(_ id: String) -> URL { dir(id).appendingPathComponent("cloud-paint.bin") }
     static let worldMapFile = "worldmap.arexperience"
     /// 这张地图的视觉特征地图（房间扫描时存的）；没有为 nil
     func worldMapURL(_ id: String) -> URL? {
@@ -250,10 +252,11 @@ final class MapLibrary: ObservableObject {
         try JSONSerialization.data(withJSONObject: root).write(to: ws.appendingPathComponent("magmap.json"), options: .atomic)
         let bleURL = ws.appendingPathComponent("ble-fingerprint.json")
         if let b = c.ble { try JSONEncoder().encode(b).write(to: bleURL, options: .atomic) } else { try? fm.removeItem(at: bleURL) }
-        // 采集涂色：和本机的合并（每格取大），本机在云端融合之后又采的不会丢
+        // 采集涂色：云端确认的（只算质量筛选合格、进了磁场图的数据）单独存在地图目录里，换地图、重装后拉一次都在。
+        // 本机涂色只表示「上次融合之后本机又采的、待云端确认」，装上新版本就清掉（之前的会话已经由云端判过了）。
         if let p = c.paint {
-            let url = ws.appendingPathComponent("survey-paint.bin")
-            try CoveragePaint.mergeSerialized(try? Data(contentsOf: url), p).write(to: url, options: .atomic)
+            try p.write(to: cloudPaintURL(m.id), options: .atomic)
+            try? fm.removeItem(at: ws.appendingPathComponent("survey-paint.bin"))
             if isActive { NotificationCenter.default.post(name: .surveyPaintFileChanged, object: nil) }
         }
         // 价签位置表（价签 → 绑定的货架、商品）：包里带了就用包里的（比单独拉的新）
@@ -367,7 +370,7 @@ struct MapLibrarySection: View {
 }
 
 extension Notification.Name {
-    /// 在用地图的涂色文件被（云端地图包）改了，采集页要读回来
+    /// 在用地图的云端涂色更新了（本机待确认的涂色已清掉），采集页要重新读
     static let surveyPaintFileChanged = Notification.Name("surveyPaintFileChanged")
 }
 
@@ -390,10 +393,13 @@ final class CloudMaps: ObservableObject {
             if !StoreDataStore.shared.hasEslLocations, let d = await Telemetry.shared.downloadEslLocations() {
                 try? StoreDataStore.shared.installEslLocations(d)
             }
-            // 本机已有、云端更新了的地图自动更新（在用的那张正在定位 / 采集时也会立刻生效，所以只在空闲时调用）
+            // 本机已有、云端更新了的地图自动更新（在用的那张正在定位 / 采集时也会立刻生效，所以只在空闲时调用）；
+            // 正常模式下本机没有的云端正式地图也自动装上（重装 App 后不用一张张点下载，采集人员一打开就有地图和已采涂色）
             if autoUpdate {
                 for c in list {
-                    if let e = MapLibrary.shared.entries.first(where: { $0.id == c.id }), (e.cloudVersion ?? 0) < c.version {
+                    if let e = MapLibrary.shared.entries.first(where: { $0.id == c.id }) {
+                        if (e.cloudVersion ?? 0) < c.version { await download(c) }
+                    } else if !AppMode.shared.developer && c.isCloudFused {
                         await download(c)
                     }
                 }

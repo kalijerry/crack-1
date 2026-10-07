@@ -8,7 +8,8 @@ import Foundation
 ///
 /// 格式（压缩前，小端）："HPMP" + u16 版本 + 5 段（u32 长度 + 内容）：说明 JSON、地图 JSON、磁场、蓝牙、视觉特征地图，
 /// 后面可选第 6 段：采集涂色（CoveragePaint.serialized，哪里采过，换手机也能接着补采）；
-/// 第 7 段：价签位置表原文（CSV：价签 → 通道 / 段 / 层 / 商品条码 / 货架图，找价签用）。旧包没有这两段。
+/// 第 7 段：价签位置表原文（CSV：价签 → 通道 / 段 / 层 / 商品条码 / 货架图，找价签用）；
+/// 第 8 段：方向图 JSON（DirectionCoverage.File）。旧包没有这几段。
 public enum MapPackage {
     public struct Meta: Codable, Equatable {
         public var id: String
@@ -44,6 +45,8 @@ public enum MapPackage {
         public var paint: Data?
         /// 价签位置表 CSV 原文
         public var eslCSV: Data?
+        /// 方向图 JSON（DirectionCoverage.File）
+        public var direction: Data?
     }
 
     public enum PackageError: Error, CustomStringConvertible {
@@ -59,7 +62,7 @@ public enum MapPackage {
     // MARK: 打包
 
     public static func encode(meta m: Meta, mapJSON: Data, field: MagneticFieldMap?, ble: BLEFingerprintMap?,
-                              worldMap: Data?, paint: Data? = nil, eslCSV: Data? = nil) throws -> Data {
+                              worldMap: Data?, paint: Data? = nil, eslCSV: Data? = nil, direction: Data? = nil) throws -> Data {
         var meta = m
         meta.fieldCells = field?.coveredCells
         meta.bleTags = ble?.tags.count
@@ -73,6 +76,7 @@ public enum MapPackage {
         section(worldMap ?? Data())
         section(paint ?? Data())
         section(eslCSV ?? Data())
+        section(direction ?? Data())
         return try (out as NSData).compressed(using: .zlib) as Data
     }
 
@@ -88,12 +92,14 @@ public enum MapPackage {
         let f = try section(), b = try section(), w = try section()
         let p = r.atEnd ? Data() : try section()
         let e = r.atEnd ? Data() : try section()
+        let dc = r.atEnd ? Data() : try section()
         return Contents(meta: meta, mapJSON: mapJSON,
                         field: f.isEmpty ? nil : try decodeField(f),
                         ble: b.isEmpty ? nil : try decodeBLE(b),
                         worldMap: w.isEmpty ? nil : w,
                         paint: p.isEmpty ? nil : p,
-                        eslCSV: e.isEmpty ? nil : e)
+                        eslCSV: e.isEmpty ? nil : e,
+                        direction: dc.isEmpty ? nil : dc)
     }
 
     // MARK: 磁场：宽、高、格大小（f32）+ 有数据的格数（u32）+ 每格：下标 u32 + 6 × i16（均值、标准差，单位 0.01 µT）

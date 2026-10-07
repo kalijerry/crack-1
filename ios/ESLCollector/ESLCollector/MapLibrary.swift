@@ -58,6 +58,8 @@ final class MapLibrary: ObservableObject {
     func mapURL(_ id: String) -> URL { dir(id).appendingPathComponent("map.json") }
     /// 云端融合确认过的采集涂色（地图包带的）
     func cloudPaintURL(_ id: String) -> URL { dir(id).appendingPathComponent("cloud-paint.bin") }
+    /// 云端融合确认过的方向图（每条通道每 1 m 两个方向走过没有）
+    func cloudDirectionURL(_ id: String) -> URL { dir(id).appendingPathComponent("cloud-coverage.json") }
     static let worldMapFile = "worldmap.arexperience"
     /// 这张地图的视觉特征地图（房间扫描时存的）；没有为 nil
     func worldMapURL(_ id: String) -> URL? {
@@ -257,7 +259,13 @@ final class MapLibrary: ObservableObject {
         if let p = c.paint {
             try p.write(to: cloudPaintURL(m.id), options: .atomic)
             try? fm.removeItem(at: ws.appendingPathComponent("survey-paint.bin"))
-            if isActive { NotificationCenter.default.post(name: .surveyPaintFileChanged, object: nil) }
+        }
+        if let d = c.direction {
+            try d.write(to: cloudDirectionURL(m.id), options: .atomic)
+            try? fm.removeItem(at: ws.appendingPathComponent("survey-coverage.json"))
+        }
+        if isActive && (c.paint != nil || c.direction != nil) {
+            NotificationCenter.default.post(name: .surveyPaintFileChanged, object: nil)
         }
         // 价签位置表（价签 → 绑定的货架、商品）：包里带了就用包里的（比单独拉的新）
         if let e = c.eslCSV, m.kind == "store" {
@@ -398,7 +406,9 @@ final class CloudMaps: ObservableObject {
             if autoUpdate {
                 for c in list {
                     if let e = MapLibrary.shared.entries.first(where: { $0.id == c.id }) {
-                        if (e.cloudVersion ?? 0) < c.version { await download(c) }
+                        // 旧版 App 装的包没存云端涂色 / 方向图：同一版本也重新装一次
+                        let missing = c.kind == "store" && !FileManager.default.fileExists(atPath: MapLibrary.shared.cloudPaintURL(c.id).path)
+                        if (e.cloudVersion ?? 0) < c.version || missing { await download(c) }
                     } else if !AppMode.shared.developer && c.isCloudFused {
                         await download(c)
                     }

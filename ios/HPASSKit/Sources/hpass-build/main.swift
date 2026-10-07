@@ -197,7 +197,8 @@ do {
     meta.origin = "cloud"
     meta.sessions = keptSessions.count - magExcluded.count
     meta.bleTags = ble?.tags.count
-    let pkg = try MapPackage.encode(meta: meta, mapJSON: mapData, field: rm.field, ble: ble, worldMap: nil, paint: paint?.serialized(), eslCSV: meta.kind == "store" ? eslCSV : nil)
+    let pkg = try MapPackage.encode(meta: meta, mapJSON: mapData, field: rm.field, ble: ble, worldMap: nil, paint: paint?.serialized(), eslCSV: meta.kind == "store" ? eslCSV : nil,
+                                     direction: map.crosses.isEmpty ? nil : try JSONEncoder().encode(DirectionCoverage.build(crosses: map.crosses, tracks: rm.tracks)))
     try pkg.write(to: URL(fileURLWithPath: out))
     print("地图包 \(pkg.count / 1024) KB → \(out)")
     var warnings: [String] = []

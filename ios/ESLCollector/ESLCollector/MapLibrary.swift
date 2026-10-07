@@ -384,6 +384,8 @@ final class CloudMaps: ObservableObject {
                 }
             }
         } catch {
+            // 列表在屏幕外被滚走 / 页面切换时请求会被系统取消，不算失败
+            if Self.isCancelled(error) { return }
             message = "取云端列表失败：\(error)"
         }
     }
@@ -413,9 +415,14 @@ final class CloudMaps: ObservableObject {
             try MapLibrary.shared.install(contents)
             message = "已装上「\(c.name)」（\(d.count / 1024) KB）"
         } catch {
+            if Self.isCancelled(error) { return }
             message = "下载失败：\(error)"
             AppLog.w("地图库", message ?? "")
         }
+    }
+
+    static func isCancelled(_ error: Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled
     }
 
     /// 本机状态：没有 / 旧 / 最新
@@ -469,7 +476,8 @@ struct CloudMapsSection: View {
         } header: { Text("云端地图") } footer: {
             Text("正式版本由云端融合：手机把会话上传到后台（采集结束自动传，旧会话在「采集」页一键上传），云端把所有手机、所有分片的会话融合成一张图（各会话的磁场偏移一起解），这里下载；本机已有的地图云端更新了会自动更新。手动上传的是本机生成的版本，会被下一次云端融合替换。全店一张图压缩后约 0.5～1 MB。")
         }
-        .task { await cloud.refresh() }
+        // 不用 .task：List 里的分段滚出屏幕就会取消它，请求被取消；放到独立任务里跑完
+        .onAppear { Task { await cloud.refresh() } }
     }
 
     static func date(_ ms: Int64) -> String {

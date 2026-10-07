@@ -7,6 +7,7 @@
 // - PUT  /api/maps/<id>          上传地图 JSON（看板画地图用）；GET /api/maps/<id>
 // - PUT  /api/reports/<名字>.json 上传评估报告（hpass-eval 的 --json）；GET /api/reports 列表
 // - GET  /api/logs?day=YYYY-MM-DD 某天的日志分块列表；GET /api/logs/<key> 取一块
+// - PUT  /api/builds/<名字>.ipa   CI 上传安装包（未签名 ipa）；GET /api/builds 列表；GET /api/builds/<名字> 下载
 //
 // 鉴权：所有接口都要口令（secret TOKEN），放在 Authorization: Bearer … 或 ?token=…（WebSocket 用后者）。
 
@@ -161,6 +162,50 @@ export default {
       const o = await env.DATA.get("esl/" + name);
       if (!o) return json({ error: "没有" }, 404);
       return new Response(o.body, { headers: { "content-type": "text/csv; charset=utf-8" } });
+    }
+
+    // 安装包：CI 每次 main 构建完把未签名 ipa 传上来，看板「安装包」里下载
+    if (path === "/api/builds" && request.method === "GET") {
+      const out = [];
+      let cursor;
+      do {
+        const r = await env.DATA.list({ prefix: "builds/", cursor, include: ["customMetadata"] });
+        for (const o of r.objects) {
+          const m = o.customMetadata || {};
+          out.push({ name: o.key.slice("builds/".length), size: o.size, uploaded: o.uploaded,
+                     sha: m.sha || "", message: m.message ? decodeURIComponent(m.message) : "", run: m.run || "" });
+        }
+        cursor = r.truncated ? r.cursor : undefined;
+      } while (cursor);
+      return json(out.sort((a, b) => (a.uploaded < b.uploaded ? 1 : -1)));
+    }
+    m = path.match(/^\/api\/builds\/([^/]+)$/);
+    if (m) {
+      const name = decodeURIComponent(m[1]);
+      if (!safeName(name) || !name.endsWith(".ipa")) return json({ error: "名字不合法" }, 400);
+      const key = "builds/" + name;
+      if (request.method === "PUT") {
+        const h = (k) => request.headers.get(k) || "";
+        await env.DATA.put(key, request.body, {
+          httpMetadata: { contentType: "application/octet-stream" },
+          customMetadata: { sha: h("x-build-sha"), message: h("x-build-message"), run: h("x-build-run") },
+        });
+        // 只留最近 20 个
+        const all = await listPrefix(env, "builds/", 1000);
+        for (const o of all.slice(20)) await env.DATA.delete(o.key);
+        const hub = env.HUB.get(env.HUB.idFromName("main"));
+        await hub.fetch(new Request("https://hub/event", {
+          method: "POST",
+          body: JSON.stringify({ type: "event", name: "build_uploaded", session: name, t: Date.now() }),
+        }));
+        return json({ ok: true, key });
+      }
+      if (request.method === "GET") {
+        const o = await env.DATA.get(key);
+        if (!o) return json({ error: "没有这个安装包" }, 404);
+        return new Response(o.body, { headers: { "content-type": "application/octet-stream",
+          "content-disposition": `attachment; filename="${name}"` } });
+      }
     }
 
     // 评估报告

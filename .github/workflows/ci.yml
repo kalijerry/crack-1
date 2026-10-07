@@ -63,6 +63,22 @@ jobs:
           name: eslcollector-unsigned-ipa
           path: ios/ESLCollector/ESLCollector-unsigned.ipa
           retention-days: 30
+      # main 上的构建同时传到云端后台（Cloudflare R2），看板「安装包」里下载
+      - name: Upload ipa to backend
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        working-directory: ios/ESLCollector
+        env:
+          HPASS_URL: ${{ secrets.HPASS_URL }}
+          HPASS_TOKEN: ${{ secrets.HPASS_TOKEN }}
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          if [ -z "$HPASS_URL" ] || [ -z "$HPASS_TOKEN" ]; then echo "没配后台，跳过"; exit 0; fi
+          NAME="ESLCollector-$(date -u +%Y%m%d-%H%M)-${GITHUB_SHA::7}.ipa"
+          ENC=$(python3 -c 'import os,urllib.parse;print(urllib.parse.quote(os.environ.get("MSG","").splitlines()[0][:100] if os.environ.get("MSG") else ""))')
+          curl -fsS -X PUT --data-binary @ESLCollector-unsigned.ipa \
+            -H "Authorization: Bearer $HPASS_TOKEN" -H "User-Agent: hpass-ci" \
+            -H "x-build-sha: $GITHUB_SHA" -H "x-build-run: $GITHUB_RUN_ID" -H "x-build-message: $ENC" \
+            "${HPASS_URL%/}/api/builds/$NAME"
 
   android:
     name: Android collector

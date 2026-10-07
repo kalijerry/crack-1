@@ -20,6 +20,13 @@ final class SurveyCoverage: ObservableObject {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("survey-coverage.json")
     }
+    private var paintObserver: NSObjectProtocol?
+
+    init() {
+        paintObserver = NotificationCenter.default.addObserver(forName: .surveyPaintFileChanged, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.mergePaintFromDisk() }
+        }
+    }
 
     // MARK: 涂色（Oriient 式：走过的地方按圆圈涂满通道宽度）
 
@@ -115,6 +122,13 @@ final class SurveyCoverage: ObservableObject {
         paintDirty = false
         lastPaintImage = Date()
         paintLayer = paintGrid.flatMap(PaintLayer.make)
+    }
+
+    /// 云端地图包带来的涂色已经合并进文件，读回来（和内存里的取大，采集中刚涂的不丢）
+    func mergePaintFromDisk() {
+        guard let p = paintGrid, let d = try? Data(contentsOf: Self.paintURL), p.merge(d) else { return }
+        rebuildPaintImage()
+        revision += 1
     }
 
     /// 换了地图：下次 configure / configurePaint 一定重建并从（新地图的）文件读

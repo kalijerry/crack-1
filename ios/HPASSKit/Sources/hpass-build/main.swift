@@ -111,7 +111,7 @@ do {
     meta.origin = "cloud"
     meta.sessions = sessions.count
     meta.bleTags = ble?.tags.count
-    let pkg = try MapPackage.encode(meta: meta, mapJSON: mapData, field: r.field, ble: ble, worldMap: nil, paint: paint?.serialized(), eslCSV: eslCSV)
+    let pkg = try MapPackage.encode(meta: meta, mapJSON: mapData, field: r.field, ble: ble, worldMap: nil, paint: paint?.serialized(), eslCSV: meta.kind == "store" ? eslCSV : nil)
     try pkg.write(to: URL(fileURLWithPath: out))
     print("地图包 \(pkg.count / 1024) KB → \(out)")
     var warnings: [String] = []

@@ -87,7 +87,9 @@ def main():
         last = [r for r in reports if r["key"].startswith(f"reports/build_{mid}_")]
         if last and not FORCE:
             prev = get_json("/api/" + last[0]["key"])
-            prev_names = sorted([s["name"] for s in prev.get("sessions", [])] + prev.get("testSessions", []))
+            # quality 里有全部建图会话（包括质量筛选没用上的），没有就用 sessions（旧报告）
+            used = [q["name"] for q in prev["quality"]] if prev.get("quality") else [s["name"] for s in prev.get("sessions", [])]
+            prev_names = sorted(used + prev.get("testSessions", []))
             if prev_names == names:
                 print("  会话没变，跳过")
                 continue
@@ -127,7 +129,12 @@ def main():
             cmd += ["--esl-locations", esl_path]
         if pm.get("mapUpBearingDeg") is not None:
             cmd += ["--bearing", str(pm["mapUpBearingDeg"])]
-        subprocess.run(cmd, check=True)
+        rc = subprocess.run(cmd).returncode
+        if rc == 3:
+            print("  没有合格的会话（质量筛选全部没过），保留云端现有版本")
+            continue
+        if rc != 0:
+            raise SystemExit(f"hpass-build 出错（{rc}）")
         report = json.load(open(rep))
         report["testSessions"] = sorted(os.path.basename(d) for d in g["test"])
         pkg = open(out, "rb").read()

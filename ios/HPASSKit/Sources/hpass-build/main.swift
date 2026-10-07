@@ -79,6 +79,7 @@ do {
     let r2 = fusion.fuse(sessions, corrections: corrections)
     // 质量筛选：每 10 秒一段，价签 + 磁场（和别的会话比）两种证据；不合格的段丢掉，整体不可信的会话整个不用
     let gate = SessionQualityGate(tagPositions: tagPos)
+    if map.crosses.isEmpty { gate.minPathCm = 500; gate.minGoodSamples = 150 }   // 房间小，走几米就够
     var quality: [SessionQualityGate.Report] = []
     var filters: [((Int64) -> Bool)?] = []
     var keepIdx: [Int] = []

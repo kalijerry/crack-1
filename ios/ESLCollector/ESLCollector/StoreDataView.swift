@@ -39,6 +39,7 @@ struct StoreDataView: View {
     var body: some View {
         Form {
             MapLibrarySection()
+            CloudMapsSection()
             EslListSection()
             TelemetrySection()
             statusSection

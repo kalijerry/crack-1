@@ -99,6 +99,17 @@ def main():
         map_path = os.path.join(work, f"map_{mid}.json")
         open(map_path, "wb").write(map_json)
         pm = package_meta(mid) or {}
+        # 名字：云端已有包的名字 → 地图里的楼层名 → 地图编号
+        if not pm.get("name") or pm.get("name") == mid:
+            try:
+                root = json.loads(map_json)
+                root = root.get("data", root) if isinstance(root, dict) else root
+                if isinstance(root, dict) and root.get("floorName"):
+                    pm["name"] = root["floorName"]
+            except ValueError:
+                pass
+        if not pm.get("kind"):
+            pm["kind"] = "room" if mid.startswith("room") else "store"
         out = os.path.join(work, f"{mid}.hpmp")
         rep = os.path.join(work, f"{mid}.json")
         cmd = [BUILD, "--map", map_path, "--sessions", ",".join(g["build"]), "--id", mid,

@@ -62,6 +62,7 @@ struct MagneticView: View {
     @State private var arNote = ""
     @State private var arSaved = 0
     @State private var shelfQuery = ""
+    @State private var findQuery = ""
     @State private var exportURL: URL?
     @State private var exportError: String?
 
@@ -181,6 +182,7 @@ struct MagneticView: View {
                          laneGuides: surveying && paintMode ? survey.coverage.laneGuides : [],
                          nextLane: surveying && paintMode ? survey.coverage.nextLane.map { ($0.from, $0.to) } : nil,
                          alertSpots: step == .live || isSurvey ? engine.changedSpots : [],
+                         highlightShelf: step == .live ? engine.findTarget?.shelfCode : nil,
                          showHeading: isSurvey ? (survey.stage != .needPosition)
                              : (!live || engine.isTracking || engine.headingEditing),
                          positionStale: !isSurvey && engine.locState == .lost,
@@ -955,6 +957,9 @@ struct MagneticView: View {
                     .tint(.red)
             } header: { Text(engine.isTracking ? "③ 走" : "② 定点与朝向") }
 
+            // 寻找模式：打开传感器就能用（还没定到位置也能靠信号找）
+            if engine.phase == .live { findSection }
+
             if engine.isTracking {
                 navSection
 
@@ -1002,6 +1007,65 @@ struct MagneticView: View {
         case 1: return "中"
         case 0: return "低"
         default: return "未校准"
+        }
+    }
+
+    /// 寻找模式：按价签编号 / 商品条码 / 货架图名找价签，地图上高亮货架、导航过去，走近时看它的实时信号
+    @ViewBuilder private var findSection: some View {
+        let locs = storeData.eslLocations
+        Section {
+            if locs.isEmpty {
+                Text("先在「门店数据 → 蓝牙」导入价签位置表（esl_locations_*.csv）。").font(.footnote).foregroundStyle(.secondary)
+            } else if let t = engine.findTarget {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(t.id).font(.headline.monospaced())
+                    Text("\(t.label) · \(t.plano)").font(.footnote)
+                    if !t.productCode.isEmpty { Text("条码 \(t.productCode)").font(.caption).foregroundStyle(.secondary) }
+                    Text(t.shelfCode.map { "货架 \($0)（地图上红框）" } ?? "地图上没有对应货架（表里位置缺失或不对），只能靠信号找").font(.caption)
+                        .foregroundStyle(t.shelfCode == nil ? .orange : .secondary)
+                }
+                if let r = engine.findRssi, let heard = engine.findLastHeard, Date().timeIntervalSince(heard) < 8 {
+                    let prox = MagneticEngine.proximity(r)
+                    HStack {
+                        Text(MagneticEngine.proximityText[prox]).font(.title3.bold())
+                            .foregroundStyle([Color.secondary, .orange, .green, .green][prox])
+                        Spacer()
+                        Image(systemName: engine.findTrend > 0 ? "arrow.up.circle.fill" : (engine.findTrend < 0 ? "arrow.down.circle" : "minus.circle"))
+                            .foregroundStyle(engine.findTrend > 0 ? .green : (engine.findTrend < 0 ? .red : .secondary)).font(.title2)
+                    }
+                    ProgressView(value: min(max((r + 95) / 45, 0), 1)).tint(prox >= 2 ? .green : .orange)
+                    Text("信号 \(Int(r)) dBm · \(engine.findTrend > 0 ? "越来越近" : (engine.findTrend < 0 ? "走远了" : "差不多"))").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text(engine.phase == .live ? "还没听到这个价签：先走到红框货架附近" : "点上面「打开传感器」才能听价签信号").font(.footnote).foregroundStyle(.secondary)
+                }
+                HStack {
+                    if let p = t.position {
+                        Button("导航到货架") { engine.navigate(to: p, label: t.shelfCode ?? t.id) }.buttonStyle(.bordered)
+                    }
+                    Spacer()
+                    Button("不找了", role: .cancel) { engine.setFindTarget(nil) }.buttonStyle(.bordered)
+                }
+            } else {
+                TextField("价签编号 / 商品条码 / 货架图名", text: $findQuery)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                let q = findQuery.trimmingCharacters(in: .whitespaces).uppercased()
+                if q.count >= 2 {
+                    let hits = locs.lazy.filter { $0.id.contains(q) || $0.productCode.contains(q) || $0.plano.uppercased().contains(q) }.prefix(15)
+                    ForEach(Array(hits), id: \.id) { e in
+                        Button {
+                            engine.setFindTarget(e)
+                            findQuery = ""
+                        } label: {
+                            VStack(alignment: .leading) {
+                                Text(e.id).font(.callout.monospaced())
+                                Text("\(e.label) · \(e.plano)").font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+        } header: { Text("找价签") } footer: {
+            Text("价签位置表里大约 5% 的位置不准：到了红框没找到，就看信号强弱——越来越近会震动，「就在旁边」时在 1 m 以内。")
         }
     }
 

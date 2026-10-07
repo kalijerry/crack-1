@@ -156,6 +156,20 @@ export default {
       }
     }
 
+    // 价签位置表（云端融合用：价签位置当蓝牙底图）
+    m = path.match(/^\/api\/esl\/([^/]+)$/);
+    if (m) {
+      const name = decodeURIComponent(m[1]);
+      if (!safeName(name)) return json({ error: "名字不合法" }, 400);
+      if (request.method === "PUT") {
+        await env.DATA.put("esl/" + name, request.body, { httpMetadata: { contentType: "text/csv; charset=utf-8" } });
+        return json({ ok: true });
+      }
+      const o = await env.DATA.get("esl/" + name);
+      if (!o) return json({ error: "没有" }, 404);
+      return new Response(o.body, { headers: { "content-type": "text/csv; charset=utf-8" } });
+    }
+
     // 评估报告
     if (path === "/api/reports" && request.method === "GET") return json(await listPrefix(env, "reports/"));
     m = path.match(/^\/api\/reports\/([^/]+)$/);

@@ -477,10 +477,18 @@ struct TelemetrySection: View {
 struct EslListSection: View {
     @ObservedObject private var store = StoreDataStore.shared
     @State private var importing = false
+    @State private var importingLoc = false
     @State private var message: String?
 
     var body: some View {
         Section {
+            HStack {
+                Text("价签位置表")
+                Spacer()
+                Text(store.eslLocCount > 0 ? "\(store.eslLocCount) 个（对上货架 \(store.eslLocations.filter { $0.position != nil }.count) 个）" : "未导入")
+                    .foregroundStyle(.secondary).font(.footnote)
+            }
+            Button("导入价签位置表（esl_locations_*.csv）") { importingLoc = true }
             HStack {
                 Text("价签名单")
                 Spacer()
@@ -492,7 +500,15 @@ struct EslListSection: View {
             }
             if let m = message { Text(m).font(.footnote).foregroundStyle(.secondary) }
         } header: { Text("蓝牙") } footer: {
-            Text("价签广播用厂商 ID 0x000D、内容是 4 字节价签编号，App 只收这种广播；导入名单后再只收名单里的。另外生成指纹时会自动丢掉「到哪儿都听得到」的设备（不是固定的价签）。表格（xlsx）请另存为 CSV 再导入。")
+            Text("价签位置表（门店系统导出的 esl_locations_*.csv）：每个价签在哪个通道、段、层，对上地图货架后当蓝牙定位的底图（全店不用采集也有粗定位，实测中位 1.6～3.4 m），也能在「定位 → 找价签」里找具体价签；导入时自动当价签名单，并传到后台给云端融合用。价签广播用厂商 ID 0x000D、内容是 4 字节价签编号，App 只收这种广播。")
+        }
+        .fileImporter(isPresented: $importingLoc, allowedContentTypes: [.commaSeparatedText, .plainText, .text]) { r in
+            switch r {
+            case .success(let u):
+                do { let (n, s) = try store.importEslLocations(from: u); message = "已导入 \(n) 个价签，\(s) 个对上了地图货架" }
+                catch { message = "导入失败：\(error)" }
+            case .failure(let e): message = "导入失败：\(e.localizedDescription)"
+            }
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.commaSeparatedText, .plainText, .text, .json]) { r in
             switch r {

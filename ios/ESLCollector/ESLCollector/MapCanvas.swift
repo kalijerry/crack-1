@@ -73,6 +73,8 @@ struct MapCanvas: View {
     var nextLane: (Point2, Point2)?
     /// 可能变了的地方（1 m 的橙色方块）
     var alertSpots: [Point2] = []
+    /// 寻找模式：高亮这个货架（红框）
+    var highlightShelf: String?
     var showHeading = true
     /// 位置已冻结（定位丢失）：画成灰色
     var positionStale = false
@@ -428,6 +430,14 @@ struct MapCanvas: View {
             var lp = Path()
             for (a, b) in laneGuides { lp.move(to: t.toScreen(a)); lp.addLine(to: t.toScreen(b)) }
             ctx.stroke(lp, with: .color(Color.green.opacity(0.8)), style: StrokeStyle(lineWidth: 1.2, dash: [6, 5]))
+        }
+        // 寻找模式：目标货架红框 + 中心红点
+        if let code = highlightShelf, let s = m.shelves.first(where: { $0.code == code }) {
+            let p = MapCanvas.rectPath(cx: s.x, cy: s.y, w: s.width, h: s.height, rotation: s.rotation, t: t)
+            ctx.fill(p, with: .color(Color.red.opacity(0.25)))
+            ctx.stroke(p, with: .color(.red), lineWidth: 2.5)
+            let c = t.toScreen(Point2(s.x, s.y))
+            ctx.stroke(Path(ellipseIn: CGRect(x: c.x - 12, y: c.y - 12, width: 24, height: 24)), with: .color(.red), lineWidth: 2)
         }
         // 可能变了的地方
         for sp in alertSpots {

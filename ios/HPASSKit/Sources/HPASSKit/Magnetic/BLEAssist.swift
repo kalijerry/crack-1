@@ -20,6 +20,25 @@ public final class BLEAssist {
     public var tagRangeMinRssi = -90.0
     public var tagRangeMax = 8
 
+    /// 证据一致才算定到：地磁的位置要落在大部分强价签的范围里。连续 disagreeSeconds 秒对不上 → 判定错了重新找，
+    /// 之后要重新对得上（≥ agreeFraction）才允许再定。
+    public var agreementGate = true
+    public var agreeFraction = 0.5
+    public var disagreeSeconds = 3
+    private var disagreeStreak = 0
+    private var blockedByDisagree = false
+    /// 最近一次：地磁位置落在几成强价签的范围里（强价签不够 3 片时 nil）
+    public private(set) var lastAgreement: Double?
+    /// 贴近价签：这么强就认为手机就在这片价签旁边（价签广播功率小，正常走路很少超过 −62）
+    public static let touchRssi = -55.0
+
+    /// p 落在几成强价签（≥ −85 dBm，最多 6 片）的范围里
+    public func agreement(_ obs: [String: Double], at p: Point2) -> Double? {
+        let tags = BLEFingerprintMap.strongest(obs, k: 6, minRssi: -85).compactMap { o in map.tags[o.0].map { (Point2($0.x, $0.y), Self.rangeCm(o.1)) } }
+        guard tags.count >= 3 else { return nil }
+        return Double(tags.filter { p.distance(to: $0.0) <= $0.1 }.count) / Double(tags.count)
+    }
+
     /// 信号（2.5 秒平均，dBm）→ 人离价签所在货架中心最远多少（cm）：实测 P90 + 1 m 余量（平均值比单次读数稳、表里位置是货架中心）
     public static func rangeCm(_ rssi: Double) -> Double {
         switch rssi {
@@ -44,8 +63,21 @@ public final class BLEAssist {
     /// - Parameters:
     ///   - obs: 最近 2.5 秒每个价签的平均信号
     ///   - current: 地磁当前估计的位置（已收敛时用来交叉检验）
-    public func tick(obs: [String: Double], localizer: MagneticLocalizer, current: Point2?) {
+    /// - candidate: 地磁当前的位置（没把握时也给），用来判断「对上了没有」
+    public func tick(obs: [String: Double], localizer: MagneticLocalizer, current: Point2?, candidate: Point2? = nil) {
         lastHeard = obs.count
+        if agreementGate, let c = current ?? candidate {
+            lastAgreement = agreement(obs, at: c)
+            if let a = lastAgreement {
+                if localizer.isConverged && a < agreeFraction {
+                    disagreeStreak += 1
+                    if disagreeStreak >= disagreeSeconds {
+                        localizer.declareLost(); resets += 1; disagreeStreak = 0; blockedByDisagree = true
+                    }
+                } else { disagreeStreak = 0 }
+                if blockedByDisagree && a >= agreeFraction + 0.1 { blockedByDisagree = false }
+            }
+        } else { lastAgreement = nil }
         if crossCheckEnabled {
             let strong = BLEFingerprintMap.strongest(obs, k: 8, minRssi: -85)
             if strong.count >= 4 {
@@ -57,9 +89,9 @@ public final class BLEAssist {
                 } else if outsideSurveyed && knownStreak >= 3 {
                     outsideSurveyed = false
                 }
-                localizer.convergenceBlocked = outsideSurveyed
             }
         }
+        localizer.convergenceBlocked = outsideSurveyed || blockedByDisagree
         guard let e = map.estimateByTags(obs) else { lastEstimate = nil; return }
         lastEstimate = e
         if crossCheckEnabled, localizer.isConverged, let cur = current {

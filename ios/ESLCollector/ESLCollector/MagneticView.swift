@@ -1012,6 +1012,12 @@ struct MagneticView: View {
                         if let t = engine.liveVsMapText { Text(t).font(.caption).foregroundStyle(.secondary) }
                     }
                 }
+                if let a = engine.lastAnchorEvent {
+                    row("抓定位", "\(a.text) · \(Int(Date().timeIntervalSince(a.at))) 秒前" + (engine.anchorFixes > 0 ? " · 拉回 \(engine.anchorFixes) 次" : ""))
+                        .font(.footnote)
+                }
+                Text("位置不对或定不上：让摄像头扫到货架立柱上的黄色标签（如 082-20），或把手机贴近任意一片价签 2 秒。地磁位置和价签对不上时会先显示「定位中」，不会乱给位置。")
+                    .font(.caption).foregroundStyle(.secondary)
                 if engine.visualFixes > 0 {
                     row("视觉定位", "成功 \(engine.visualFixes) 次").font(.footnote)
                 }

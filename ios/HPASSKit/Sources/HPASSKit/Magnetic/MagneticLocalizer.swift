@@ -347,6 +347,45 @@ public final class MagneticLocalizer {
         normalize()
     }
 
+    /// 确定的区域观测（读到货架标签、手机贴近价签）：区域外的粒子按离区域的距离重罚（上限 capLog），
+    /// 并把一部分最差的粒子撒进区域。已经定到、但当前估计离区域超过 relocateCm：说明定错了，先退回没把握，再多撒一些。
+    /// - distance: 点到区域的距离（区域内为 0）；sample: 在区域里随机取一点
+    /// - Returns: 是否判定为定错并重新定位
+    @discardableResult
+    public func applyRegion(distance: (Point2) -> Double, sample: () -> Point2, sigmaCm: Double = 80, capLog: Double = 12,
+                            injectFraction: Double = 0.3, relocateCm: Double = 300) -> Bool {
+        guard !xs.isEmpty else { return false }
+        var wsum = 0.0, mx = 0.0, my = 0.0
+        let mw = logw.max() ?? 0
+        for i in xs.indices { let w = exp(logw[i] - mw); wsum += w; mx += w * xs[i]; my += w * ys[i] }
+        let mean = Point2(mx / max(wsum, 1e-12), my / max(wsum, 1e-12))
+        var relocated = false
+        if hasConverged && distance(mean) > relocateCm { declareLost(); relocated = true }
+        let s2 = 2 * sigmaCm * sigmaCm
+        for i in xs.indices {
+            let d = distance(Point2(xs[i], ys[i]))
+            if d > 0 { logw[i] -= min(d * d / s2, capLog) }
+        }
+        let frac = hasConverged ? 0 : (relocated ? max(injectFraction, 0.5) : injectFraction)
+        if frac > 0 {
+            let m = Int(Double(xs.count) * min(frac, 0.6))
+            let order = logw.indices.sorted { logw[$0] < logw[$1] }
+            let top = logw.max() ?? 0
+            for k in order.prefix(m) {
+                var p = sample()
+                if let w = walkable, !w.isWalkable(p) { p = w.nearestWalkable(to: p, radiusCm: 200) ?? p }
+                xs[k] = min(max(p.x, 0), field.widthCm)
+                ys[k] = min(max(p.y, 0), field.heightCm)
+                bias[k] = headingUnknown ? (rng.uniform() * 2 - 1) * Double.pi : rng.normal() * config.initialHeadingBiasSigmaDeg * Double.pi / 180
+                scale[k] = 1 + rng.normal() * config.initialScaleSigma
+                logw[k] = top - 1
+                if k < ema0.count { ema0[k] = .nan; ema1[k] = .nan; ema2[k] = .nan }
+            }
+        }
+        normalize()
+        return relocated
+    }
+
     /// 送入一次惯导位移增量（cm，地图系）和这段时间内最新的磁场特征，返回当前估计。
     ///
     /// - Parameter trust: 这一刻磁场读数可信度 0...1（见 `MagneticTrustMonitor`）。

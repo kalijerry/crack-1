@@ -83,7 +83,7 @@ public final class ShadowLocalizer {
         if assist == nil || assist!.map.tags.count != m.tags.count { assist = BLEAssist(map: m) }
         assist!.crossCheckEnabled = crossCheckEnabled
         assist!.tick(obs: acc.mapValues { $0.0 / Double($0.1) }, localizer: localizer,
-                     current: localizer.isConverged ? estimate?.position : nil)
+                     current: localizer.isConverged ? estimate?.position : nil, candidate: estimate?.position)
     }
 
     /// ARKit 位姿。送进滤波器时返回新的估计。`tMs` 给了才会用蓝牙。

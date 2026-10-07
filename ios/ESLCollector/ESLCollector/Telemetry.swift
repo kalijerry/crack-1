@@ -266,6 +266,9 @@ final class Telemetry: ObservableObject {
         }
     }
 
+    /// 后台会话列表的请求（没配地址时 nil）
+    func sessionsRequest() -> URLRequest? { request("api/sessions", method: "GET") }
+
     func listPackages() async throws -> [CloudMap] {
         guard let r = request("api/packages", method: "GET") else { throw CloudError.notConfigured }
         let (d, resp) = try await URLSession.shared.data(for: r)

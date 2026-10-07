@@ -8,11 +8,13 @@ let package = Package(
         .library(name: "HPASSKit", targets: ["HPASSKit"]),
         .executable(name: "hpass-replay", targets: ["hpass-replay"]),
         .executable(name: "hpass-eval", targets: ["hpass-eval"]),
+        .executable(name: "hpass-build", targets: ["hpass-build"]),
     ],
     targets: [
         .target(name: "HPASSKit"),
         .executableTarget(name: "hpass-replay", dependencies: ["HPASSKit"]),
         .executableTarget(name: "hpass-eval", dependencies: ["HPASSKit"]),
+        .executableTarget(name: "hpass-build", dependencies: ["HPASSKit"]),
         .testTarget(name: "HPASSKitTests", dependencies: ["HPASSKit"]),
     ]
 )

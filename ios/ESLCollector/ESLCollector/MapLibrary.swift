@@ -224,7 +224,11 @@ final class MapLibrary: ObservableObject {
         var root: [String: Any] = ["mapId": 1, "floorId": 1, "floorName": parsed.floorName ?? m.name,
                                    "width": parsed.width, "height": parsed.height,
                                    "mapElementList": [Any](), "markPoints": [Any](), "magSource": m.magSource ?? "raw"]
-        if let b = m.mapUpBearingDeg { root["mapUpBearingDeg"] = b }
+        // 手机上填的地图朝向、放的点位，云端包里没有就保留本机的
+        let oldRoot = (try? Data(contentsOf: ws.appendingPathComponent("magmap.json")))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        if let b = m.mapUpBearingDeg ?? (oldRoot?["mapUpBearingDeg"] as? Double) { root["mapUpBearingDeg"] = b }
+        if let pts = oldRoot?["markPoints"] { root["markPoints"] = pts }
         if let f = c.field { root["magField"] = f.jsonObject() }
         try JSONSerialization.data(withJSONObject: root).write(to: ws.appendingPathComponent("magmap.json"), options: .atomic)
         let bleURL = ws.appendingPathComponent("ble-fingerprint.json")
@@ -400,7 +404,7 @@ struct CloudMapsSection: View {
                 Text("先在「门店数据 → 云端后台」填地址和口令并打开连接。").font(.footnote).foregroundStyle(.secondary)
             } else {
                 Button { Task { await cloud.uploadActive() } } label: {
-                    Label("把当前地图上传到云端（含磁场图和蓝牙）", systemImage: "icloud.and.arrow.up")
+                    Label("上传本机生成的地图（临时，云端融合后会被替换）", systemImage: "icloud.and.arrow.up")
                 }
                 .disabled(cloud.busy || lib.activeId == nil || busyElsewhere)
                 Button { Task { await cloud.refresh() } } label: { Label("刷新云端列表", systemImage: "arrow.clockwise") }
@@ -425,7 +429,7 @@ struct CloudMapsSection: View {
                 if let m = cloud.message { Text(m).font(.footnote).foregroundStyle(.secondary) }
             }
         } header: { Text("云端地图") } footer: {
-            Text("采集的手机生成磁场图后上传一次，别的手机在这里下载；本机已有的地图云端更新了会自动更新。全店一张图压缩后约 0.5～1 MB。")
+            Text("正式版本由云端融合：手机把会话上传到后台（采集结束自动传，旧会话在「采集」页一键上传），云端把所有手机、所有分片的会话融合成一张图（各会话的磁场偏移一起解），这里下载；本机已有的地图云端更新了会自动更新。手动上传的是本机生成的版本，会被下一次云端融合替换。全店一张图压缩后约 0.5～1 MB。")
         }
         .task { await cloud.refresh() }
     }

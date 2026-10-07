@@ -82,6 +82,12 @@ public final class MagneticFieldBuilder {
 
     /// 累积一个已知位置的特征。位置在地图外返回 false。
     @discardableResult
+    /// p 所在格子的下标（地图外为 nil）
+    public func cellIndex(_ p: Point2) -> Int? {
+        guard p.x >= 0, p.x <= widthCm, p.y >= 0, p.y <= heightCm else { return nil }
+        return min(Int(p.y / cellCm), rows - 1) * cols + min(Int(p.x / cellCm), cols - 1)
+    }
+
     public func add(position p: Point2, feature f: MagneticFeature) -> Bool {
         guard p.x >= 0, p.x <= widthCm, p.y >= 0, p.y <= heightCm,
               f.total.isFinite, f.vertical.isFinite, f.horizontal.isFinite else { return false }

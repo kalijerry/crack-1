@@ -50,6 +50,8 @@ public struct SurveySessionReport {
     public var track: [(tMs: Int64, p: Point2)] = []
     /// 和已有数据对齐时减掉的整体偏移（µT）；没对齐（第一个会话或共同格子不够）为 nil
     public var offsetUT: MagneticFeature?
+    /// prepare 返回的每个样本的时间（和样本一一对应）
+    public var sampleTimes: [Int64] = []
 }
 
 /// 在手机上把建图采集会话变成磁场图（与 tools/magmap.py 同一套算法，另加「自动贴通道」）。
@@ -83,6 +85,10 @@ public final class SurveyMapBuilder {
     /// 先按顺序累积修正朝向，再分段细调，就一直在通道里（合成真值，漂移 10°/分钟、不长按：P90 133 → 59 cm）。
     public var lockEnabled = true
     public var lockLateralGain = 0.3
+    /// 只用这些时刻的样本（云端质量筛选用；nil = 都用）
+    public var sampleFilter: ((Int64) -> Bool)?
+    /// 价签锚定的轨迹修正（时间 → 平移，见 EslTrajectoryCorrector）：贴完通道后加上，再贴一次通道
+    public var correction: ((Int64) -> Point2)?
 
     public init(widthCm: Double, heightCm: Double, crosses: [CrossSegment], cellCm: Double = 50) {
         field = MagneticFieldBuilder(widthCm: widthCm, heightCm: heightCm, cellCm: cellCm)
@@ -143,6 +149,10 @@ public final class SurveyMapBuilder {
             rep.corridorResidualBefore = median(before)
             if lockEnabled { lockToCorridors(&mapped) }
             snapToCorridors(&mapped)
+            if let corr = correction {
+                for i in mapped.indices { let d = corr(mapped[i].t); mapped[i].p = Point2(mapped[i].p.x + d.x, mapped[i].p.y + d.y) }
+                snapToCorridors(&mapped)
+            }
             let after = mapped.compactMap { $0.ok ? nearestCorridor($0.p)?.dist : nil }
             rep.corridorResidualAfter = median(after)
         }
@@ -171,7 +181,9 @@ public final class SurveyMapBuilder {
                 rep.dropped["站着不动", default: 0] += 1
                 continue
             }
+            if let keep = sampleFilter, !keep(t) { rep.dropped["质量筛选丢掉", default: 0] += 1; continue }
             samples.append((p, f))
+            rep.sampleTimes.append(t)
         }
         return (rep, samples)
     }

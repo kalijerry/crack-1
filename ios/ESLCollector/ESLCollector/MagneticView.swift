@@ -496,10 +496,10 @@ struct MagneticView: View {
                         Label("删除当前磁场图", systemImage: "trash")
                     }
                     .disabled(engine.phase != .idle || survey.isRunning)
-                }
-                .confirmationDialog("删除手机上的磁场图？采集会话和点位都保留，可以重新生成。",
-                                    isPresented: $confirmDeleteField, titleVisibility: .visible) {
-                    Button("删除", role: .destructive) { store.deleteField() }
+                    .confirmationDialog("删除手机上的磁场图？采集会话和点位都保留，可以重新生成。",
+                                        isPresented: $confirmDeleteField, titleVisibility: .visible) {
+                        Button("删除", role: .destructive) { store.deleteField() }
+                    }
                 }
             } else {
                 Text(mode.developer ? "现在没有磁场图。到「采集」步骤选会话生成一张。"

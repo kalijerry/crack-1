@@ -16,6 +16,12 @@ public struct EvalReport: Codable {
     public var wrongFixShare: Double?
     /// 蓝牙交叉检验判错、重新找的次数
     public var crossCheckResets: Int = 0
+    /// 只算参考位置在磁场图覆盖范围内（离有数据的格子 1.5 m 内）的点：去掉「走到建图没走过的地方」的影响
+    public var inMapMedianCm: Double?
+    public var inMapP90Cm: Double?
+    public var inMapWithin1m: Double?
+    /// 参考轨迹有多少比例在磁场图覆盖范围内
+    public var inMapShare: Double?
 
     public var line: String {
         func f(_ v: Double?) -> String { v.map { String(format: "%.0f", $0) } ?? "—" }
@@ -23,7 +29,14 @@ public struct EvalReport: Codable {
             + "\t跳 \(jumps)\t首次定位 \(firstFixM.map { String(format: "%.1f m", $0) } ?? "没定到")\t走了 \(Int(pathM)) m"
             + "\t错定 \(wrongFixShare.map { "\(Int($0 * 100))%" } ?? "—")"
             + (usedBLE ? "\t+蓝牙（交叉检验重找 \(crossCheckResets) 次）" : "")
+            + "\n    └ 只看建图覆盖到的地方（占 \(inMapShare.map { "\(Int($0 * 100))%" } ?? "—")）：中位 \(f(inMapMedianCm)) cm\tP90 \(f(inMapP90Cm)) cm\t≤1m \(inMapWithin1m.map { "\(Int($0 * 100))%" } ?? "—")"
     }
+}
+
+private func pct(_ a: [Double], _ q: Double) -> Double? {
+    guard !a.isEmpty else { return nil }
+    let s = a.sorted()
+    return s[min(Int(Double(s.count - 1) * q + 0.5), s.count - 1)]
 }
 
 public enum SessionEvaluator {
@@ -52,7 +65,8 @@ public enum SessionEvaluator {
 
     /// 回放一个测试会话：按时间顺序送 IMU、原始磁力计、蓝牙、ARKit 位姿，和参考轨迹比
     public static func evaluate(dir: URL, map: StoreMap, field: MagneticFieldMap, ble: BLEFingerprintMap?,
-                                walkable: WalkableMap?, crossCheck: Bool = true) throws -> EvalReport {
+                                walkable: WalkableMap?, crossCheck: Bool = true,
+                                configure: ((inout MagneticConfig) -> Void)? = nil, seed: UInt64 = 1) throws -> EvalReport {
         let s = try SurveySessionLoader.load(dir)
         // 参考轨迹：这个会话自己的对齐结果（只用它的锚点和贴通道，不用磁场）
         let refB = SurveyMapBuilder(widthCm: map.width, heightCm: map.height, crosses: map.crosses)
@@ -63,7 +77,7 @@ public enum SessionEvaluator {
             while hi - lo > 1 { let m = (lo + hi) / 2; if ref[m].tMs <= t { lo = m } else { hi = m } }
             return ref[lo].tMs - t > 300 ? nil : ref[lo].p
         }
-        let sh = ShadowLocalizer(field: field, walkable: walkable, useRawMag: !s.raw.isEmpty)
+        let sh = ShadowLocalizer(field: field, walkable: walkable, useRawMag: !s.raw.isEmpty, configure: configure, seed: seed)
         sh.bleMap = ble
         sh.crossCheckEnabled = crossCheck
         let bleSamples = ble == nil ? [] : SurveySessionLoader.loadBLE(dir)
@@ -76,6 +90,8 @@ public enum SessionEvaluator {
         for x in s.poses { evs.append((x.tMs, 3, .pose(x))) }
         evs.sort { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1 < $1.1 }
         let ev = LocalizationEvaluator()
+        var inMapErr: [Double] = []
+        var refTotal = 0, refInMap = 0
         for (_, _, e) in evs {
             switch e {
             case .imu(let x): sh.imu(x)
@@ -84,12 +100,19 @@ public enum SessionEvaluator {
             case .pose(let p):
                 guard let est = sh.pose(a: p.a, normal: p.normal, tMs: p.tMs), let r = refAt(p.tMs) else { continue }
                 ev.add(estimate: est, reference: r)
+                let covered = field.sample(at: r) != nil
+                refTotal += 1
+                if covered { refInMap += 1 }
+                if covered && est.converged { inMapErr.append(est.position.distance(to: r)) }
             }
         }
         return EvalReport(session: dir.lastPathComponent, medianCm: ev.percentile(0.5), p90Cm: ev.percentile(0.9),
                           within1m: ev.within1m, jumps: ev.jumps, firstFixM: ev.firstFixPathCm.map { $0 / 100 },
                           pathM: ev.pathCm / 100, points: ev.errors.count, usedBLE: ble != nil,
                           wrongFixShare: ev.errors.isEmpty ? nil : Double(ev.errors.filter { $0 > 500 }.count) / Double(ev.errors.count),
-                          crossCheckResets: sh.crossCheckResets)
+                          crossCheckResets: sh.crossCheckResets,
+                          inMapMedianCm: pct(inMapErr, 0.5), inMapP90Cm: pct(inMapErr, 0.9),
+                          inMapWithin1m: inMapErr.isEmpty ? nil : Double(inMapErr.filter { $0 <= 100 }.count) / Double(inMapErr.count),
+                          inMapShare: refTotal > 0 ? Double(refInMap) / Double(refTotal) : nil)
     }
 }

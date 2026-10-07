@@ -29,11 +29,34 @@ do {
     let ble = CommandLine.arguments.contains("--no-ble") ? nil : bleMap
     let walk = SessionEvaluator.walkable(map)
     var out: [EvalReport] = []
+    // 粒子滤波有随机性（加上字典遍历顺序每次不同），单次结果波动很大：--runs N 跑 N 次（不同随机种子），报中位和范围
+    let runs = max(Int(arg("--runs") ?? "1") ?? 1, 1)
     for t in test {
-        let r = try SessionEvaluator.evaluate(dir: t, map: map, field: field, ble: ble, walkable: walk,
-                                              crossCheck: !CommandLine.arguments.contains("--no-crosscheck"))
-        print(r.line)
-        out.append(r)
+        var rs: [EvalReport] = []
+        for k in 0..<runs {
+            let r = try SessionEvaluator.evaluate(dir: t, map: map, field: field, ble: ble, walkable: walk,
+                                                  crossCheck: !CommandLine.arguments.contains("--no-crosscheck"), configure: { cfg in
+                if CommandLine.arguments.contains("--offset") { cfg.offsetInvariant = true }
+                if CommandLine.arguments.contains("--hybrid") { cfg.hybridOffset = true }
+                if CommandLine.arguments.contains("--absolute") { cfg.offsetInvariant = false }
+                if let w = arg("--abs").flatMap(Double.init) { cfg.absoluteWeight = w }
+                if let w = arg("--win").flatMap(Double.init) { cfg.offsetWindowUpdates = w }
+            }, seed: UInt64(k + 1))
+            if runs == 1 { print(r.line) }
+            rs.append(r)
+        }
+        if runs > 1 {
+            func summary(_ xs: [Double?], unit: String = " cm") -> String {
+                let v = xs.compactMap { $0 }.sorted()
+                guard !v.isEmpty else { return "—" }
+                return String(format: "%.0f%@（%.0f～%.0f）", v[v.count / 2], unit, v.first!, v.last!)
+            }
+            print("\(t.lastPathComponent)  \(runs) 次：中位 \(summary(rs.map(\.medianCm)))  P90 \(summary(rs.map(\.p90Cm)))"
+                  + "  首次定位 \(summary(rs.map(\.firstFixM), unit: " m"))  跳 \(summary(rs.map { Double($0.jumps) }, unit: ""))")
+            print("    └ 只看建图覆盖到的地方：中位 \(summary(rs.map(\.inMapMedianCm)))  P90 \(summary(rs.map(\.inMapP90Cm)))"
+                  + "  ≤1m \(summary(rs.map { $0.inMapWithin1m.map { $0 * 100 } }, unit: "%"))")
+        }
+        out.append(contentsOf: rs)
     }
     let all = out.compactMap(\.medianCm)
     if all.count > 1 { print(String(format: "测试会话中位误差的中位：%.0f cm", all.sorted()[all.count / 2])) }

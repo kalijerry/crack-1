@@ -613,6 +613,8 @@ final class MagneticEngine: ObservableObject {
             cfg.convergedPositionNoiseFraction = 0.03
         }
         cfg.lateralWeight = depthMode == .fuse ? 1 : 0
+        // 每次读数的整体水平会差 10～16 µT（磁力计偏置估计不同）：没定到按起伏找，定到后估出偏移再按绝对值比
+        cfg.hybridOffset = true
         let loc = MagneticLocalizer(field: field, walkable: MagMapStore.shared.walkableMap(), config: cfg)
         loc.raycaster = MagMapStore.shared.raycaster()
         loc.reset(start: start, spreadCm: 50, headingUnknown: headingUnknown, priorFraction: priorFraction)

@@ -38,6 +38,8 @@ struct Report: Encodable {
     var zones: [SurveyZones.Status]
     var nextZone: Int?
     var nextZoneEntry: [Double]?
+    /// 质量合格但和主体连不上、磁场图没用的会话
+    var magExcluded: [String]
 }
 
 guard let mapPath = arg("--map"), let out = arg("--out"), let id = arg("--id") else {
@@ -116,6 +118,18 @@ do {
                      s.overlaps.isEmpty ? "无" : s.overlaps.map { "\($0.key.suffix(6))×\($0.value)" }.joined(separator: " ")))
         for w in s.warnings { print("    ⚠️ \(w)") }
     }
+    // 和主体连不上的会话（重叠不够、整体偏移解不出来）：磁场整体可能差 10～16 µT，放进去会污染磁场图，
+    // 所以磁场图只用主体（分量 0）；它们的价签读数照用（价签位置和磁场水平无关）。补采一段重叠后自动加入。
+    var magExcluded: [String] = []
+    var rm = r
+    if r.components > 1 {
+        let main = r.sessions.indices.filter { r.sessions[$0].component == 0 }
+        magExcluded = r.sessions.indices.filter { r.sessions[$0].component != 0 }.map { r.sessions[$0].name }
+        let cs = keepIdx.map { corrections[$0] }
+        rm = fusion.fuse(main.map { keptSessions[$0] }, filters: main.map { filters[$0] }, corrections: main.map { cs[$0] })
+        print("⚠️ 磁场图不用（和主体没有足够重叠，整体偏移对不齐）：\(magExcluded.joined(separator: "、"))；价签读数照用。补采一段和已采区域重叠的路段后会自动加入")
+        print("磁场图：\(main.count) 个会话，磁场 \(rm.field.coveredCells) 格")
+    }
     // 蓝牙指纹
     let bb = BLEFingerprintBuilder(widthCm: map.width, heightCm: map.height)
     if let p = arg("--esl-ids"), let t = try? String(contentsOfFile: p, encoding: .utf8) { bb.whitelist = BLEFingerprintBuilder.parseIdList(t) }
@@ -141,7 +155,7 @@ do {
         ? CoveragePaint(crosses: map.crosses, widthCm: map.width, heightCm: map.height)
         : walk.map { CoveragePaint(walkable: $0) }
     if let p = paint {
-        for track in r.tracks { p.breakStroke(); for tp in track { p.paint(at: tp.p) } }
+        for track in rm.tracks { p.breakStroke(); for tp in track { p.paint(at: tp.p) } }
         coverage = p.fraction; covered = p.paintedAreaM2; walkableM2 = p.walkableAreaM2
         for (i, c) in map.crosses.enumerated() where c.a.distance(to: c.b) > 500 && c.lineWidth >= 50 {
             let f = p.fraction(corridor: i)
@@ -168,7 +182,7 @@ do {
     let runs = max(Int(arg("--runs") ?? "3") ?? 3, 1)
     for t in list(arg("--test")) {
         for k in 0..<runs {
-            if let e = try? SessionEvaluator.evaluate(dir: t, map: map, field: r.field, ble: ble, walkable: walk, seed: UInt64(k + 1)) {
+            if let e = try? SessionEvaluator.evaluate(dir: t, map: map, field: rm.field, ble: ble, walkable: walk, seed: UInt64(k + 1)) {
                 tests.append(e)
                 if k == 0 { print("测试 " + e.line) }
             }
@@ -177,23 +191,23 @@ do {
     // 打包
     var meta = MapPackage.Meta(id: id, name: arg("--name") ?? id, kind: arg("--kind") ?? (map.crosses.isEmpty ? "room" : "store"),
                                version: Int64((Date().timeIntervalSince1970 * 1000).rounded()),
-                               source: "云端融合 \(keptSessions.count) 个会话（共 \(sessions.count) 个，质量筛选后）", mapUpBearingDeg: arg("--bearing").flatMap(Double.init),
+                               source: "云端融合 \(keptSessions.count - magExcluded.count) 个会话（共 \(sessions.count) 个，质量筛选后）", mapUpBearingDeg: arg("--bearing").flatMap(Double.init),
                                magSource: "raw")
-    meta.fieldCells = r.field.coveredCells
+    meta.fieldCells = rm.field.coveredCells
     meta.origin = "cloud"
-    meta.sessions = keptSessions.count
+    meta.sessions = keptSessions.count - magExcluded.count
     meta.bleTags = ble?.tags.count
-    let pkg = try MapPackage.encode(meta: meta, mapJSON: mapData, field: r.field, ble: ble, worldMap: nil, paint: paint?.serialized(), eslCSV: meta.kind == "store" ? eslCSV : nil)
+    let pkg = try MapPackage.encode(meta: meta, mapJSON: mapData, field: rm.field, ble: ble, worldMap: nil, paint: paint?.serialized(), eslCSV: meta.kind == "store" ? eslCSV : nil)
     try pkg.write(to: URL(fileURLWithPath: out))
     print("地图包 \(pkg.count / 1024) KB → \(out)")
     var warnings: [String] = []
-    if r.components > 1 { warnings.append("有 \(r.components - 1) 组会话和主体没连上（没有足够重叠），它们的磁场偏移没法对齐") }
+    if !magExcluded.isEmpty { warnings.append("磁场图没用（和主体重叠不够）：\(magExcluded.joined(separator: "、"))；补采一段重叠后自动加入") }
     if let rp = arg("--report") {
-        let rep = Report(mapId: id, name: meta.name, version: meta.version, sessions: r.sessions, components: r.components,
-                         fieldCells: r.field.coveredCells, bleTags: ble?.tags.count ?? 0, coverage: coverage, coveredM2: covered,
+        let rep = Report(mapId: id, name: meta.name, version: meta.version, sessions: rm.sessions, components: r.components,
+                         fieldCells: rm.field.coveredCells, bleTags: ble?.tags.count ?? 0, coverage: coverage, coveredM2: covered,
                          walkableM2: walkableM2, unfinishedCorridors: unfinished, tests: tests, packageBytes: pkg.count, warnings: warnings,
                          eslMismatches: eslMismatches, quality: quality, corrections: corrStats,
-                         zones: zoneStatus, nextZone: nextZone, nextZoneEntry: nextEntry)
+                         zones: zoneStatus, nextZone: nextZone, nextZoneEntry: nextEntry, magExcluded: magExcluded)
         let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         try enc.encode(rep).write(to: URL(fileURLWithPath: rp))
     }

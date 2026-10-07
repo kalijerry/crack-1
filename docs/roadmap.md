@@ -71,10 +71,9 @@
 
 - `hpass-build`（ios/HPASSKit）：一张地图的所有建图会话 → 每个会话单独统计 → 两两有 ≥ 20 个共同格子就得到一条「偏移差」方程 → 每个连通分量加权最小二乘解出各会话偏移（样本最多的会话为基准）→ 减偏移后累积成一张磁场图；蓝牙指纹、覆盖率（所有会话的轨迹一起涂）、测试会话精度一起出；打成云端地图包 + 报告。
   实测：今天的会话和 10-06 的 1/2 号通道共 61 格，解出 10-06 那次 |B| +12.0、Bz −15.8 µT（和手工对比一致）；主通道那次没有重叠，报告标「没连上」。
-- `tools/cloud_build.py` + `.github/workflows/map-build.yml`：后台收到新会话 → Worker 发 repository_dispatch → Actions（macOS）拉所有会话、按会话里的地图编号分组、会话有变化才重建 → 上传地图包（盖过手机上生成的）和报告（看板「评估」里能看）。也可以手动跑（可选只处理一张图、强制重建、只算不上传）。会话数据只在 runner 临时目录。
+- `tools/cloud_build.py` + `.github/workflows/map-build.yml`：**只手动触发**（GitHub 网页 Actions → Cloud map build → Run workflow，或 `gh workflow run map-build.yml`；可选只处理一张图、强制重建、只算不上传）→ Actions（macOS）拉所有会话、按会话里的地图编号分组、会话有变化才重建 → 上传地图包（盖过手机上生成的）和报告（看板「评估」里能看）。会话数据只在 runner 临时目录。
 - **分片规则：相邻分片至少重叠 10 m 通道**（约 20 个共同格子），否则那一片的磁场偏移没法和别的对齐，报告里会提示。
 - 手机上：「生成磁场图」只是本机预览，不再自动上传；「把这张地图的会话都上传到后台」把旧会话补传，云端融合只用后台有的会话。
-- 需要：GitHub fine-grained token（这个仓库，Actions 读写）放进 Worker 的 GITHUB_TOKEN，上传会话后才会自动触发；没配时每天 20:00 UTC 跑一次、或手动跑。
 
 ## 价签位置表（2026-10-07，esl_locations_1266.csv）
 

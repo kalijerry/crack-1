@@ -1,14 +1,10 @@
 name: Cloud map build
 
 # 云端融合建图：把后台所有采集会话按地图融合成磁场图 + 蓝牙指纹，上传地图包和报告。
-# 触发：后台收到新会话时（Worker 发 repository_dispatch）、每天一次兜底、或手动。
+# 只手动触发：GitHub 网页 Actions → Cloud map build → Run workflow，或 gh workflow run map-build.yml。
 # 会话数据只在 runner 的临时目录里，不进仓库、不存 artifact。
 
 on:
-  repository_dispatch:
-    types: [session_uploaded]
-  schedule:
-    - cron: "0 20 * * *"      # 每天 20:00 UTC 兜底
   workflow_dispatch:
     inputs:
       map_id:
@@ -46,7 +42,7 @@ jobs:
           HPASS_URL: ${{ secrets.HPASS_URL }}
           HPASS_TOKEN: ${{ secrets.HPASS_TOKEN }}
           HPASS_BUILD: ios/HPASSKit/.build/release/hpass-build
-          MAP_ID: ${{ github.event.inputs.map_id || github.event.client_payload.map_id }}
+          MAP_ID: ${{ github.event.inputs.map_id }}
           FORCE: ${{ github.event.inputs.force == 'true' && '1' || '0' }}
           DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '0' }}
         run: python3 tools/cloud_build.py

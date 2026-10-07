@@ -57,5 +57,7 @@ npx wrangler dev        # http://localhost:8787
 | PUT/GET | `/api/maps/<地图编号>` | 地图 JSON |
 | PUT/GET | `/api/reports/<名字>.json`、GET `/api/reports` | 评估报告 |
 | GET | `/api/logs?day=YYYY-MM-DD`、`/api/logs/<key>` | 日志分块（NDJSON，每 200 条或 30 秒一块） |
+| GET | `/api/packages` | 云端地图包列表（名字、类型、版本、大小、磁场格数、蓝牙价签数） |
+| PUT/GET | `/api/packages/<地图编号>` | 地图包（App 打包：地图 + 磁场 + 蓝牙 + 视觉特征地图，zlib 压缩）；上传头 `X-Map-Name`（URL 编码）、`X-Map-Kind`、`X-Map-Version`（毫秒），比云端旧的版本返回 409 |
 
 所有接口都要口令：`Authorization: Bearer <TOKEN>`，WebSocket 用 `?token=`。没配 TOKEN 时全部拒绝。

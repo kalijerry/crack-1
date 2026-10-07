@@ -135,6 +135,11 @@ final class SurveyMapService: ObservableObject {
                 MagMapStore.shared.applyBuilt(f, source: "\(doneNames.count) 个会话（\(names.joined(separator: "、"))），\(df.string(from: Date())) " + (append ? "追加" : "生成"), ble: ble)
                 if let d = try? JSONEncoder().encode(state) { try? d.write(to: Self.stateURL, options: .atomic) }
                 self.included = Set(doneNames)
+                // 连着云端就顺手上传，别的手机能直接下载
+                if Telemetry.shared.enabled {
+                    self.lines.append("正在上传到云端……")
+                    Task { await CloudMaps.shared.uploadActive(); self.lines.append(CloudMaps.shared.message ?? "") }
+                }
                 self.lines.append("完成：有数据的格子 \(valid) 个（补齐后 \(f.coveredCells)），已启用")
                 AppLog.i("建图", "手机上生成磁场图完成：样本 \(total)，有效格 \(valid)，补齐后 \(f.coveredCells)")
             }

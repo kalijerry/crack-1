@@ -99,6 +99,54 @@ export default {
       return new Response(o.body, { headers: { "content-type": "application/json; charset=utf-8" } });
     }
 
+    // 云端地图包（地图 + 磁场 + 蓝牙 + 视觉特征地图，App 打包上传、别的手机拉取）
+    if (path === "/api/packages" && request.method === "GET") {
+      const out = [];
+      let cursor;
+      do {
+        const r = await env.DATA.list({ prefix: "packages/", cursor, include: ["customMetadata"] });
+        for (const o of r.objects) {
+          const m = o.customMetadata || {};
+          out.push({ id: o.key.slice("packages/".length).replace(/\.hpmp$/, ""), size: o.size, uploaded: o.uploaded,
+                     name: m.name ? decodeURIComponent(m.name) : "", kind: m.kind || "", version: Number(m.version || 0),
+                     fieldCells: Number(m.fieldCells || 0), bleTags: Number(m.bleTags || 0) });
+        }
+        cursor = r.truncated ? r.cursor : undefined;
+      } while (cursor);
+      return json(out.sort((a, b) => b.version - a.version));
+    }
+    m = path.match(/^\/api\/packages\/([^/]+)$/);
+    if (m) {
+      const id = decodeURIComponent(m[1]);
+      if (!safeName(id)) return json({ error: "名字不合法" }, 400);
+      const key = "packages/" + id + ".hpmp";
+      if (request.method === "PUT") {
+        const h = (k) => request.headers.get(k) || "";
+        const version = Number(h("x-map-version") || 0);
+        const old = await env.DATA.head(key);
+        if (old && Number(old.customMetadata?.version || 0) > version) {
+          return json({ error: "云端已经有更新的版本", version: Number(old.customMetadata.version) }, 409);
+        }
+        await env.DATA.put(key, request.body, {
+          httpMetadata: { contentType: "application/octet-stream" },
+          customMetadata: { name: h("x-map-name"), kind: h("x-map-kind"), version: String(version),
+                            fieldCells: h("x-field-cells"), bleTags: h("x-ble-tags") },
+        });
+        const hub = env.HUB.get(env.HUB.idFromName("main"));
+        await hub.fetch(new Request("https://hub/event", {
+          method: "POST",
+          body: JSON.stringify({ type: "event", name: "map_package_uploaded", session: id, t: Date.now() }),
+        }));
+        return json({ ok: true, id, version });
+      }
+      if (request.method === "GET") {
+        const o = await env.DATA.get(key);
+        if (!o) return json({ error: "没有这个地图包" }, 404);
+        return new Response(o.body, { headers: { "content-type": "application/octet-stream",
+          "x-map-version": o.customMetadata?.version || "0" } });
+      }
+    }
+
     // 评估报告
     if (path === "/api/reports" && request.method === "GET") return json(await listPrefix(env, "reports/"));
     m = path.match(/^\/api\/reports\/([^/]+)$/);

@@ -244,6 +244,57 @@ final class Telemetry: ObservableObject {
         }
     }
 
+    // MARK: 云端地图包
+
+    struct CloudMap: Decodable, Identifiable {
+        var id: String
+        var name: String
+        var kind: String
+        var version: Int64
+        var size: Int
+        var fieldCells: Int?
+        var bleTags: Int?
+    }
+
+    enum CloudError: Error, CustomStringConvertible {
+        case notConfigured, http(Int, String)
+        var description: String {
+            switch self {
+            case .notConfigured: return "先在「云端后台」填地址和口令"
+            case .http(let c, let m): return "HTTP \(c)：\(m)"
+            }
+        }
+    }
+
+    func listPackages() async throws -> [CloudMap] {
+        guard let r = request("api/packages", method: "GET") else { throw CloudError.notConfigured }
+        let (d, resp) = try await URLSession.shared.data(for: r)
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard code == 200 else { throw CloudError.http(code, String(data: d, encoding: .utf8) ?? "") }
+        return try JSONDecoder().decode([CloudMap].self, from: d)
+    }
+
+    func uploadPackage(_ data: Data, meta: MapPackage.Meta) async throws {
+        guard var r = request("api/packages/\(meta.id)", method: "PUT") else { throw CloudError.notConfigured }
+        r.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        r.setValue(meta.name.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "", forHTTPHeaderField: "X-Map-Name")
+        r.setValue(meta.kind, forHTTPHeaderField: "X-Map-Kind")
+        r.setValue("\(meta.version)", forHTTPHeaderField: "X-Map-Version")
+        r.setValue("\(meta.fieldCells ?? 0)", forHTTPHeaderField: "X-Field-Cells")
+        r.setValue("\(meta.bleTags ?? 0)", forHTTPHeaderField: "X-Ble-Tags")
+        let (d, resp) = try await URLSession.shared.upload(for: r, from: data)
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard code == 200 else { throw CloudError.http(code, String(data: d, encoding: .utf8) ?? "") }
+    }
+
+    func downloadPackage(_ id: String) async throws -> Data {
+        guard let r = request("api/packages/\(id)", method: "GET") else { throw CloudError.notConfigured }
+        let (d, resp) = try await URLSession.shared.data(for: r)
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard code == 200 else { throw CloudError.http(code, String(data: d, encoding: .utf8) ?? "") }
+        return d
+    }
+
     var statusText: String {
         switch status {
         case .off: return "关闭"

@@ -19,6 +19,8 @@ final class MapLibrary: ObservableObject {
         /// store = 门店地图（通道），room = 房间扫描
         var kind: String
         var created: Date
+        /// 本机这张地图对应的云端版本（上传或下载时记下，生成时间 Unix 毫秒）
+        var cloudVersion: Int64?
         var isRoom: Bool { kind == "room" }
     }
 
@@ -82,12 +84,12 @@ final class MapLibrary: ObservableObject {
 
     /// 加一张地图（不切换）。
     @discardableResult
-    func add(data: Data, name: String, kind: String, extraFiles: [URL] = []) throws -> Entry {
+    func add(data: Data, name: String, kind: String, extraFiles: [URL] = [], id fixedId: String? = nil) throws -> Entry {
         _ = try StoreDataLoader.loadMap(data)            // 先确认能解析
         let df = DateFormatter()
         df.dateFormat = "yyyyMMdd_HHmmss"
-        var id = "\(kind)_\(df.string(from: Date()))"
-        while entries.contains(where: { $0.id == id }) { id += "_1" }
+        var id = fixedId ?? "\(kind)_\(df.string(from: Date()))"
+        while fixedId == nil && entries.contains(where: { $0.id == id }) { id += "_1" }
         let e = Entry(id: id, name: name, kind: kind, created: Date())
         try FileManager.default.createDirectory(at: dir(id), withIntermediateDirectories: true)
         try data.write(to: mapURL(id))
@@ -175,6 +177,72 @@ final class MapLibrary: ObservableObject {
         UserDefaults.standard.set(s, forKey: Self.fieldSourceKey)
     }
 
+    // MARK: 云端地图包
+
+    /// 把当前在用的地图打成云端包（地图 + 磁场 + 蓝牙 + 视觉特征地图）
+    func packageActive() throws -> (MapPackage.Meta, Data) {
+        guard let id = activeId, let e = active else { throw StoreDataError.unsupportedFormat("没有在用的地图") }
+        let store = MagMapStore.shared
+        let mapJSON = try Data(contentsOf: mapURL(id))
+        var meta = MapPackage.Meta(id: id, name: e.name, kind: e.kind, version: Fmt.nowMs(), source: store.fieldSource,
+                                   mapUpBearingDeg: store.mapUpBearingDeg, magSource: store.magSource)
+        meta.fieldCells = store.field?.coveredCells
+        meta.bleTags = store.bleMap?.tags.count
+        let wm = worldMapURL(id).flatMap { try? Data(contentsOf: $0) }
+        let data = try MapPackage.encode(meta: meta, mapJSON: mapJSON, field: store.field, ble: store.bleMap, worldMap: wm)
+        return (meta, data)
+    }
+
+    /// 上传成功后记下版本
+    func markUploaded(_ id: String, version: Int64) {
+        guard let i = entries.firstIndex(where: { $0.id == id }) else { return }
+        entries[i].cloudVersion = version
+        try? writeMeta(entries[i])
+    }
+
+    /// 装上一个云端包：本机没有就新建（同一个编号），有就更新地图、磁场、蓝牙。在用的那张立刻生效。
+    func install(_ c: MapPackage.Contents) throws {
+        let m = c.meta
+        let fm = FileManager.default
+        if let i = entries.firstIndex(where: { $0.id == m.id }) {
+            try c.mapJSON.write(to: mapURL(m.id))
+            entries[i].name = m.name
+            entries[i].cloudVersion = m.version
+            try writeMeta(entries[i])
+        } else {
+            var e = try add(data: c.mapJSON, name: m.name, kind: m.kind, id: m.id)
+            e.cloudVersion = m.version
+            if let i = entries.firstIndex(where: { $0.id == m.id }) { entries[i] = e }
+            try writeMeta(e)
+        }
+        if let wm = c.worldMap { try wm.write(to: dir(m.id).appendingPathComponent(Self.worldMapFile)) }
+        // 工作区：在用的地图写到 Documents 根目录，否则写进这张地图的 workspace 目录
+        let isActive = m.id == activeId
+        let ws = isActive ? Self.docs : dir(m.id).appendingPathComponent("workspace", isDirectory: true)
+        try fm.createDirectory(at: ws, withIntermediateDirectories: true)
+        let parsed = try StoreDataLoader.loadMap(c.mapJSON)
+        var root: [String: Any] = ["mapId": 1, "floorId": 1, "floorName": parsed.floorName ?? m.name,
+                                   "width": parsed.width, "height": parsed.height,
+                                   "mapElementList": [Any](), "markPoints": [Any](), "magSource": m.magSource ?? "raw"]
+        if let b = m.mapUpBearingDeg { root["mapUpBearingDeg"] = b }
+        if let f = c.field { root["magField"] = f.jsonObject() }
+        try JSONSerialization.data(withJSONObject: root).write(to: ws.appendingPathComponent("magmap.json"), options: .atomic)
+        let bleURL = ws.appendingPathComponent("ble-fingerprint.json")
+        if let b = c.ble { try JSONEncoder().encode(b).write(to: bleURL, options: .atomic) } else { try? fm.removeItem(at: bleURL) }
+        // 增量统计和变化检测是针对旧图的，清掉
+        for f in ["build-state.json", "live-monitor.json"] { try? fm.removeItem(at: ws.appendingPathComponent(f)) }
+        let df = DateFormatter(); df.dateFormat = "MM-dd HH:mm"
+        let src = "云端 \(df.string(from: Date(timeIntervalSince1970: Double(m.version) / 1000)))：" + (m.source ?? "")
+        if isActive {
+            UserDefaults.standard.set(src, forKey: Self.fieldSourceKey)
+            MagMapStore.shared.reloadFromDisk()
+            try StoreDataStore.shared.save(c.mapJSON, as: .map)
+        } else {
+            try Data(src.utf8).write(to: ws.appendingPathComponent("field-source.txt"))
+        }
+        AppLog.i("地图库", "装上云端地图：\(m.name)（磁场 \(m.fieldCells ?? 0) 格，蓝牙 \(m.bleTags ?? 0) 个价签）")
+    }
+
     private func writeMeta(_ e: Entry) throws {
         try JSONEncoder().encode(e).write(to: dir(e.id).appendingPathComponent("meta.json"))
     }
@@ -253,5 +321,117 @@ struct MapLibrarySection: View {
             Button("保存") { if let r = renaming { lib.rename(r.id, to: newName) }; renaming = nil }
             Button("取消", role: .cancel) { renaming = nil }
         }
+    }
+}
+
+/// 云端地图：上传当前地图、看云端有哪些、下载 / 更新
+@MainActor
+final class CloudMaps: ObservableObject {
+    static let shared = CloudMaps()
+    @Published private(set) var list: [Telemetry.CloudMap] = []
+    @Published private(set) var busy = false
+    @Published private(set) var message: String?
+
+    func refresh(autoUpdate: Bool = true) async {
+        guard Telemetry.shared.enabled else { return }
+        do {
+            list = try await Telemetry.shared.listPackages()
+            message = nil
+            // 本机已有、云端更新了的地图自动更新（在用的那张正在定位 / 采集时也会立刻生效，所以只在空闲时调用）
+            if autoUpdate {
+                for c in list {
+                    if let e = MapLibrary.shared.entries.first(where: { $0.id == c.id }), (e.cloudVersion ?? 0) < c.version {
+                        await download(c)
+                    }
+                }
+            }
+        } catch {
+            message = "取云端列表失败：\(error)"
+        }
+    }
+
+    func uploadActive() async {
+        busy = true
+        defer { busy = false }
+        do {
+            let (meta, data) = try MapLibrary.shared.packageActive()
+            try await Telemetry.shared.uploadPackage(data, meta: meta)
+            MapLibrary.shared.markUploaded(meta.id, version: meta.version)
+            message = "已上传「\(meta.name)」（\(data.count / 1024) KB）"
+            AppLog.i("地图库", message ?? "")
+            await refresh(autoUpdate: false)
+        } catch {
+            message = "上传失败：\(error)"
+            AppLog.w("地图库", message ?? "")
+        }
+    }
+
+    func download(_ c: Telemetry.CloudMap) async {
+        busy = true
+        defer { busy = false }
+        do {
+            let d = try await Telemetry.shared.downloadPackage(c.id)
+            let contents = try MapPackage.decode(d)
+            try MapLibrary.shared.install(contents)
+            message = "已装上「\(c.name)」（\(d.count / 1024) KB）"
+        } catch {
+            message = "下载失败：\(error)"
+            AppLog.w("地图库", message ?? "")
+        }
+    }
+
+    /// 本机状态：没有 / 旧 / 最新
+    func status(_ c: Telemetry.CloudMap) -> String {
+        guard let e = MapLibrary.shared.entries.first(where: { $0.id == c.id }) else { return "本机没有" }
+        let v = e.cloudVersion ?? 0
+        return v >= c.version ? "已是最新" : "有更新"
+    }
+}
+
+struct CloudMapsSection: View {
+    @ObservedObject private var cloud = CloudMaps.shared
+    @ObservedObject private var lib = MapLibrary.shared
+    @ObservedObject private var tel = Telemetry.shared
+    var busyElsewhere = false
+
+    var body: some View {
+        Section {
+            if !tel.enabled {
+                Text("先在「门店数据 → 云端后台」填地址和口令并打开连接。").font(.footnote).foregroundStyle(.secondary)
+            } else {
+                Button { Task { await cloud.uploadActive() } } label: {
+                    Label("把当前地图上传到云端（含磁场图和蓝牙）", systemImage: "icloud.and.arrow.up")
+                }
+                .disabled(cloud.busy || lib.activeId == nil || busyElsewhere)
+                Button { Task { await cloud.refresh() } } label: { Label("刷新云端列表", systemImage: "arrow.clockwise") }
+                    .disabled(cloud.busy)
+                ForEach(cloud.list) { c in
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(c.name.isEmpty ? c.id : c.name)
+                            Text(Self.date(c.version) + " · \(c.size / 1024) KB · 磁场 \(c.fieldCells ?? 0) 格 · 蓝牙 \(c.bleTags ?? 0)")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        let st = cloud.status(c)
+                        if st == "已是最新" {
+                            Text(st).font(.caption).foregroundStyle(.green)
+                        } else {
+                            Button(st == "本机没有" ? "下载" : "更新") { Task { await cloud.download(c) } }
+                                .buttonStyle(.bordered).disabled(cloud.busy || busyElsewhere)
+                        }
+                    }
+                }
+                if let m = cloud.message { Text(m).font(.footnote).foregroundStyle(.secondary) }
+            }
+        } header: { Text("云端地图") } footer: {
+            Text("采集的手机生成磁场图后上传一次，别的手机在这里下载；本机已有的地图云端更新了会自动更新。全店一张图压缩后约 0.5～1 MB。")
+        }
+        .task { await cloud.refresh() }
+    }
+
+    static func date(_ ms: Int64) -> String {
+        let df = DateFormatter(); df.dateFormat = "MM-dd HH:mm"
+        return df.string(from: Date(timeIntervalSince1970: Double(ms) / 1000))
     }
 }

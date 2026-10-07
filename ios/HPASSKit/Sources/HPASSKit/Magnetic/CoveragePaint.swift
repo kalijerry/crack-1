@@ -240,3 +240,39 @@ public final class CoveragePaint {
         return [UInt8](d.dropFirst(12))
     }
 }
+
+/// 「方向图」：每条通道每 binCm 一段，两个方向各走过没有（和手机上 SurveyCoverage 同一套规则）。
+/// 云端按融合用上的轨迹算一份，打进地图包，手机重装后也能看到哪些路段只走了一个方向。
+public enum DirectionCoverage {
+    public struct File: Codable, Equatable {
+        public var f: [[Int]]
+        public var b: [[Int]]
+        public init(f: [[Int]], b: [[Int]]) { self.f = f; self.b = b }
+    }
+
+    public static func build(crosses: [CrossSegment], tracks: [[(tMs: Int64, p: Point2)]], binCm: Double = 100) -> File {
+        let lengths = crosses.map { $0.a.distance(to: $0.b) }
+        var f = lengths.map { [Int](repeating: 0, count: max(Int(($0 / binCm).rounded(.up)), 1)) }
+        var b = f
+        for tr in tracks {
+            for k in tr.indices where k >= 3 {
+                let p = tr[k].p, q = tr[k - 3].p
+                let dir = Point2(p.x - q.x, p.y - q.y)
+                guard dir.x * dir.x + dir.y * dir.y > 100, dir.x * dir.x + dir.y * dir.y < 300 * 300 else { continue }
+                for (i, c) in crosses.enumerated() {
+                    let dx = c.b.x - c.a.x, dy = c.b.y - c.a.y
+                    let len2 = dx * dx + dy * dy
+                    guard len2 > 1 else { continue }
+                    let t = ((p.x - c.a.x) * dx + (p.y - c.a.y) * dy) / len2
+                    guard t >= -0.01, t <= 1.01 else { continue }
+                    let foot = Point2(c.a.x + t * dx, c.a.y + t * dy)
+                    guard p.distance(to: foot) <= max(c.lineWidth, 0) / 2 + 40 else { continue }
+                    let bin = min(max(Int(t * lengths[i] / binCm), 0), f[i].count - 1)
+                    if dir.x * dx + dir.y * dy >= 0 { f[i][bin] = 1 } else { b[i][bin] = 1 }
+                }
+            }
+        }
+        return File(f: f, b: b)
+    }
+}
+

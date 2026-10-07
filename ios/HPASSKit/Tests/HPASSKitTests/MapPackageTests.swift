@@ -49,7 +49,7 @@ final class MapPackageTests: XCTestCase {
         // 旧包（5 段，没有涂色和价签表）还能读
         let old = try MapPackage.encode(meta: meta, mapJSON: Data("{}".utf8), field: nil, ble: nil, worldMap: nil)
         let raw = try (old as NSData).decompressed(using: .zlib) as Data
-        let trimmed = try (raw.dropLast(8) as NSData).compressed(using: .zlib) as Data
+        let trimmed = try (raw.dropLast(12) as NSData).compressed(using: .zlib) as Data
         let oc = try MapPackage.decode(trimmed)
         XCTAssertNil(oc.paint); XCTAssertNil(oc.eslCSV)
     }

@@ -103,10 +103,18 @@ final class SurveyCoverage: ObservableObject {
 
     private func loadCloudPaint(into p: CoveragePaint) {
         cloudCounts = nil
-        guard let id = MapLibrary.shared.activeId,
-              let d = try? Data(contentsOf: MapLibrary.shared.cloudPaintURL(id)), let c = p.counts(of: d) else { return }
+        guard let id = MapLibrary.shared.activeId else { return }
+        guard let d = try? Data(contentsOf: MapLibrary.shared.cloudPaintURL(id)) else {
+            AppLog.i("建图", "这张地图还没有云端确认的涂色")
+            return
+        }
+        guard let c = p.counts(of: d) else {
+            AppLog.w("建图", "云端涂色和地图尺寸对不上（\(d.count) 字节，网格 \(p.cols)×\(p.rows)），没用")
+            return
+        }
         cloudCounts = c
         p.merge(d)
+        AppLog.i("建图", "云端确认的涂色：\(c.filter { $0 > 0 }.count) 格")
     }
 
     // MARK: 采集分区
@@ -194,7 +202,14 @@ final class SurveyCoverage: ObservableObject {
 
     /// 装上了新的云端版本：涂色 = 云端确认的；正在采集时本次已涂的保留（这次的会话云端还没判）
     func mergePaintFromDisk() {
-        guard let p = paintGrid else { return }
+        // 方向图同理：本机的清掉，读云端的（采集中保留本次已走的）
+        if !sessionActive {
+            try? FileManager.default.removeItem(at: Self.fileURL)
+            forward = forward.map { [Bool](repeating: false, count: $0.count) }
+            backward = forward
+        }
+        load()
+        guard let p = paintGrid else { revision += 1; return }
         let keep = p.serialized()
         p.reset()
         try? FileManager.default.removeItem(at: Self.paintURL)
@@ -328,13 +343,19 @@ final class SurveyCoverage: ObservableObject {
         if paintDirty { rebuildPaintImage() }
     }
 
+    /// 本机的方向图 + 云端确认的方向图（取并集）
     private func load() {
-        struct File: Codable { var f: [[Int]]; var b: [[Int]] }
-        guard let d = try? Data(contentsOf: Self.fileURL), let file = try? JSONDecoder().decode(File.self, from: d),
-              file.f.count == forward.count, file.b.count == backward.count else { return }
-        for i in forward.indices where file.f[i].count == forward[i].count && file.b[i].count == backward[i].count {
-            forward[i] = file.f[i].map { $0 != 0 }
-            backward[i] = file.b[i].map { $0 != 0 }
+        var urls = [Self.fileURL]
+        if let id = MapLibrary.shared.activeId { urls.append(MapLibrary.shared.cloudDirectionURL(id)) }
+        for url in urls {
+            guard let d = try? Data(contentsOf: url), let file = try? JSONDecoder().decode(DirectionCoverage.File.self, from: d),
+                  file.f.count == forward.count, file.b.count == backward.count else { continue }
+            for i in forward.indices where file.f[i].count == forward[i].count && file.b[i].count == backward[i].count {
+                for k in forward[i].indices {
+                    if file.f[i][k] != 0 { forward[i][k] = true }
+                    if file.b[i][k] != 0 { backward[i][k] = true }
+                }
+            }
         }
     }
 }

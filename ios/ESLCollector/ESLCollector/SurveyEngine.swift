@@ -409,6 +409,19 @@ final class SurveyEngine: ObservableObject {
 
     private let ar = ARKitLogger()
     private var anchorsWriter: CSVWriter?
+
+    // 货架黄色位置标签（「082-20」）：摄像头读到就知道在哪段货架前——自动定起点、轨迹偏了自动纠
+    /// 采集时识别货架标签
+    @Published var readSigns = true
+    @Published private(set) var lastSign: (text: String, shelf: String?, at: Date)?
+    @Published private(set) var signCount = 0
+    @Published private(set) var signFixes = 0
+    private let signReader = ShelfSignReader()
+    private var shelfSigns: ShelfSigns?
+    private var signsWriter: CSVWriter?
+    private var lastSignFixMs: Int64 = 0
+    /// 轨迹离标签所在货架段前的区域超过这么远（cm）才自动纠（区域本身已经含了站位误差）
+    static let signFixCm = 300.0
     private var cancellable: AnyCancellable?
 
     // 对齐参数：map = pRef + R(phi) · (a − aRef)，a 是 ARKit 的 (x, z)，单位 cm
@@ -459,6 +472,9 @@ final class SurveyEngine: ObservableObject {
         recorder.tap.raw = { t, v in sq.async { box.sh?.rawMag(tMs: t, v) } }
         ar.onFloor = { [weak self] y in
             Task { @MainActor in self?.arFloorY = y }
+        }
+        signReader.onRead = { [weak self] t, text, conf in
+            Task { @MainActor in self?.handleSign(tMs: t, text: text, confidence: conf) }
         }
         ar.onError = { [weak self] msg in
             Task { @MainActor in
@@ -514,6 +530,18 @@ final class SurveyEngine: ObservableObject {
             return
         }
         do {
+            if readSigns {
+                shelfSigns = StoreDataStore.shared.map.map { ShelfSigns(map: $0, walkable: store.walkableMap()) }
+                signsWriter = try CSVWriter(url: dir.appendingPathComponent("signs.csv"), header: "t_ms,text,shelf_code,confidence")
+                let reader = signReader
+                ar.onFrame = { f, t in reader.process(f, tMs: t) }
+            } else {
+                shelfSigns = nil
+                ar.onFrame = nil
+            }
+            signCount = 0
+            signFixes = 0
+            lastSign = nil
             anchorsWriter = try CSVWriter(url: dir.appendingPathComponent("anchors.csv"),
                                           header: "t_ms,kind,map_x_cm,map_y_cm,ar_x_cm,ar_z_cm,heading_rad,note")
             try ar.start(dir: dir, wantsDepth: true, lateralFile: dir.appendingPathComponent("depth_lateral.csv"),
@@ -569,6 +597,9 @@ final class SurveyEngine: ObservableObject {
         if evaluate, let s = evalSummary { AppLog.i("建图", "地磁定位精度：\(s)") }
         anchorsWriter?.close()
         anchorsWriter = nil
+        ar.onFrame = nil
+        signsWriter?.close()
+        signsWriter = nil
         recorder.stopRecording()
         coverage.save()
         coverage.clearGuides()
@@ -623,6 +654,31 @@ final class SurveyEngine: ObservableObject {
             return
         }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    }
+
+    /// 读到一个货架标签
+    private func handleSign(tMs: Int64, text: String, confidence: Float) {
+        guard stage != .idle else { return }
+        let sg = shelfSigns?.sign(for: text)
+        signsWriter?.append("\(tMs),\(text),\(sg?.shelfCode ?? ""),\(Fmt.f(Double(confidence), 2))")
+        signCount += 1
+        lastSign = (text, sg?.shelfCode, Date())
+        guard let sg, let ss = shelfSigns else { return }
+        switch stage {
+        case .needPosition, .autoLocating:
+            // 还没有起点：站在这段货架前
+            anchor(at: ss.standPoint(sg))
+            AppLog.i("建图", "货架标签 \(text) 定了起点（\(sg.shelfCode)）")
+        case .tracking:
+            guard let p = position, ss.distance(sg, from: p) > Self.signFixCm, tMs - lastSignFixMs > 10_000 else { return }
+            let before = ss.distance(sg, from: p)
+            lastSignFixMs = tMs
+            anchor(at: ss.nearestValid(sg, to: p))
+            signFixes += 1
+            AppLog.i("建图", "货架标签 \(text)：轨迹偏了 \(Int(before / 100)) m，已自动纠正")
+        default:
+            return
+        }
     }
 
     /// 双击：开始 / 结束设朝向。

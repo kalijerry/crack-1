@@ -73,6 +73,8 @@ struct MapCanvas: View {
     var zoneSegments: [(Point2, Point2, Double)] = []
     /// 进区入口（紫色圈）：从这里进，先沿已采路段走一段
     var zoneEntry: Point2?
+    /// 各采集区域的标签（中心位置、文字、已采好、本次区域）
+    var zoneLabels: [(p: Point2, text: String, done: Bool, current: Bool)] = []
     /// 路线规划的下一段（橙色粗线 + 箭头，从 .0 走到 .1）
     var nextLane: (Point2, Point2)?
     /// 可能变了的地方（1 m 的橙色方块）
@@ -456,6 +458,16 @@ struct MapCanvas: View {
             let rect = CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)
             ctx.fill(Path(rect), with: .color(Color.orange.opacity(0.35)))
             ctx.stroke(Path(rect), with: .color(.orange), lineWidth: 1.2)
+        }
+        // 采集区域标签：绿 = 已采好（不用采），紫 = 本次，灰 = 还没采完
+        for z in zoneLabels {
+            let c = t.toScreen(z.p)
+            let color: Color = z.done ? .green : (z.current ? .purple : .gray)
+            let label = Text(z.text).font(.caption2.bold()).foregroundColor(.white)
+            let size = CGSize(width: CGFloat(z.text.count) * 7 + 12, height: 18)
+            let r = CGRect(x: c.x - size.width / 2, y: c.y - size.height / 2, width: size.width, height: size.height)
+            ctx.fill(Path(roundedRect: r, cornerRadius: 9), with: .color(color.opacity(0.85)))
+            ctx.draw(label, at: c)
         }
         // 进区入口
         if let e = zoneEntry {

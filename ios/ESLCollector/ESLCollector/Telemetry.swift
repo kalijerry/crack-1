@@ -254,6 +254,16 @@ final class Telemetry: ObservableObject {
         var size: Int
         var fieldCells: Int?
         var bleTags: Int?
+        var origin: String?
+        var sessions: Int?
+        var isCloudFused: Bool { origin == "cloud" }
+    }
+
+    /// 后台的价签位置表（正常模式下从这里拿，不用自己导入）
+    func downloadEslLocations() async -> Data? {
+        guard let r = request("api/esl/locations.csv", method: "GET") else { return nil }
+        guard let res = try? await URLSession.shared.data(for: r), (res.1 as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return res.0
     }
 
     enum CloudError: Error, CustomStringConvertible {
@@ -295,6 +305,7 @@ final class Telemetry: ObservableObject {
         r.setValue("\(meta.version)", forHTTPHeaderField: "X-Map-Version")
         r.setValue("\(meta.fieldCells ?? 0)", forHTTPHeaderField: "X-Field-Cells")
         r.setValue("\(meta.bleTags ?? 0)", forHTTPHeaderField: "X-Ble-Tags")
+        r.setValue(meta.origin ?? "phone", forHTTPHeaderField: "X-Map-Origin")
         let (d, resp) = try await URLSession.shared.upload(for: r, from: data)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard code == 200 else { throw CloudError.http(code, String(data: d, encoding: .utf8) ?? "") }

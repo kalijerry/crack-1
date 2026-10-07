@@ -39,6 +39,7 @@ struct MagneticView: View {
     @State private var confirmDeleteField = false
     /// 采集进度怎么显示：涂色（Oriient 式，看通道宽度涂没涂满）/ 方向（每 1 m 两个方向走没走）
     @AppStorage("coverageLayer") private var coverageLayer = "paint"
+    @ObservedObject private var mode = AppMode.shared
     private var paintMode: Bool { coverageLayer == "paint" }
     @State private var confirmResetCoverage = false
     @State private var surveyNote = ""
@@ -483,20 +484,26 @@ struct MagneticView: View {
     /// 当前在用的磁场图 + 删除。地图、采集、定位三个步骤都放一份，好找。
     @ViewBuilder private var fieldSection: some View {
         Section {
+            if let e = MapLibrary.shared.active {
+                row("版本", MapLibrarySection.versionText(e))
+            }
             if store.field != nil {
                 row("格子数", "\(store.validCells)")
                 row("蓝牙指纹", store.bleMap.map { "\($0.tags.count) 个价签" } ?? "没有（采集时录到的价签太少，或旧版本生成的）")
                 Text(store.fieldSource ?? "来源未记录（旧版本生成或导入的）").font(.caption).foregroundStyle(.secondary)
-                Button(role: .destructive) { confirmDeleteField = true } label: {
-                    Label("删除当前磁场图", systemImage: "trash")
-                }
-                .disabled(engine.phase != .idle || survey.isRunning)
-                .confirmationDialog("删除手机上的磁场图？采集会话和点位都保留，可以重新生成。",
-                                    isPresented: $confirmDeleteField, titleVisibility: .visible) {
-                    Button("删除", role: .destructive) { store.deleteField() }
+                if mode.developer {
+                    Button(role: .destructive) { confirmDeleteField = true } label: {
+                        Label("删除当前磁场图", systemImage: "trash")
+                    }
+                    .disabled(engine.phase != .idle || survey.isRunning)
+                    .confirmationDialog("删除手机上的磁场图？采集会话和点位都保留，可以重新生成。",
+                                        isPresented: $confirmDeleteField, titleVisibility: .visible) {
+                        Button("删除", role: .destructive) { store.deleteField() }
+                    }
                 }
             } else {
-                Text("现在没有磁场图。到「采集」步骤选会话生成一张。").font(.footnote).foregroundStyle(.secondary)
+                Text(mode.developer ? "现在没有磁场图。到「采集」步骤选会话生成一张。"
+                     : "现在没有磁场图：到「门店数据 → 云端地图」下载云端融合的地图。").font(.footnote).foregroundStyle(.secondary)
             }
         } header: { Text("磁场图") } footer: {
             if store.field != nil && (engine.phase != .idle || survey.isRunning) {
@@ -525,6 +532,7 @@ struct MagneticView: View {
                 Text("地图朝向（上方指向）")
                 Spacer()
                 TextField("例如 316", text: $mapUpText)
+                    .disabled(!mode.developer)
                     .keyboardType(.numbersAndPunctuation)
                     .multilineTextAlignment(.trailing)
                     .frame(width: 90)
@@ -541,8 +549,10 @@ struct MagneticView: View {
             NavigationLink { DataManagerView() } label: {
                 Label("数据管理（会话、轨迹、网格、AR 记录）", systemImage: "externaldrive")
             }
-            LoggedButton(name: "实验功能", detail: "进入") { step = .advanced } label: {
-                Label("实验功能：按点位建图 / 只用计步定位", systemImage: "flask")
+            if mode.developer {
+                LoggedButton(name: "实验功能", detail: "进入") { step = .advanced } label: {
+                    Label("实验功能：按点位建图 / 只用计步定位", systemImage: "flask")
+                }
             }
             Stepper("3D 货架高度 \(Fmt.f(shelfHeight3D, 1)) m", value: $shelfHeight3D, in: 0.8...3.0, step: 0.2)
                 .onChange(of: shelfHeight3D) { _ in sync3D(full: false) }
@@ -552,8 +562,10 @@ struct MagneticView: View {
                  ? "地图来自「门店数据」页。长按地图空白处放点（按住不动约半秒再松手），点位用作起点、目标和路线建图的锚点。双指可缩放、单指拖动平移。"
                  : "还没有门店地图，现在是 10×10 m 测试区。长按方格图空白处放点，点位按编号连线。")
                 .font(.footnote).foregroundStyle(.secondary)
-            LoggedButton(name: "导入地图", detail: "JSON") { showImporter = true } label: {
-                Label("导入地图 JSON（网页编辑器导出的）", systemImage: "square.and.arrow.down")
+            if mode.developer {
+                LoggedButton(name: "导入地图", detail: "JSON") { showImporter = true } label: {
+                    Label("导入地图 JSON（网页编辑器导出的）", systemImage: "square.and.arrow.down")
+                }
             }
             if let m = importMessage { Text(m).font(.footnote).foregroundStyle(.secondary) }
             if FileManager.default.fileExists(atPath: MagMapStore.fileURL.path), !store.points.isEmpty {
@@ -695,7 +707,15 @@ struct MagneticView: View {
             }
         }
 
-        if !survey.isRunning {
+        if !survey.isRunning && !mode.developer {
+            Section {
+                Text("采集结束会自动上传到后台（「门店数据 → 云端后台」要连着）。地图由云端融合，融合好后在「门店数据 → 云端地图」更新。")
+                    .font(.footnote).foregroundStyle(.secondary)
+                if let u = Telemetry.shared.lastUpload { Text(u).font(.caption).foregroundStyle(.secondary) }
+            } header: { Text("上传") }
+        }
+
+        if !survey.isRunning && mode.developer {
             Section {
                 if mapService.items.isEmpty {
                     Text("还没有建图采集会话。").foregroundStyle(.secondary)
@@ -736,7 +756,7 @@ struct MagneticView: View {
             }
         }
 
-        if !survey.isRunning, let dir = survey.lastSessionDir {
+        if !survey.isRunning, mode.developer, let dir = survey.lastSessionDir {
             Section {
                 Text(dir.lastPathComponent).font(.footnote.monospaced())
                 if let url = exportURL {

@@ -20,6 +20,10 @@ public enum MapPackage {
         public var magSource: String?
         public var fieldCells: Int?
         public var bleTags: Int?
+        /// 谁生成的：cloud = 云端（GitHub Actions）融合的正式版本；phone = 手机上生成后手动上传的
+        public var origin: String?
+        /// 融合用了几个会话
+        public var sessions: Int?
 
         public init(id: String, name: String, kind: String, version: Int64, source: String? = nil,
                     mapUpBearingDeg: Double? = nil, magSource: String? = nil) {

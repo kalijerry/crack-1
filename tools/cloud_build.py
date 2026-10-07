@@ -118,7 +118,8 @@ def main():
             continue
         hdr = {"Content-Type": "application/octet-stream", "X-Map-Name": urllib.parse.quote(report["name"]),
                "X-Map-Kind": pm.get("kind") or "store", "X-Map-Version": str(report["version"]),
-               "X-Field-Cells": str(report["fieldCells"]), "X-Ble-Tags": str(report["bleTags"])}
+               "X-Field-Cells": str(report["fieldCells"]), "X-Ble-Tags": str(report["bleTags"]),
+               "X-Map-Origin": "cloud", "X-Map-Sessions": str(len(report.get("sessions", [])))}
         print(req("/api/packages/" + urllib.parse.quote(mid), "PUT", pkg, hdr).decode())
         stamp = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
         req(f"/api/reports/build_{mid}_{stamp}.json", "PUT", json.dumps(report, ensure_ascii=False).encode(),

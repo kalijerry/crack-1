@@ -85,6 +85,23 @@ final class StoreDataStore: ObservableObject {
         return locs
     }
 
+    var hasEslLocations: Bool { FileManager.default.fileExists(atPath: eslLocURL.path) }
+
+    /// 装上从后台拿到的价签位置表（正常模式），不再往回传
+    func installEslLocations(_ data: Data) throws {
+        guard let text = String(data: data, encoding: .utf8), !EslLocations.parse(text, map: map).isEmpty else {
+            throw StoreDataError.unsupportedFormat("后台的价签位置表读不出来")
+        }
+        try FileManager.default.createDirectory(at: Self.rootURL, withIntermediateDirectories: true)
+        try data.write(to: eslLocURL, options: .atomic)
+        let locs = EslLocations.parse(text, map: map)
+        try locs.map(\.id).joined(separator: "\n").write(to: eslIdsURL, atomically: true, encoding: .utf8)
+        eslLocCache = nil
+        eslLocCount = locs.count
+        loadEslIds()
+        AppLog.i("门店数据", "从后台装上价签位置表：\(locs.count) 个")
+    }
+
     /// 导入价签位置表：同时当价签名单用，连着后台就传上去（云端融合用它当蓝牙底图）
     func importEslLocations(from source: URL) throws -> (total: Int, onShelf: Int) {
         let scoped = source.startAccessingSecurityScopedResource()

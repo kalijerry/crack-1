@@ -106,6 +106,8 @@ do {
                                source: "云端融合 \(sessions.count) 个会话", mapUpBearingDeg: arg("--bearing").flatMap(Double.init),
                                magSource: "raw")
     meta.fieldCells = r.field.coveredCells
+    meta.origin = "cloud"
+    meta.sessions = sessions.count
     meta.bleTags = ble?.tags.count
     let pkg = try MapPackage.encode(meta: meta, mapJSON: mapData, field: r.field, ble: ble, worldMap: nil)
     try pkg.write(to: URL(fileURLWithPath: out))

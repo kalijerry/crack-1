@@ -6,8 +6,24 @@ enum Features {
     static let bluetooth = false
 }
 
+/// 两种模式：
+/// - 正常模式（默认）：只用云端（GitHub Actions）融合出来的地图（带版本号），能采集（自动上传）、定位、找价签；
+/// - 开发模式：全部功能——本机生成磁场图、选会话、导入各种数据、扫房间、实验功能、上传本机版本。
+@MainActor
+final class AppMode: ObservableObject {
+    static let shared = AppMode()
+    @Published var developer: Bool = UserDefaults.standard.bool(forKey: "developerMode") {
+        didSet {
+            UserDefaults.standard.set(developer, forKey: "developerMode")
+            AppLog.i("应用", developer ? "切到开发模式" : "切到正常模式")
+            if !developer { MapLibrary.shared.ensureCloudActive() }
+        }
+    }
+}
+
 struct ContentView: View {
     @State private var tab = Features.bluetooth ? Tab.collect : Tab.magnetic
+    @ObservedObject private var mode = AppMode.shared
 
     enum Tab: Hashable {
         case collect, storeData, live, magnetic, scan, log
@@ -35,9 +51,11 @@ struct ContentView: View {
                 .tabItem { Label("地磁定位", systemImage: "scope") }
                 .tag(Tab.magnetic)
 
-            RoomScanView()
-                .tabItem { Label("房间扫描", systemImage: "cube.transparent") }
-                .tag(Tab.scan)
+            if mode.developer {
+                RoomScanView()
+                    .tabItem { Label("房间扫描", systemImage: "cube.transparent") }
+                    .tag(Tab.scan)
+            }
 
             LogView()
                 .tabItem { Label("日志", systemImage: "list.bullet.rectangle") }

@@ -21,6 +21,10 @@ final class MapLibrary: ObservableObject {
         var created: Date
         /// 本机这张地图对应的云端版本（上传或下载时记下，生成时间 Unix 毫秒）
         var cloudVersion: Int64?
+        /// 从云端装上时的说明（来源、会话数、磁场格数、蓝牙价签数…）
+        var cloudInfo: MapPackage.Meta?
+        /// 是云端融合的正式版本
+        var isCloudFused: Bool { cloudInfo?.origin == "cloud" }
         var isRoom: Bool { kind == "room" }
     }
 
@@ -29,6 +33,16 @@ final class MapLibrary: ObservableObject {
     @Published private(set) var lastError: String?
 
     var active: Entry? { entries.first { $0.id == activeId } }
+
+    /// 当前模式下能看到的地图：正常模式只有云端融合的
+    var visibleEntries: [Entry] { AppMode.shared.developer ? entries : entries.filter(\.isCloudFused) }
+
+    /// 正常模式下，当前地图不是云端融合的就换到一张云端融合的（没有就不动，界面提示去下载）
+    func ensureCloudActive() {
+        guard !AppMode.shared.developer, active?.isCloudFused != true,
+              let e = entries.first(where: \.isCloudFused) else { return }
+        try? activate(e.id)
+    }
 
     static var root: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -186,6 +200,7 @@ final class MapLibrary: ObservableObject {
         let mapJSON = try Data(contentsOf: mapURL(id))
         var meta = MapPackage.Meta(id: id, name: e.name, kind: e.kind, version: Fmt.nowMs(), source: store.fieldSource,
                                    mapUpBearingDeg: store.mapUpBearingDeg, magSource: store.magSource)
+        meta.origin = "phone"
         meta.fieldCells = store.field?.coveredCells
         meta.bleTags = store.bleMap?.tags.count
         let wm = worldMapURL(id).flatMap { try? Data(contentsOf: $0) }
@@ -208,10 +223,12 @@ final class MapLibrary: ObservableObject {
             try c.mapJSON.write(to: mapURL(m.id))
             entries[i].name = m.name
             entries[i].cloudVersion = m.version
+            entries[i].cloudInfo = m
             try writeMeta(entries[i])
         } else {
             var e = try add(data: c.mapJSON, name: m.name, kind: m.kind, id: m.id)
             e.cloudVersion = m.version
+            e.cloudInfo = m
             if let i = entries.firstIndex(where: { $0.id == m.id }) { entries[i] = e }
             try writeMeta(e)
         }
@@ -244,6 +261,7 @@ final class MapLibrary: ObservableObject {
         } else {
             try Data(src.utf8).write(to: ws.appendingPathComponent("field-source.txt"))
         }
+        if !AppMode.shared.developer && active?.isCloudFused != true && m.origin == "cloud" { try? activate(m.id) }
         AppLog.i("地图库", "装上云端地图：\(m.name)（磁场 \(m.fieldCells ?? 0) 格，蓝牙 \(m.bleTags ?? 0) 个价签）")
     }
 
@@ -260,7 +278,7 @@ struct MapPickerMenu: View {
 
     var body: some View {
         Menu {
-            ForEach(lib.entries) { e in
+            ForEach(lib.visibleEntries) { e in
                 Button {
                     do { try lib.activate(e.id) } catch { self.error = error.localizedDescription }
                 } label: {
@@ -279,7 +297,7 @@ struct MapPickerMenu: View {
             }
             .font(.footnote.weight(.semibold))
         }
-        .disabled(disabled || lib.entries.isEmpty)
+        .disabled(disabled || lib.visibleEntries.isEmpty)
         .alert("切换失败", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("好") { error = nil }
         } message: { Text(error ?? "") }
@@ -288,21 +306,29 @@ struct MapPickerMenu: View {
 
 /// 地图库管理：列表、切换、改名、删除
 struct MapLibrarySection: View {
+    /// 版本说明：云端融合 MM-dd HH:mm · N 个会话 / 本机
+    static func versionText(_ e: MapLibrary.Entry) -> String {
+        guard let i = e.cloudInfo else { return e.cloudVersion != nil ? "已上传（本机生成）" : "本机" }
+        return (i.origin == "cloud" ? "云端融合 " : "手机上传 ") + CloudMapsSection.date(i.version)
+            + (i.sessions.map { " · \($0) 个会话" } ?? "")
+    }
+
     @ObservedObject private var lib = MapLibrary.shared
     @State private var renaming: MapLibrary.Entry?
     @State private var newName = ""
 
     var body: some View {
         Section {
-            if lib.entries.isEmpty {
-                Text("地图库是空的：导入门店地图，或者到「房间扫描」扫一个房间。").font(.footnote).foregroundStyle(.secondary)
+            if lib.visibleEntries.isEmpty {
+                Text(AppMode.shared.developer ? "地图库是空的：导入门店地图，或者到「房间扫描」扫一个房间。"
+                     : "还没有云端地图：在下面「云端地图」里下载。").font(.footnote).foregroundStyle(.secondary)
             }
-            ForEach(lib.entries) { e in
+            ForEach(lib.visibleEntries) { e in
                 HStack {
                     Image(systemName: e.isRoom ? "cube.transparent" : "building.2").foregroundStyle(.secondary)
                     VStack(alignment: .leading) {
                         Text(e.name)
-                        Text(e.isRoom ? "房间扫描" : "门店地图").font(.caption).foregroundStyle(.secondary)
+                        Text((e.isRoom ? "房间" : "门店") + " · " + Self.versionText(e)).font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
                     if e.id == lib.activeId {
@@ -312,8 +338,10 @@ struct MapLibrarySection: View {
                     }
                 }
                 .swipeActions {
-                    if e.id != lib.activeId { Button("删除", role: .destructive) { lib.delete(e.id) } }
-                    Button("改名") { renaming = e; newName = e.name }.tint(.blue)
+                    if AppMode.shared.developer {
+                        if e.id != lib.activeId { Button("删除", role: .destructive) { lib.delete(e.id) } }
+                        Button("改名") { renaming = e; newName = e.name }.tint(.blue)
+                    }
                 }
             }
             if let err = lib.lastError { Text(err).font(.footnote).foregroundStyle(.red) }
@@ -339,8 +367,14 @@ final class CloudMaps: ObservableObject {
     func refresh(autoUpdate: Bool = true) async {
         guard Telemetry.shared.enabled else { return }
         do {
-            list = try await Telemetry.shared.listPackages()
+            let all = try await Telemetry.shared.listPackages()
+            // 正常模式只看云端融合的正式版本
+            list = AppMode.shared.developer ? all : all.filter(\.isCloudFused)
             message = nil
+            // 价签位置表：本机没有就从后台拿（找价签、蓝牙底图用）
+            if !StoreDataStore.shared.hasEslLocations, let d = await Telemetry.shared.downloadEslLocations() {
+                try? StoreDataStore.shared.installEslLocations(d)
+            }
             // 本机已有、云端更新了的地图自动更新（在用的那张正在定位 / 采集时也会立刻生效，所以只在空闲时调用）
             if autoUpdate {
                 for c in list {
@@ -403,17 +437,21 @@ struct CloudMapsSection: View {
             if !tel.enabled {
                 Text("先在「门店数据 → 云端后台」填地址和口令并打开连接。").font(.footnote).foregroundStyle(.secondary)
             } else {
-                Button { Task { await cloud.uploadActive() } } label: {
-                    Label("上传本机生成的地图（临时，云端融合后会被替换）", systemImage: "icloud.and.arrow.up")
+                if AppMode.shared.developer {
+                    Button { Task { await cloud.uploadActive() } } label: {
+                        Label("上传本机生成的地图（临时，云端融合后会被替换）", systemImage: "icloud.and.arrow.up")
+                    }
+                    .disabled(cloud.busy || lib.activeId == nil || busyElsewhere)
                 }
-                .disabled(cloud.busy || lib.activeId == nil || busyElsewhere)
                 Button { Task { await cloud.refresh() } } label: { Label("刷新云端列表", systemImage: "arrow.clockwise") }
                     .disabled(cloud.busy)
                 ForEach(cloud.list) { c in
                     HStack {
                         VStack(alignment: .leading) {
                             Text(c.name.isEmpty ? c.id : c.name)
-                            Text(Self.date(c.version) + " · \(c.size / 1024) KB · 磁场 \(c.fieldCells ?? 0) 格 · 蓝牙 \(c.bleTags ?? 0)")
+                            Text((c.isCloudFused ? "云端融合 " : "手机上传 ") + Self.date(c.version)
+                                 + (c.sessions.map { $0 > 0 ? " · \($0) 个会话" : "" } ?? "")
+                                 + " · \(c.size / 1024) KB · 磁场 \(c.fieldCells ?? 0) 格 · 蓝牙 \(c.bleTags ?? 0)")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()

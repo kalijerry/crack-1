@@ -33,19 +33,23 @@ struct StoreDataView: View {
     }
 
     private static let rememberKey = "storeData.rememberCredential"
+    @ObservedObject private var mode = AppMode.shared
     private static let userKey = "storeData.username"
     private static let credKey = "storeData.credential"
 
     var body: some View {
         Form {
+            ModeSection()
             MapLibrarySection()
             CloudMapsSection()
-            EslListSection()
+            if mode.developer { EslListSection() }
             TelemetrySection()
-            statusSection
-            if Features.bluetooth { selfCheckSection }
-            serverSection
-            importSection
+            if mode.developer {
+                statusSection
+                if Features.bluetooth { selfCheckSection }
+                serverSection
+                importSection
+            }
         }
         .navigationTitle("门店数据")
         .scrollDismissesKeyboard(.interactively)
@@ -516,6 +520,29 @@ struct EslListSection: View {
                 do { message = "已导入 \(try store.importEslIds(from: u)) 个价签" } catch { message = "导入失败：\(error)" }
             case .failure(let e): message = "导入失败：\(e.localizedDescription)"
             }
+        }
+    }
+}
+
+/// 模式切换：正常（只用云端融合的地图）/ 开发（全部功能）
+struct ModeSection: View {
+    @ObservedObject private var mode = AppMode.shared
+    @ObservedObject private var store = StoreDataStore.shared
+
+    var body: some View {
+        Section {
+            Toggle("开发模式", isOn: $mode.developer)
+            if !mode.developer {
+                HStack {
+                    Text("价签位置表")
+                    Spacer()
+                    Text(store.eslLocCount > 0 ? "\(store.eslLocCount) 个（来自后台）" : "还没有：连上后台后自动下载").font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+        } header: { Text("模式") } footer: {
+            Text(mode.developer
+                 ? "开发模式：本机生成磁场图、选会话、导入地图和价签数据、扫房间、实验功能、上传本机版本都能用。"
+                 : "正常模式：只用云端融合（GitHub Actions）出来的地图，带版本号；可以采集（结束后自动上传）、定位、找价签。地图在下面「云端地图」下载 / 更新。")
         }
     }
 }

@@ -109,7 +109,8 @@ export default {
           const m = o.customMetadata || {};
           out.push({ id: o.key.slice("packages/".length).replace(/\.hpmp$/, ""), size: o.size, uploaded: o.uploaded,
                      name: m.name ? decodeURIComponent(m.name) : "", kind: m.kind || "", version: Number(m.version || 0),
-                     fieldCells: Number(m.fieldCells || 0), bleTags: Number(m.bleTags || 0) });
+                     fieldCells: Number(m.fieldCells || 0), bleTags: Number(m.bleTags || 0),
+                     origin: m.origin || "phone", sessions: Number(m.sessions || 0) });
         }
         cursor = r.truncated ? r.cursor : undefined;
       } while (cursor);
@@ -130,7 +131,8 @@ export default {
         await env.DATA.put(key, request.body, {
           httpMetadata: { contentType: "application/octet-stream" },
           customMetadata: { name: h("x-map-name"), kind: h("x-map-kind"), version: String(version),
-                            fieldCells: h("x-field-cells"), bleTags: h("x-ble-tags") },
+                            fieldCells: h("x-field-cells"), bleTags: h("x-ble-tags"),
+                            origin: h("x-map-origin") || "phone", sessions: h("x-map-sessions") },
         });
         const hub = env.HUB.get(env.HUB.idFromName("main"));
         await hub.fetch(new Request("https://hub/event", {

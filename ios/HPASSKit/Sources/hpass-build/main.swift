@@ -6,7 +6,7 @@ import HPASSKit
 //
 //   hpass-build --map map.json --sessions 目录1,目录2,… [--test 测试会话,…] [--esl-ids 价签名单.txt]
 //               --id 地图编号 --name 名字 [--kind store|room] [--bearing 316]
-//               --out 包.hpmp --report 报告.json [--runs 3]
+//               [--esl-locations 价签位置表.csv（也打进包里）] --out 包.hpmp --report 报告.json [--runs 3]
 
 func arg(_ name: String) -> String? {
     guard let i = CommandLine.arguments.firstIndex(of: name), i + 1 < CommandLine.arguments.count else { return nil }
@@ -66,7 +66,9 @@ do {
     // 价签位置表：当蓝牙底图（全店都有），学到的只在表明显不对时替换
     var bleMap = learnedBLE
     var eslMismatches: [String] = []
+    var eslCSV: Data?
     if let p = arg("--esl-locations"), let t = try? String(contentsOfFile: p, encoding: .utf8) {
+        eslCSV = Data(t.utf8)
         let locs = EslLocations.parse(t, map: map)
         bleMap = EslLocations.seededBLEMap(locs, learned: learnedBLE)
         eslMismatches = EslLocations.mismatches(locs, learned: learnedBLE).map { "\($0.id) \($0.shelf) 差 \(Int($0.distanceCm / 100)) m" }
@@ -109,7 +111,7 @@ do {
     meta.origin = "cloud"
     meta.sessions = sessions.count
     meta.bleTags = ble?.tags.count
-    let pkg = try MapPackage.encode(meta: meta, mapJSON: mapData, field: r.field, ble: ble, worldMap: nil)
+    let pkg = try MapPackage.encode(meta: meta, mapJSON: mapData, field: r.field, ble: ble, worldMap: nil, paint: paint?.serialized(), eslCSV: eslCSV)
     try pkg.write(to: URL(fileURLWithPath: out))
     print("地图包 \(pkg.count / 1024) KB → \(out)")
     var warnings: [String] = []

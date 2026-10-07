@@ -250,6 +250,16 @@ final class MapLibrary: ObservableObject {
         try JSONSerialization.data(withJSONObject: root).write(to: ws.appendingPathComponent("magmap.json"), options: .atomic)
         let bleURL = ws.appendingPathComponent("ble-fingerprint.json")
         if let b = c.ble { try JSONEncoder().encode(b).write(to: bleURL, options: .atomic) } else { try? fm.removeItem(at: bleURL) }
+        // 采集涂色：和本机的合并（每格取大），本机在云端融合之后又采的不会丢
+        if let p = c.paint {
+            let url = ws.appendingPathComponent("survey-paint.bin")
+            try CoveragePaint.mergeSerialized(try? Data(contentsOf: url), p).write(to: url, options: .atomic)
+            if isActive { NotificationCenter.default.post(name: .surveyPaintFileChanged, object: nil) }
+        }
+        // 价签位置表（价签 → 绑定的货架、商品）：包里带了就用包里的（比单独拉的新）
+        if let e = c.eslCSV, m.kind == "store" {
+            do { try StoreDataStore.shared.installEslLocations(e) } catch { AppLog.w("地图库", "价签位置表：\(error)") }
+        }
         // 增量统计和变化检测是针对旧图的，清掉
         for f in ["build-state.json", "live-monitor.json"] { try? fm.removeItem(at: ws.appendingPathComponent(f)) }
         let df = DateFormatter(); df.dateFormat = "MM-dd HH:mm"
@@ -354,6 +364,11 @@ struct MapLibrarySection: View {
             Button("取消", role: .cancel) { renaming = nil }
         }
     }
+}
+
+extension Notification.Name {
+    /// 在用地图的涂色文件被（云端地图包）改了，采集页要读回来
+    static let surveyPaintFileChanged = Notification.Name("surveyPaintFileChanged")
 }
 
 /// 云端地图：上传当前地图、看云端有哪些、下载 / 更新

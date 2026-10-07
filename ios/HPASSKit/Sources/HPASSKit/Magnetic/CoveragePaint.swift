@@ -210,4 +210,30 @@ public final class CoveragePaint {
         revision += 1
         return true
     }
+
+    /// 合并另一份存盘的涂色（云端融合的、别的手机采的）：每格取走过趟数多的。尺寸或通道数不一致返回 false。
+    @discardableResult
+    public func merge(_ d: Data) -> Bool {
+        let other = CoveragePaint.counts(of: d, cols: cols, rows: rows, crosses: crosses.count)
+        guard let o = other else { return false }
+        for k in counts.indices where mask[k] && o[k] > counts[k] { counts[k] = o[k] }
+        paintedCells = counts.reduce(0) { $0 + ($1 > 0 ? 1 : 0) }
+        revision += 1
+        return true
+    }
+
+    /// 两份存盘数据直接按格取大（不用建网格；头不一致就用 b）
+    public static func mergeSerialized(_ a: Data?, _ b: Data) -> Data {
+        guard let a, a.count == b.count, a.prefix(12) == b.prefix(12) else { return b }
+        var out = Data(b.prefix(12))
+        out.append(contentsOf: zip(a.dropFirst(12), b.dropFirst(12)).map { max($0, $1) })
+        return out
+    }
+
+    private static func counts(of d: Data, cols: Int, rows: Int, crosses: Int) -> [UInt8]? {
+        guard d.count == 12 + cols * rows else { return nil }
+        func u32(_ o: Int) -> Int { Int(d.subdata(in: d.startIndex + o..<d.startIndex + o + 4).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian) }
+        guard u32(0) == cols, u32(4) == rows, u32(8) == crosses else { return nil }
+        return [UInt8](d.dropFirst(12))
+    }
 }

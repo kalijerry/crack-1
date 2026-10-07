@@ -266,6 +266,16 @@ final class Telemetry: ObservableObject {
         }
     }
 
+    /// 价签位置表传到后台（云端融合当蓝牙底图）
+    func uploadEslLocations(_ data: Data) async {
+        guard enabled, var r = request("api/esl/locations.csv", method: "PUT") else { return }
+        r.setValue("text/csv; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        let resp = try? await URLSession.shared.upload(for: r, from: data).1
+        if (resp as? HTTPURLResponse)?.statusCode == 200 {
+            AppLog.i("后台", "价签位置表已上传")
+        }
+    }
+
     /// 后台会话列表的请求（没配地址时 nil）
     func sessionsRequest() -> URLRequest? { request("api/sessions", method: "GET") }
 

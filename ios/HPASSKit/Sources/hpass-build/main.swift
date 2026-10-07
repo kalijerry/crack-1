@@ -29,6 +29,7 @@ struct Report: Encodable {
     var tests: [EvalReport]
     var packageBytes: Int
     var warnings: [String]
+    var eslMismatches: [String]
 }
 
 guard let mapPath = arg("--map"), let out = arg("--out"), let id = arg("--id") else {
@@ -60,9 +61,18 @@ do {
     let bb = BLEFingerprintBuilder(widthCm: map.width, heightCm: map.height)
     if let p = arg("--esl-ids"), let t = try? String(contentsOfFile: p, encoding: .utf8) { bb.whitelist = BLEFingerprintBuilder.parseIdList(t) }
     for (k, track) in r.tracks.enumerated() where k < bleSamples.count { _ = bb.add(samples: bleSamples[k], track: track) }
-    let bleMap = bb.build()
+    let learnedBLE = bb.build()
+    print("蓝牙指纹（采集学到）：\(learnedBLE.tags.count) 个价签" + (bb.rejectedMoving.isEmpty ? "" : "（\(bb.rejectedMoving.count) 个移动设备不算）"))
+    // 价签位置表：当蓝牙底图（全店都有），学到的只在表明显不对时替换
+    var bleMap = learnedBLE
+    var eslMismatches: [String] = []
+    if let p = arg("--esl-locations"), let t = try? String(contentsOfFile: p, encoding: .utf8) {
+        let locs = EslLocations.parse(t, map: map)
+        bleMap = EslLocations.seededBLEMap(locs, learned: learnedBLE)
+        eslMismatches = EslLocations.mismatches(locs, learned: learnedBLE).map { "\($0.id) \($0.shelf) 差 \(Int($0.distanceCm / 100)) m" }
+        print("价签位置表：\(locs.count) 个，对上货架 \(locs.filter { $0.position != nil }.count) 个；合并后 \(bleMap.tags.count) 个；表里可能不对 \(eslMismatches.count) 个")
+    }
     let ble: BLEFingerprintMap? = bleMap.tags.count >= 20 ? bleMap : nil
-    print("蓝牙指纹：\(bleMap.tags.count) 个价签" + (bb.rejectedMoving.isEmpty ? "" : "（\(bb.rejectedMoving.count) 个移动设备不算）"))
     // 覆盖率：按所有会话的轨迹涂色
     var coverage: Double?, covered: Double?, walkableM2: Double?
     var unfinished: [String] = []
@@ -105,7 +115,8 @@ do {
     if let rp = arg("--report") {
         let rep = Report(mapId: id, name: meta.name, version: meta.version, sessions: r.sessions, components: r.components,
                          fieldCells: r.field.coveredCells, bleTags: ble?.tags.count ?? 0, coverage: coverage, coveredM2: covered,
-                         walkableM2: walkableM2, unfinishedCorridors: unfinished, tests: tests, packageBytes: pkg.count, warnings: warnings)
+                         walkableM2: walkableM2, unfinishedCorridors: unfinished, tests: tests, packageBytes: pkg.count, warnings: warnings,
+                         eslMismatches: eslMismatches)
         let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         try enc.encode(rep).write(to: URL(fileURLWithPath: rp))
     }

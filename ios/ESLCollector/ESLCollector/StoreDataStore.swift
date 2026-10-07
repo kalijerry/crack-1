@@ -70,6 +70,41 @@ final class StoreDataStore: ObservableObject {
         return "\(Int(m.width))x\(Int(m.height))/\(m.shelves.count)/\(m.crosses.count)/\(m.floor.count)/\(m.floorName ?? "")"
     }
 
+    // MARK: 价签位置表（esl_locations_<门店>.csv：价签 → 通道 / 段 / 层 / 条码）
+
+    private var eslLocURL: URL { Self.rootURL.appendingPathComponent("esl-locations.csv") }
+    private var eslLocCache: (sig: String, locs: [EslLocation])?
+    @Published private(set) var eslLocCount = 0
+
+    /// 按当前地图对上货架的价签位置（地图换了重新对）
+    var eslLocations: [EslLocation] {
+        if let c = eslLocCache, c.sig == mapSignature { return c.locs }
+        guard let t = try? String(contentsOf: eslLocURL, encoding: .utf8) else { return [] }
+        let locs = EslLocations.parse(t, map: map)
+        eslLocCache = (mapSignature, locs)
+        return locs
+    }
+
+    /// 导入价签位置表：同时当价签名单用，连着后台就传上去（云端融合用它当蓝牙底图）
+    func importEslLocations(from source: URL) throws -> (total: Int, onShelf: Int) {
+        let scoped = source.startAccessingSecurityScopedResource()
+        defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+        let data = try Data(contentsOf: source)
+        guard let text = String(data: data, encoding: .utf8) else { throw StoreDataError.unsupportedFormat("不是 UTF-8 文本") }
+        let locs = EslLocations.parse(text, map: map)
+        guard !locs.isEmpty else { throw StoreDataError.unsupportedFormat("没找到 ESL_ID 列") }
+        try FileManager.default.createDirectory(at: Self.rootURL, withIntermediateDirectories: true)
+        try data.write(to: eslLocURL, options: .atomic)
+        try locs.map(\.id).joined(separator: "\n").write(to: eslIdsURL, atomically: true, encoding: .utf8)
+        eslLocCache = nil
+        eslLocCount = locs.count
+        loadEslIds()
+        let onShelf = locs.filter { $0.position != nil }.count
+        AppLog.i("门店数据", "导入价签位置表：\(locs.count) 个，对上地图货架 \(onShelf) 个")
+        Task { await Telemetry.shared.uploadEslLocations(data) }
+        return (locs.count, onShelf)
+    }
+
     // MARK: 价签名单（蓝牙粗定位只收名单里的价签）
 
     private var eslIdsURL: URL { Self.rootURL.appendingPathComponent("esl-ids.txt") }
@@ -116,7 +151,10 @@ final class StoreDataStore: ObservableObject {
     }
 
     private init() {
-        defer { loadEslIds() }
+        defer {
+            loadEslIds()
+            eslLocCount = FileManager.default.fileExists(atPath: eslLocURL.path) ? eslLocations.count : 0
+        }
         if let a = UserDefaults.standard.array(forKey: Self.shelfOffsetKey) as? [Double], a.count == 2 {
             shelfOffset = Point2(a[0], a[1])
         }

@@ -67,6 +67,15 @@ def main():
             g = groups.setdefault(mid, {"build": [], "test": []})
             g["test" if meta.get("purpose") == "test" else "build"].append(d)
     reports = get_json("/api/reports")
+    # 价签位置表（App「门店数据 → 蓝牙」导入时会传到后台）：当蓝牙底图
+    esl_path = None
+    try:
+        esl = req("/api/esl/locations.csv")
+        esl_path = os.path.join(work, "esl_locations.csv")
+        open(esl_path, "wb").write(esl)
+        print(f"价签位置表 {len(esl) // 1024} KB")
+    except urllib.error.HTTPError:
+        print("后台没有价签位置表，蓝牙只用采集学到的")
     for mid, g in sorted(groups.items()):
         if ONLY and mid != ONLY:
             continue
@@ -96,6 +105,8 @@ def main():
                "--name", pm.get("name") or mid, "--kind", pm.get("kind") or "store", "--out", out, "--report", rep]
         if g["test"]:
             cmd += ["--test", ",".join(g["test"])]
+        if esl_path:
+            cmd += ["--esl-locations", esl_path]
         if pm.get("mapUpBearingDeg") is not None:
             cmd += ["--bearing", str(pm["mapUpBearingDeg"])]
         subprocess.run(cmd, check=True)

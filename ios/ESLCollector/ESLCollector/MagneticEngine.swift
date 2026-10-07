@@ -623,15 +623,25 @@ final class MagneticEngine: ObservableObject {
 
     // MARK: 蓝牙粗定位
 
+    /// 蓝牙底图：价签位置表（全店）+ 采集学到的（表明显不对时用学到的）
+    private func bleBaseMap() -> BLEFingerprintMap? {
+        let learned = MagMapStore.shared.bleMap
+        let locs = StoreDataStore.shared.eslLocations
+        if locs.isEmpty { return learned }
+        return EslLocations.seededBLEMap(locs, learned: learned)
+    }
+
     private func startBLE() {
-        guard let m = MagMapStore.shared.bleMap, !m.tags.isEmpty else { return }
+        guard let m = bleBaseMap(), !m.tags.isEmpty else { startFinderScanOnly(); return }
         let pipe = self.pipe, queue = self.queue
         queue.sync { pipe.bleMap = m; pipe.bleAssist = nil; pipe.bleWindow = []; pipe.lastBleApply = 0 }
         if ble == nil { ble = BLEScanner() }
         ble?.onlyESL = true
         let whitelist = StoreDataStore.shared.eslIds
-        ble?.onReading = { r in
+        let finder = finderBox
+        ble?.onReading = { [weak self] r in
             guard let id = r.eslId, whitelist?.contains(id) ?? true else { return }
+            if finder.matches(id) { Task { @MainActor in self?.heardTarget(rssi: Double(r.rssi)) } }
             queue.async {
                 pipe.bleWindow.append((r.tMs, id, Double(r.rssi)))
                 if pipe.bleWindow.count > 2000 { pipe.bleWindow.removeFirst(pipe.bleWindow.count - 2000) }
@@ -640,6 +650,61 @@ final class MagneticEngine: ObservableObject {
         ble?.start()
         AppLog.i("地磁", "蓝牙粗定位：已开，指纹 \(m.tags.count) 个价签")
     }
+
+    // MARK: 寻找模式：找一个价签
+
+    /// 正在找的价签（地图上高亮它的货架；实时显示它的信号）
+    @Published private(set) var findTarget: EslLocation?
+    @Published private(set) var findRssi: Double?
+    @Published private(set) var findLastHeard: Date?
+    /// 信号在变强（1）/ 变弱（-1）/ 差不多（0）
+    @Published private(set) var findTrend = 0
+    private let finderBox = FinderBox()
+    private var findHistory: [(Date, Double)] = []
+    private var lastProximity = 0
+
+    func setFindTarget(_ e: EslLocation?) {
+        findTarget = e
+        finderBox.set(e?.id)
+        findRssi = nil
+        findLastHeard = nil
+        findHistory = []
+        lastProximity = 0
+        if let e { AppLog.i("寻找", "找价签 \(e.id)：\(e.label) \(e.plano)") }
+        if e != nil && phase == .live && ble == nil { startFinderScanOnly() }
+    }
+
+    /// 没有蓝牙底图时也要能找：只开扫描
+    private func startFinderScanOnly() {
+        guard phase == .live, finderBox.id != nil || findTarget != nil else { return }
+        if ble == nil { ble = BLEScanner() }
+        ble?.onlyESL = true
+        let finder = finderBox
+        ble?.onReading = { [weak self] r in
+            guard let id = r.eslId, finder.matches(id) else { return }
+            Task { @MainActor in self?.heardTarget(rssi: Double(r.rssi)) }
+        }
+        ble?.start()
+    }
+
+    private func heardTarget(rssi: Double) {
+        let now = Date()
+        findRssi = findRssi.map { $0 * 0.6 + rssi * 0.4 } ?? rssi
+        findLastHeard = now
+        findHistory.append((now, findRssi!))
+        findHistory.removeAll { now.timeIntervalSince($0.0) > 6 }
+        if let old = findHistory.first(where: { now.timeIntervalSince($0.0) > 2.5 }) {
+            let d = findRssi! - old.1
+            findTrend = d > 3 ? 1 : (d < -3 ? -1 : 0)
+        }
+        let prox = Self.proximity(findRssi!)
+        if prox > lastProximity { UIImpactFeedbackGenerator(style: prox >= 3 ? .heavy : .light).impactOccurred() }
+        lastProximity = prox
+    }
+
+    /// 0 远 / 1 附近 / 2 很近 / 3 就在旁边（价签广播功率小，按经验阈值）
+    static func proximity(_ rssi: Double) -> Int { rssi > -60 ? 3 : (rssi > -70 ? 2 : (rssi > -80 ? 1 : 0)) }
+    static let proximityText = ["还远（> 8 m）", "附近（3～8 m）", "很近（1～3 m）", "就在旁边（< 1 m）"]
 
     private func stopBLE() {
         ble?.stop()
@@ -1452,4 +1517,13 @@ final class MagneticEngine: ObservableObject {
         }
         return (w, name)
     }
+}
+
+/// 寻找模式的目标价签编号（蓝牙回调线程读、主线程写）
+final class FinderBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _id: String?
+    var id: String? { lock.lock(); defer { lock.unlock() }; return _id }
+    func set(_ v: String?) { lock.lock(); _id = v; lock.unlock() }
+    func matches(_ v: String) -> Bool { lock.lock(); defer { lock.unlock() }; return _id == v }
 }

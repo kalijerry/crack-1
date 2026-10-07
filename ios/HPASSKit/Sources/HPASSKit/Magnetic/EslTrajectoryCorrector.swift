@@ -14,6 +14,8 @@ import Foundation
 public final class EslTrajectoryCorrector {
     public struct Stats: Codable {
         public var readings: Int
+        /// 用上的货架标签观测
+        public var signs: Int?
         public var knots: Int
         /// 修正前 / 后：强读数「人 − 价签」距离中位数（m）
         public var beforeMedianM: Double
@@ -35,8 +37,19 @@ public final class EslTrajectoryCorrector {
 
     func sigma(_ rssi: Double) -> Double { min(max(150 + (-60 - rssi) * 14, 150), 500) }
 
+    /// 货架标签观测：时刻 + 「人应该在的区域」（给一个点，返回区域里离它最近的点，见 ShelfSigns.nearestValid）
+    public struct SignObservation {
+        public var tMs: Int64
+        public var region: (Point2) -> Point2
+        public init(tMs: Int64, region: @escaping (Point2) -> Point2) { self.tMs = tMs; self.region = region }
+    }
+    /// 标签观测的 σ（cm）：区域本身已经包含了站位的不确定，所以很紧
+    public var signSigmaCm = 60.0
+
     /// 返回修正函数（时间 → 平移量）和统计；强读数太少返回 nil（不修正）。
-    public func solve(track: [(tMs: Int64, p: Point2)], ble: [BLESample]) -> (correction: (Int64) -> Point2, stats: Stats)? {
+    /// signs：货架标签（摄像头读到的），比价签确定得多，一条顶几十条价签读数。
+    public func solve(track: [(tMs: Int64, p: Point2)], ble: [BLESample],
+                      signs: [SignObservation] = []) -> (correction: (Int64) -> Point2, stats: Stats)? {
         guard track.count >= 2, let t0 = track.first?.tMs, let t1 = track.last?.tMs, t1 > t0 else { return nil }
         let times = track.map(\.tMs)
         func posAt(_ t: Int64) -> Point2? {
@@ -51,17 +64,31 @@ public final class EslTrajectoryCorrector {
         let K = Int((t1 - t0) / knotMs) + 2
         // 观测：结点下标 k、插值权重 w（属于 k 的部分）、轨迹位置、价签位置、σ
         var obs: [(k: Int, w: Double, p: Point2, g: Point2, s: Double)] = []
+        var regions: [Int: (Point2) -> Point2] = [:]          // 标签观测：每轮按修正后的位置重新取区域里最近的点
         for b in ble where b.rssi >= minRssi {
             guard let g = tagPositions[b.id], let p = posAt(b.tMs) else { continue }
             let u = Double(b.tMs - t0) / Double(knotMs)
             let k = min(Int(u), K - 2)
             obs.append((k, 1 - (u - Double(k)), p, g, sigma(b.rssi)))
         }
-        guard obs.count >= minReadings else { return nil }
+        let bleCount = obs.count
+        for sg in signs {
+            guard let p = posAt(sg.tMs) else { continue }
+            let u = Double(sg.tMs - t0) / Double(knotMs)
+            let k = min(max(Int(u), 0), K - 2)
+            regions[obs.count] = sg.region
+            obs.append((k, 1 - (u - Double(k)), p, sg.region(p), signSigmaCm))
+        }
+        guard bleCount >= minReadings || obs.count - bleCount >= 2 else { return nil }
 
         var D = [[Double]](repeating: [Double](repeating: 0, count: K), count: 2)
         var rw = [Double](repeating: 1, count: obs.count)
         for _ in 0..<iterations {
+            for (i, f) in regions {
+                let o = obs[i]
+                let q = Point2(o.p.x + o.w * D[0][o.k] + (1 - o.w) * D[0][o.k + 1], o.p.y + o.w * D[1][o.k] + (1 - o.w) * D[1][o.k + 1])
+                obs[i].g = f(q)
+            }
             for axis in 0..<2 {
                 // 三对角：a 下、b 主、c 上
                 var a = [Double](repeating: 0, count: K), bdiag = a, c = a, r = a
@@ -87,8 +114,9 @@ public final class EslTrajectoryCorrector {
             }
         }
         func med(_ x: [Double]) -> Double { let s = x.sorted(); return s[s.count / 2] }
-        let before = med(obs.map { $0.p.distance(to: $0.g) })
-        let after = med(obs.map { o in
+        let bleObs = Array(obs.prefix(bleCount))
+        let before = bleObs.isEmpty ? 0 : med(bleObs.map { $0.p.distance(to: $0.g) })
+        let after = bleObs.isEmpty ? 0 : med(bleObs.map { o in
             Point2(o.p.x + o.w * D[0][o.k] + (1 - o.w) * D[0][o.k + 1], o.p.y + o.w * D[1][o.k] + (1 - o.w) * D[1][o.k + 1]).distance(to: o.g)
         })
         let maxShift = (0..<K).map { (D[0][$0] * D[0][$0] + D[1][$0] * D[1][$0]).squareRoot() }.max() ?? 0
@@ -99,7 +127,7 @@ public final class EslTrajectoryCorrector {
             let k = min(Int(u), K - 2), f = u - Double(k)
             return Point2(dx[k] * (1 - f) + dx[k + 1] * f, dy[k] * (1 - f) + dy[k + 1] * f)
         }
-        return (fn, Stats(readings: obs.count, knots: K, beforeMedianM: (before / 10).rounded() / 10,
+        return (fn, Stats(readings: bleCount, signs: obs.count - bleCount, knots: K, beforeMedianM: (before / 10).rounded() / 10,
                           afterMedianM: (after / 10).rounded() / 10, maxShiftM: (maxShift / 10).rounded() / 10))
     }
 

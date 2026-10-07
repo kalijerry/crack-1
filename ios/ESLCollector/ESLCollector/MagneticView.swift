@@ -657,6 +657,7 @@ struct MagneticView: View {
                 }
                 TextField("备注：保护壳 / 手持姿态 / 营业状态", text: $surveyNote)
                     .autocorrectionDisabled()
+                Toggle("识别货架黄色标签（摄像头，自动定起点、自动纠偏）", isOn: $survey.readSigns)
                 Toggle("LiDAR 实景扫描（结束时导出网格，文件较大）", isOn: $survey.scanMesh)
                     .disabled(!ARKitLogger.supportsMesh)
                 if store.field != nil {
@@ -724,6 +725,14 @@ struct MagneticView: View {
                     }
                 }
                 Toggle("自动贴通道（实时）", isOn: $survey.corridorLock)
+                if survey.readSigns {
+                    if let s = survey.lastSign {
+                        row("货架标签", "\(s.text)\(s.shelf == nil ? "（地图里没有）" : "") · \(Int(Date().timeIntervalSince(s.at))) 秒前 · 共 \(survey.signCount) 次 · 自动纠偏 \(survey.signFixes) 次")
+                            .font(.footnote)
+                    } else {
+                        Text("路过货架时让摄像头扫到立柱上的黄色标签（如 082-20），读到会自动纠正位置。").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 if paintMode, let c = survey.coverage.currentCorridorPaint {
                     row("当前通道涂色", "\(c.code) · 宽 \(Fmt.f(c.widthCm / 100, 1)) m · \(Int(c.fraction * 100))%").font(.footnote)
                     if c.widthCm > SurveyCoverage.wideCorridorCm {
@@ -898,7 +907,7 @@ struct MagneticView: View {
 
     private var surveyInstruction: String {
         switch survey.stage {
-        case .needPosition: return "长按地图：我现在在这里。找一个路口或已知点位站着。已经有磁场图的区域也可以点「自动定位起点」直接走。"
+        case .needPosition: return "把摄像头对准货架立柱上的黄色标签（如 082-20），读到就自动定好起点；也可以长按地图：我现在在这里。已经有磁场图的区域也可以点「自动定位起点」直接走。"
         case .autoLocating: return "沿采集过的通道正常往前走，地磁定位成功后会自动设好起点和方向（震动提示）。想手动也可以随时长按地图。"
         case .needHeading: return "点「设朝向」（或双击地图），在地图上点或拖动，让橙色箭头指向你要走的方向，再点「确定朝向」（或再双击）。"
         case .aligning: return "朝箭头方向直线走 1.5 m，App 会自动对齐 ARKit 轨迹。"

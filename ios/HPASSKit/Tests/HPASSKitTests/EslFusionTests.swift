@@ -41,4 +41,36 @@ final class EslFusionTests: XCTestCase {
         XCTAssertTrue(ok.report.kept)
         XCTAssertEqual(ok.report.bad, 0)
     }
+
+    func testShelfSignParse() {
+        XCTAssertEqual(ShelfSigns.parse("082-20")?.aisle, 82)
+        XCTAssertEqual(ShelfSigns.parse("O82 - 2O")?.bay, 20)
+        XCTAssertEqual(ShelfSigns.parse("货位 067-02 ABC")?.aisle, 67)
+        XCTAssertNil(ShelfSigns.parse("1082-201"))
+        XCTAssertNil(ShelfSigns.parse("IP54"))
+    }
+
+    /// 只有货架标签、没有价签：每 10 秒读到一次标签（人在 y≈0 的通道里），中间 20 秒轨迹偏 12 m
+    func testSignsAloneCorrectDrift() {
+        let s = scenario()
+        // 区域：x 在读到时真实位置 ±150、y 在 [-100, 100]
+        var signs: [EslTrajectoryCorrector.SignObservation] = []
+        for k in stride(from: 0, to: 600, by: 50) {
+            let x = Double(k) * 10
+            signs.append(.init(tMs: Int64(k * 100), region: { p in Point2(min(max(p.x, x - 150), x + 150), min(max(p.y, -100), 100)) }))
+        }
+        let c = EslTrajectoryCorrector(tagPositions: [:])
+        c.smoothCm = 600
+        guard let (fn, st) = c.solve(track: s.track, ble: [], signs: signs) else { return XCTFail("没解") }
+        XCTAssertEqual(st.signs, signs.count)
+        XCTAssertLessThan(abs(fn(30_000).y + 1200), 300)
+        XCTAssertLessThan(abs(fn(5_000).y), 150)
+        // 质量检查：偏的那段被标出来
+        let g = SessionQualityGate(tagPositions: [:])
+        g.minGoodSamples = 0
+        let dist: [(tMs: Int64, distanceTo: (Point2) -> Double)] = signs.map { sg in (sg.tMs, { p in p.distance(to: sg.region(p)) }) }
+        let v = g.evaluate(name: "x", track: s.track, ble: [], mag: [], others: nil, othersBuilder: nil, signs: dist)
+        XCTAssertGreaterThan(v.report.bad, 0)
+    }
 }
+

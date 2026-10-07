@@ -31,6 +31,8 @@ final class ARKitLogger: NSObject, ARSessionDelegate {
     /// 带视觉特征地图启动后，ARKit 认出了这个地方（从「重定位中」变成正常）时回调：此刻相机的位姿。
     /// 之后 ARKit 的世界坐标就是特征地图保存时的坐标。跟丢再认出来会再回调。
     var onRelocalized: (@Sendable (simd_float4x4) -> Void)?
+    /// 每秒约 2 帧的相机画面（货架标签识别用）；在 ARKit 的队列上调，别久占
+    var onFrame: ((ARFrame, Int64) -> Void)?
     private var usingWorldMap = false
     private var relocalizing = false
 
@@ -155,6 +157,7 @@ final class ARKitLogger: NSObject, ARSessionDelegate {
             Fmt.f(Double(q.vector.w), 5), "\(state)", "\(reason)",
         ].joined(separator: ","))
         onPose?(t, Double(p.x) * 100, Double(p.z) * 100, state)
+        if frameCounter % 30 == 0, state == 2, let f = onFrame { f(frame, t) }
 
         // 深度：30 Hz 里每 3 帧取一次，约 10 Hz
         if wantsDepth, state == 2, frameCounter % 6 == 0, let depth = frame.sceneDepth {

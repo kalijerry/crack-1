@@ -53,8 +53,12 @@ do {
     guard !dirs.isEmpty else { print("没有建图会话"); exit(2) }
     var sessions: [SurveySession] = []
     var bleSamples: [[BLESample]] = []
+    var signSamples: [[SignSample]] = []
     for d in dirs {
-        do { sessions.append(try SurveySessionLoader.load(d)); bleSamples.append(SurveySessionLoader.loadBLE(d)) }
+        do {
+            sessions.append(try SurveySessionLoader.load(d)); bleSamples.append(SurveySessionLoader.loadBLE(d))
+            signSamples.append(SignSample.load(d))
+        }
         catch { print("⚠️ 跳过 \(d.lastPathComponent)：\(error)") }
     }
     let t0 = Date()
@@ -68,17 +72,27 @@ do {
 
     // 第 1 遍：各会话原样对齐（起点 + 贴通道）
     let r1 = fusion.fuse(sessions)
+    // 货架标签（摄像头读到的「082-20」）：每条换成「人应该在那段货架前」的区域
+    let shelfSigns = ShelfSigns(map: map, walkable: SessionEvaluator.walkable(map))
+    let signObs: [[EslTrajectoryCorrector.SignObservation]] = signSamples.map { ss in
+        ss.compactMap { x in shelfSigns.sign(for: x.text).map { sg in .init(tMs: x.tMs, region: { shelfSigns.nearestValid(sg, to: $0) }) } }
+    }
+    let signDist: [[(tMs: Int64, distanceTo: (Point2) -> Double)]] = signSamples.map { ss in
+        ss.compactMap { x in shelfSigns.sign(for: x.text).map { sg in (x.tMs, { shelfSigns.distance(sg, from: $0) }) } }
+    }
+    let nSigns = signObs.reduce(0) { $0 + $1.count }
+    if nSigns > 0 { print("货架标签：\(nSigns) 次（\(signObs.filter { !$0.isEmpty }.count) 个会话）") }
     // 价签锚定修正：每 5 秒一个结点，把轨迹拉向听到的价签（全店 2 万片 = 2 万个绝对锚点）
     var corrections: [((Int64) -> Point2)?] = Array(repeating: nil, count: sessions.count)
     var corrStats: [String: EslTrajectoryCorrector.Stats] = [:]
-    if !tagPos.isEmpty && !map.crosses.isEmpty {
+    if (!tagPos.isEmpty || nSigns > 0) && !map.crosses.isEmpty {
         let corr = EslTrajectoryCorrector(tagPositions: tagPos)
         for (k, s) in sessions.enumerated() where k < bleSamples.count {
-            guard let (fn, st) = corr.solve(track: r1.tracks[k], ble: bleSamples[k]) else { continue }
+            guard let (fn, st) = corr.solve(track: r1.tracks[k], ble: bleSamples[k], signs: signObs[k]) else { continue }
             corrections[k] = fn
             corrStats[s.name] = st
-            print(String(format: "价签修正 %@：读数 %d，人−价签中位 %.1f → %.1f m，最大挪动 %.1f m",
-                         s.name, st.readings, st.beforeMedianM, st.afterMedianM, st.maxShiftM))
+            print(String(format: "价签 / 标签修正 %@：价签读数 %d、货架标签 %d，人−价签中位 %.1f → %.1f m，最大挪动 %.1f m",
+                         s.name, st.readings, st.signs ?? 0, st.beforeMedianM, st.afterMedianM, st.maxShiftM))
         }
     }
     // 第 2 遍：带修正对齐，拿来做质量检查
@@ -94,7 +108,8 @@ do {
         var any = false
         for (j, ss) in r2.samples.enumerated() where j != k { for x in ss { _ = others.add(position: x.p, feature: x.f); any = true } }
         let v = gate.evaluate(name: s.name, track: r2.tracks[k], ble: k < bleSamples.count ? bleSamples[k] : [],
-                              mag: r2.samples[k], others: any ? others.snapshot() : nil, othersBuilder: any ? others : nil)
+                              mag: r2.samples[k], others: any ? others.snapshot() : nil, othersBuilder: any ? others : nil,
+                              signs: signDist[k])
         quality.append(v.report)
         let q = v.report
         let ble = q.bleMedianM.map { String(format: "价签 %.1f m（最差 %.1f）", $0, q.bleWorstM ?? 0) } ?? "价签 -"

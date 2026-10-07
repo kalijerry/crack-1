@@ -42,6 +42,7 @@ public final class SessionQualityGate {
     public var magMinSamples = 30
     public var magMaxResidualUT = 5.0
     public var maxBadFraction = 0.3
+    public var signMaxCm = 300.0
     public var minPathCm = 2000.0
     public var minGoodSamples = 300
 
@@ -60,7 +61,8 @@ public final class SessionQualityGate {
     /// - mag: 这个会话每个样本（时间、位置、减掉整体偏移后的磁场）和「别的会话」的图（没有就 nil）
     public func evaluate(name: String, track: [(tMs: Int64, p: Point2)], ble: [BLESample],
                          mag: [(tMs: Int64, p: Point2, f: MagneticFeature)], others: MagneticFieldBuilder.Snapshot?,
-                         othersBuilder: MagneticFieldBuilder?) -> Verdict {
+                         othersBuilder: MagneticFieldBuilder?,
+                         signs: [(tMs: Int64, distanceTo: (Point2) -> Double)] = []) -> Verdict {
         var path = 0.0
         for i in track.indices.dropFirst() {
             let d = track[i].p.distance(to: track[i - 1].p)
@@ -104,6 +106,12 @@ public final class SessionQualityGate {
                 for x in diffs { magR[x.w].append(abs(x.d - off)) }
             }
         }
+        // 3. 货架标签：读到标签时人离那段货架前的区域超过 signMaxCm，这段轨迹就是错的（标签是确定的，不靠信号强弱猜）
+        var signD = [[Double]](repeating: [], count: nw)
+        for sg in signs {
+            guard let w = win(sg.tMs), let p = posAt(sg.tMs) else { continue }
+            signD[w].append(sg.distanceTo(p))
+        }
         var bad = [Bool](repeating: false, count: nw), judged = 0
         var bleMeds: [Double] = [], magMeds: [Double] = []
         for w in 0..<nw {
@@ -111,6 +119,10 @@ public final class SessionQualityGate {
             if bleD[w].count >= bleMinReadings {
                 let m = med(bleD[w]); bleMeds.append(m); j = true
                 if m > bleMaxMedianCm { bad[w] = true }
+            }
+            if !signD[w].isEmpty {
+                j = true
+                if med(signD[w]) > signMaxCm { bad[w] = true }
             }
             if magR[w].count >= magMinSamples {
                 let m = med(magR[w]); magMeds.append(m); j = true

@@ -108,8 +108,15 @@ def main():
                     pm["name"] = root["floorName"]
             except ValueError:
                 pass
-        if not pm.get("kind"):
-            pm["kind"] = "room" if mid.startswith("room") else "store"
+        # 类型看地图本身：有地面多边形、没有通道 = 房间
+        try:
+            root = json.loads(map_json)
+            root = root.get("data", root) if isinstance(root, dict) else root
+            els = root.get("mapElementList", []) if isinstance(root, dict) else []
+            is_room = bool(root.get("floorPolygons")) and not any(e.get("shapeType") == "MapCross" for e in els)
+            pm["kind"] = "room" if is_room else "store"
+        except (ValueError, AttributeError):
+            pm["kind"] = pm.get("kind") or "store"
         out = os.path.join(work, f"{mid}.hpmp")
         rep = os.path.join(work, f"{mid}.json")
         cmd = [BUILD, "--map", map_path, "--sessions", ",".join(g["build"]), "--id", mid,

@@ -30,6 +30,10 @@ struct Report: Encodable {
     var packageBytes: Int
     var warnings: [String]
     var eslMismatches: [String]
+    /// 质量筛选：每个会话用没用、为什么、丢了哪些段
+    var quality: [SessionQualityGate.Report]
+    /// 价签锚定修正的统计
+    var corrections: [String: EslTrajectoryCorrector.Stats]
 }
 
 guard let mapPath = arg("--map"), let out = arg("--out"), let id = arg("--id") else {
@@ -49,8 +53,58 @@ do {
     }
     let t0 = Date()
     let fusion = MultiSessionFusion(map: map)
-    let r = fusion.fuse(sessions)
-    print("融合 \(sessions.count) 个会话，\(r.components) 个连通分量，磁场 \(r.field.coveredCells) 格（\(Int(Date().timeIntervalSince(t0))) 秒）")
+    // 价签位置表：蓝牙底图、轨迹修正的锚点、质量筛选的依据
+    var locs: [EslLocation] = []
+    var eslText: String?
+    if let p = arg("--esl-locations"), let t = try? String(contentsOfFile: p, encoding: .utf8) { eslText = t; locs = EslLocations.parse(t, map: map) }
+    var tagPos: [String: Point2] = [:]
+    for e in locs { if let p = e.position { tagPos[e.id] = p } }
+
+    // 第 1 遍：各会话原样对齐（起点 + 贴通道）
+    let r1 = fusion.fuse(sessions)
+    // 价签锚定修正：每 5 秒一个结点，把轨迹拉向听到的价签（全店 2 万片 = 2 万个绝对锚点）
+    var corrections: [((Int64) -> Point2)?] = Array(repeating: nil, count: sessions.count)
+    var corrStats: [String: EslTrajectoryCorrector.Stats] = [:]
+    if !tagPos.isEmpty && !map.crosses.isEmpty {
+        let corr = EslTrajectoryCorrector(tagPositions: tagPos)
+        for (k, s) in sessions.enumerated() where k < bleSamples.count {
+            guard let (fn, st) = corr.solve(track: r1.tracks[k], ble: bleSamples[k]) else { continue }
+            corrections[k] = fn
+            corrStats[s.name] = st
+            print(String(format: "价签修正 %@：读数 %d，人−价签中位 %.1f → %.1f m，最大挪动 %.1f m",
+                         s.name, st.readings, st.beforeMedianM, st.afterMedianM, st.maxShiftM))
+        }
+    }
+    // 第 2 遍：带修正对齐，拿来做质量检查
+    let r2 = fusion.fuse(sessions, corrections: corrections)
+    // 质量筛选：每 10 秒一段，价签 + 磁场（和别的会话比）两种证据；不合格的段丢掉，整体不可信的会话整个不用
+    let gate = SessionQualityGate(tagPositions: tagPos)
+    var quality: [SessionQualityGate.Report] = []
+    var filters: [((Int64) -> Bool)?] = []
+    var keepIdx: [Int] = []
+    for (k, s) in sessions.enumerated() {
+        let others = MagneticFieldBuilder(widthCm: map.width, heightCm: map.height, cellCm: fusion.cellCm)
+        var any = false
+        for (j, ss) in r2.samples.enumerated() where j != k { for x in ss { _ = others.add(position: x.p, feature: x.f); any = true } }
+        let v = gate.evaluate(name: s.name, track: r2.tracks[k], ble: k < bleSamples.count ? bleSamples[k] : [],
+                              mag: r2.samples[k], others: any ? others.snapshot() : nil, othersBuilder: any ? others : nil)
+        quality.append(v.report)
+        let q = v.report
+        let ble = q.bleMedianM.map { String(format: "价签 %.1f m（最差 %.1f）", $0, q.bleWorstM ?? 0) } ?? "价签 -"
+        let mag = q.magResidualUT.map { String(format: "磁场残差 %.1f µT（最差 %.1f）", $0, q.magWorstUT ?? 0) } ?? "磁场 -"
+        if v.keep != nil {
+            filters.append(v.keep); keepIdx.append(k)
+            print("✅ \(s.name)：\(ble)，\(mag)，\(q.windows) 段里 \(q.bad) 段不合格" + (q.droppedSpans.isEmpty ? "" : "，丢掉 " + q.droppedSpans.map { "\($0[0])–\($0[1]) 秒" }.joined(separator: "、")))
+        } else {
+            print("❌ \(s.name)：不用 —— \(q.reason ?? "")（\(ble)，\(mag)）")
+        }
+    }
+    guard !keepIdx.isEmpty else { print("没有合格的会话，不出图"); exit(3) }
+    // 第 3 遍：只用合格的会话和合格的段
+    let keptSessions = keepIdx.map { sessions[$0] }
+    let keptBLE = keepIdx.map { k in k < bleSamples.count ? bleSamples[k].filter { filters[keepIdx.firstIndex(of: k)!]!($0.tMs) } : [] }
+    let r = fusion.fuse(keptSessions, filters: filters, corrections: keepIdx.map { corrections[$0] })
+    print("融合 \(keptSessions.count) / \(sessions.count) 个会话，\(r.components) 个连通分量，磁场 \(r.field.coveredCells) 格（\(Int(Date().timeIntervalSince(t0))) 秒）")
     for s in r.sessions {
         print(String(format: "  %@：样本 %d，格 %d，偏移 |B| %+.1f Bz %+.1f Bh %+.1f µT，分量 %d，重叠 %@",
                      s.name, s.samples, s.cells, s.offset[0], s.offset[1], s.offset[2], s.component,
@@ -60,16 +114,15 @@ do {
     // 蓝牙指纹
     let bb = BLEFingerprintBuilder(widthCm: map.width, heightCm: map.height)
     if let p = arg("--esl-ids"), let t = try? String(contentsOfFile: p, encoding: .utf8) { bb.whitelist = BLEFingerprintBuilder.parseIdList(t) }
-    for (k, track) in r.tracks.enumerated() where k < bleSamples.count { _ = bb.add(samples: bleSamples[k], track: track) }
+    for (k, track) in r.tracks.enumerated() where k < keptBLE.count { _ = bb.add(samples: keptBLE[k], track: track) }
     let learnedBLE = bb.build()
     print("蓝牙指纹（采集学到）：\(learnedBLE.tags.count) 个价签" + (bb.rejectedMoving.isEmpty ? "" : "（\(bb.rejectedMoving.count) 个移动设备不算）"))
     // 价签位置表：当蓝牙底图（全店都有），学到的只在表明显不对时替换
     var bleMap = learnedBLE
     var eslMismatches: [String] = []
     var eslCSV: Data?
-    if let p = arg("--esl-locations"), let t = try? String(contentsOfFile: p, encoding: .utf8) {
+    if let t = eslText {
         eslCSV = Data(t.utf8)
-        let locs = EslLocations.parse(t, map: map)
         bleMap = EslLocations.seededBLEMap(locs, learned: learnedBLE)
         eslMismatches = EslLocations.mismatches(locs, learned: learnedBLE).map { "\($0.id) \($0.shelf) 差 \(Int($0.distanceCm / 100)) m" }
         print("价签位置表：\(locs.count) 个，对上货架 \(locs.filter { $0.position != nil }.count) 个；合并后 \(bleMap.tags.count) 个；表里可能不对 \(eslMismatches.count) 个")
@@ -105,11 +158,11 @@ do {
     // 打包
     var meta = MapPackage.Meta(id: id, name: arg("--name") ?? id, kind: arg("--kind") ?? (map.crosses.isEmpty ? "room" : "store"),
                                version: Int64((Date().timeIntervalSince1970 * 1000).rounded()),
-                               source: "云端融合 \(sessions.count) 个会话", mapUpBearingDeg: arg("--bearing").flatMap(Double.init),
+                               source: "云端融合 \(keptSessions.count) 个会话（共 \(sessions.count) 个，质量筛选后）", mapUpBearingDeg: arg("--bearing").flatMap(Double.init),
                                magSource: "raw")
     meta.fieldCells = r.field.coveredCells
     meta.origin = "cloud"
-    meta.sessions = sessions.count
+    meta.sessions = keptSessions.count
     meta.bleTags = ble?.tags.count
     let pkg = try MapPackage.encode(meta: meta, mapJSON: mapData, field: r.field, ble: ble, worldMap: nil, paint: paint?.serialized(), eslCSV: meta.kind == "store" ? eslCSV : nil)
     try pkg.write(to: URL(fileURLWithPath: out))
@@ -120,7 +173,7 @@ do {
         let rep = Report(mapId: id, name: meta.name, version: meta.version, sessions: r.sessions, components: r.components,
                          fieldCells: r.field.coveredCells, bleTags: ble?.tags.count ?? 0, coverage: coverage, coveredM2: covered,
                          walkableM2: walkableM2, unfinishedCorridors: unfinished, tests: tests, packageBytes: pkg.count, warnings: warnings,
-                         eslMismatches: eslMismatches)
+                         eslMismatches: eslMismatches, quality: quality, corrections: corrStats)
         let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         try enc.encode(rep).write(to: URL(fileURLWithPath: rp))
     }

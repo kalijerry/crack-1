@@ -32,19 +32,29 @@ public final class MultiSessionFusion {
         public var sessions: [SessionInfo]
         public var components: Int
         public var tracks: [[(tMs: Int64, p: Point2)]]
+        /// 每个会话的样本（时间、位置、减掉偏移后的磁场），质量筛选用
+        public var samples: [[(tMs: Int64, p: Point2, f: MagneticFeature)]]
     }
 
     public let map: StoreMap
     public var minCommonCells = 20
+    /// 放宽条件下的最少共同格子（只在两个会话本来连不上时用）
+    public var weakMinCommonCells = 4
+    public var weakMaxMadUT = 4.0
     public var cellCm = 50.0
 
     public init(map: StoreMap) { self.map = map }
 
-    public func fuse(_ sessions: [SurveySession]) -> Result {
+    /// - filters: 每个会话只用哪些时刻的样本（质量筛选的结果；nil = 都用）
+    /// - corrections: 每个会话的价签锚定轨迹修正（EslTrajectoryCorrector；nil = 不修正）
+    public func fuse(_ sessions: [SurveySession], filters: [((Int64) -> Bool)?]? = nil,
+                     corrections: [((Int64) -> Point2)?]? = nil) -> Result {
         // 1. 每个会话：对齐、算样本、单独统计
         var prepared: [(rep: SurveySessionReport, samples: [(Point2, MagneticFeature)], snap: MagneticFieldBuilder.Snapshot)] = []
-        for s in sessions {
+        for (si, s) in sessions.enumerated() {
             let b = SurveyMapBuilder(widthCm: map.width, heightCm: map.height, crosses: map.crosses, cellCm: cellCm)
+            if let fs = filters, si < fs.count { b.sampleFilter = fs[si] }
+            if let cs = corrections, si < cs.count { b.correction = cs[si] }
             let (rep, samples) = b.prepare(s)
             let own = MagneticFieldBuilder(widthCm: map.width, heightCm: map.height, cellCm: cellCm)
             for (p, f) in samples { _ = own.add(position: p, feature: f) }
@@ -52,17 +62,39 @@ public final class MultiSessionFusion {
         }
         let n = prepared.count
         // 2. 两两的偏移差
+        func pair(_ i: Int, _ j: Int, minCount: Int) -> (d: [Double], common: Int, mad: Double)? {
+            let a = prepared[i].snap, b = prepared[j].snap
+            var diffs: [[Double]] = [[], [], []]
+            for k in a.counts.indices where a.counts[k] >= minCount && b.counts[k] >= minCount {
+                for c in 0..<3 { diffs[c].append(a.means[k * 3 + c] - b.means[k * 3 + c]) }
+            }
+            guard !diffs[0].isEmpty else { return nil }
+            let med = diffs.map { x -> Double in let s = x.sorted(); return s[s.count / 2] }
+            let dev = diffs[0].map { abs($0 - med[0]) }.sorted()
+            return (med, diffs[0].count, dev[dev.count / 2])
+        }
         var edges: [(i: Int, j: Int, d: [Double], w: Double, common: Int)] = []
         for i in 0..<n {
             for j in (i + 1)..<max(n, i + 1) where j < n {
-                let a = prepared[i].snap, b = prepared[j].snap
-                var diffs: [[Double]] = [[], [], []]
-                for k in a.counts.indices where a.counts[k] >= 5 && b.counts[k] >= 5 {
-                    for c in 0..<3 { diffs[c].append(a.means[k * 3 + c] - b.means[k * 3 + c]) }
-                }
-                guard diffs[0].count >= minCommonCells else { continue }
-                let med = diffs.map { x -> Double in let s = x.sorted(); return s[s.count / 2] }
-                edges.append((i, j, med, Double(diffs[0].count).squareRoot(), diffs[0].count))
+                guard let p = pair(i, j, minCount: 5), p.common >= minCommonCells else { continue }
+                edges.append((i, j, p.d, Double(p.common).squareRoot(), p.common))
+            }
+        }
+        // 重叠不够的：放宽（每格 ≥ 2 个样本、≥ weakMinCommonCells 格）也连上，权重低。
+        // 不对齐的话两个会话整体差 10～16 µT，比粗一点的偏移估计差得多。
+        func linked(_ i: Int, _ j: Int) -> Bool {
+            var seen: Set<Int> = [i], stack = [i]
+            while let x = stack.popLast() {
+                if x == j { return true }
+                for e in edges where e.i == x || e.j == x { let y = e.i == x ? e.j : e.i; if seen.insert(y).inserted { stack.append(y) } }
+            }
+            return false
+        }
+        for i in 0..<n {
+            for j in (i + 1)..<max(n, i + 1) where j < n && !linked(i, j) {
+                // 格子少时要求各格的差很一致（中位绝对偏差 ≤ weakMaxMadUT），不一致说明位置没真对上
+                guard let p = pair(i, j, minCount: 2), p.common >= weakMinCommonCells, p.mad <= weakMaxMadUT else { continue }
+                edges.append((i, j, p.d, Double(p.common).squareRoot() * 0.5, p.common))
             }
         }
         // 3. 连通分量
@@ -124,6 +156,10 @@ public final class MultiSessionFusion {
                                      component: remap[comp[s]], overlaps: ov, warnings: w))
         }
         return Result(field: builder.build(), builder: builder, sessions: infos, components: comps.count,
-                      tracks: prepared.map(\.rep.track))
+                      tracks: prepared.map(\.rep.track),
+                      samples: prepared.enumerated().map { s, p in
+                          let o = MagneticFeature(total: offsets[s][0], vertical: offsets[s][1], horizontal: offsets[s][2])
+                          return zip(p.rep.sampleTimes, p.samples).map { ($0, $1.0, $1.1 - o) }
+                      })
     }
 }

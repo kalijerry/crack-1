@@ -26,7 +26,20 @@ do {
     let (field, bleMap, reps) = try SessionEvaluator.buildMaps(sessions: build, map: map)
     for r in reps { print("建图 \(r.name)：样本 \(r.samplesUsed)" + (r.warnings.isEmpty ? "" : "，⚠️ \(r.warnings.joined(separator: "；"))")) }
     print("磁场图：有数据 \(field.coveredCells) 格；蓝牙指纹：\(bleMap.map { "\($0.tags.count) 个价签" } ?? "无")")
-    let ble = CommandLine.arguments.contains("--no-ble") ? nil : bleMap
+    if CommandLine.arguments.contains("--old-ble") { BLEAssist.defaultTagRanges = false }
+    var ble = CommandLine.arguments.contains("--no-ble") ? nil : bleMap
+    var refTags: [String: Point2]?
+    if let p = arg("--esl-locations"), let t = try? String(contentsOfFile: p, encoding: .utf8) {
+        let locs = EslLocations.parse(t, map: map)
+        var tp: [String: Point2] = [:]
+        for e in locs { if let q = e.position { tp[e.id] = q } }
+        refTags = tp
+        print("参考轨迹：用价签锚定修正")
+    }
+    if ble != nil, let p = arg("--esl-locations"), let t = try? String(contentsOfFile: p, encoding: .utf8) {
+        ble = EslLocations.seededBLEMap(EslLocations.parse(t, map: map), learned: bleMap)
+        print("蓝牙底图：价签位置表 + 学到的，\(ble!.tags.count) 个价签")
+    }
     let walk = SessionEvaluator.walkable(map)
     var out: [EvalReport] = []
     // 粒子滤波有随机性（加上字典遍历顺序每次不同），单次结果波动很大：--runs N 跑 N 次（不同随机种子），报中位和范围
@@ -41,7 +54,7 @@ do {
                 if CommandLine.arguments.contains("--absolute") { cfg.offsetInvariant = false }
                 if let w = arg("--abs").flatMap(Double.init) { cfg.absoluteWeight = w }
                 if let w = arg("--win").flatMap(Double.init) { cfg.offsetWindowUpdates = w }
-            }, seed: UInt64(k + 1))
+            }, seed: UInt64(k + 1), refTagPositions: refTags)
             if runs == 1 { print(r.line) }
             rs.append(r)
         }

@@ -101,6 +101,8 @@ private final class MagPipeline {
     var monitorField: MagneticFieldMap?
     var bleWindow: [(t: Int64, id: String, rssi: Double)] = []
     var lastBleApply: Int64 = 0
+    /// 上次「贴近价签」定位的时间
+    var lastTouchMs: Int64 = 0
     var rawLastA: Point2?
 
     // 磁场来源：地图用「原始磁力计减偏置」建的，实时也必须一样
@@ -209,6 +211,14 @@ final class MagneticEngine: ObservableObject {
 
     private let motion = MotionRecorder()
     private let ar = ARKitLogger()
+
+    // 抓定位：货架黄标签（摄像头）、手机贴近价签。都是「人一定在这一小块」的确定观测，能把定错的位置拉回来
+    private let signReader = ShelfSignReader()
+    private var shelfSigns: ShelfSigns?
+    private var lastSignText: (String, Date)?
+    /// 最近一次抓定位（界面显示）
+    @Published private(set) var lastAnchorEvent: (text: String, at: Date)?
+    @Published private(set) var anchorFixes = 0
     /// 蓝牙扫描（有蓝牙指纹时才建，第一次用会问蓝牙权限）
     private var ble: BLEScanner?
     /// 蓝牙粗定位的位置（地图上画橙色空心圈）
@@ -284,6 +294,9 @@ final class MagneticEngine: ObservableObject {
         }
         ar.onRelocalized = { [weak self] cam in
             Task { @MainActor in self?.applyVisualFix(camera: cam) }
+        }
+        signReader.onRead = { [weak self] _, text, _ in
+            Task { @MainActor in self?.handleShelfSign(text) }
         }
         ar.onError = { [weak self] msg in
             Task { @MainActor in
@@ -645,6 +658,17 @@ final class MagneticEngine: ObservableObject {
             queue.async {
                 pipe.bleWindow.append((r.tMs, id, Double(r.rssi)))
                 if pipe.bleWindow.count > 2000 { pipe.bleWindow.removeFirst(pipe.bleWindow.count - 2000) }
+                // 手机贴近价签：信号特别强 → 人就在这片价签所在的货架前（2.5 m 以内）
+                if Double(r.rssi) >= BLEAssist.touchRssi, r.tMs - pipe.lastTouchMs > 4000,
+                   let tag = pipe.bleMap?.tags[id], let loc = pipe.localizer {
+                    pipe.lastTouchMs = r.tMs
+                    let c = Point2(tag.x, tag.y), radius = 250.0
+                    let relocated = loc.applyRegion(distance: { max(0, $0.distance(to: c) - radius) }, sample: {
+                        let a = Double.random(in: 0..<(2 * Double.pi)), d = radius * Double.random(in: 0..<1).squareRoot()
+                        return Point2(c.x + cos(a) * d, c.y + sin(a) * d)
+                    })
+                    Task { @MainActor in self?.noteAnchor("贴近价签 \(id)", relocated: relocated) }
+                }
             }
         }
         ble?.start()
@@ -725,7 +749,7 @@ final class MagneticEngine: ObservableObject {
         let assist = pipe.bleAssist!
         let resetsBefore = assist.resets
         assist.tick(obs: acc.mapValues { $0.0 / Double($0.1) }, localizer: loc,
-                    current: loc.isConverged ? pipe.lastShown : nil)
+                    current: loc.isConverged ? pipe.lastShown : nil, candidate: pipe.estimate?.position)
         let e = assist.lastEstimate?.position, n = assist.lastHeard, outside = assist.outsideSurveyed
         let reset = assist.resets > resetsBefore
         Task { @MainActor in
@@ -736,6 +760,30 @@ final class MagneticEngine: ObservableObject {
                 AppLog.w("地磁", outside ? "听到的价签大多不在指纹里：可能在没采集过的区域，先不定位" : "回到采集过的区域")
             }
             if reset { AppLog.w("地磁", "蓝牙判断地磁定位错了，重新找") }
+        }
+    }
+
+    /// 读到货架黄标签（定位时摄像头本来就开着做视觉里程计）
+    private func handleShelfSign(_ text: String) {
+        guard phase == .live, isTracking || searching, let ss = shelfSigns, let sg = ss.sign(for: text) else { return }
+        if let l = lastSignText, l.0 == text, Date().timeIntervalSince(l.1) < 3 { return }
+        lastSignText = (text, Date())
+        queue.async { [pipe] in
+            guard let loc = pipe.localizer else { return }
+            let relocated = loc.applyRegion(distance: { ss.distance(sg, from: $0) },
+                                            sample: { ss.randomPoint(sg, u: Double.random(in: 0..<1), v: Double.random(in: 0..<1)) })
+            Task { @MainActor in self.noteAnchor("货架标签 \(text)", relocated: relocated) }
+        }
+    }
+
+    private func noteAnchor(_ what: String, relocated: Bool) {
+        lastAnchorEvent = (what + (relocated ? "：位置定错了，已拉回" : ""), Date())
+        if relocated {
+            anchorFixes += 1
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            AppLog.w("地磁", "\(what)：和当前位置对不上，判定定错，重新定位")
+        } else {
+            AppLog.i("地磁", "\(what)：位置约束")
         }
     }
 
@@ -834,6 +882,9 @@ final class MagneticEngine: ObservableObject {
             let wm = visualAvailable ? MapLibrary.shared.activeWorldMapURL.flatMap(ARKitLogger.loadWorldMap) : nil
             try ar.start(dir: dir, wantsDepth: depthMode != .off, lateralFile: lateralFile, worldMap: wm)
             arRunning = true
+            shelfSigns = StoreDataStore.shared.map.map { ShelfSigns(map: $0, walkable: MagMapStore.shared.walkableMap()) }
+            let reader = signReader
+            ar.onFrame = { f, t in reader.process(f, tMs: t) }
             if wm != nil { AppLog.i("地磁", "已载入视觉特征地图：对着房间转一圈就能认出位置") }
             queue.sync { pipe.vioEnabled = true; pipe.lateralMode = depthMode }
             AppLog.i("地磁", "视觉里程计已启动，LiDAR 深度 \(ARKitLogger.supportsLiDAR ? depthMode.title : "不支持")")
@@ -845,6 +896,7 @@ final class MagneticEngine: ObservableObject {
 
     private func stopVisualOdometry() {
         guard arRunning else { return }
+        ar.onFrame = nil
         queue.async { [pipe] in
             pipe.imuWriter?.close(); pipe.imuWriter = nil
             pipe.rawWriter?.close(); pipe.rawWriter = nil

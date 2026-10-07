@@ -81,6 +81,13 @@ public struct ShelfSigns {
         return s.faceCenter + s.along * t + s.normal * o
     }
 
+    /// 区域里的一个点：u、v ∈ [0, 1)（沿货架、离货架面）
+    public func randomPoint(_ s: Sign, u: Double, v: Double) -> Point2 {
+        let t = (u * 2 - 1) * (s.halfLength + alongMarginCm)
+        let o = minOffsetCm + v * (min(maxOffsetCm, 200) - minOffsetCm)
+        return s.faceCenter + s.along * t + s.normal * o
+    }
+
     /// p 离这个区域多远（cm，在区域里为 0）
     public func distance(_ s: Sign, from p: Point2) -> Double { p.distance(to: nearestValid(s, to: p)) }
 }

@@ -48,6 +48,8 @@ public struct SurveySessionReport {
     public var warnings: [String] = []
     /// 对齐后的轨迹（地图坐标，约 10 Hz），给界面画、给回放当真值
     public var track: [(tMs: Int64, p: Point2)] = []
+    /// 和已有数据对齐时减掉的整体偏移（µT）；没对齐（第一个会话或共同格子不够）为 nil
+    public var offsetUT: MagneticFeature?
 }
 
 /// 在手机上把建图采集会话变成磁场图（与 tools/magmap.py 同一套算法，另加「自动贴通道」）。
@@ -69,6 +71,10 @@ public final class SurveyMapBuilder {
     public var snapWindowCm: Double = 1000
     public var snapMaxDistCm: Double = 200
     public var snapEnabled = true
+    /// 新会话加进已有数据前，先对齐整体偏移（见 add 第 5 步）
+    public var alignSessionOffset = true
+    /// 至少要这么多共同格子（各自 ≥ 5 个样本）才对齐
+    public var minCommonCells = 20
     /// 贴通道时，离中心线 半宽 − 这个（cm）以内都算在通道里，不往正中拉
     public var snapBandMarginCm = 30.0
     /// 贴通道之前先按时间顺序跑一遍在线贴通道（和采集时手机上一样）。
@@ -90,6 +96,20 @@ public final class SurveyMapBuilder {
     }
 
     public func build() -> MagneticFieldMap { field.build() }
+
+    /// 本会话和已有数据的整体偏移：共同格子里各特征「本会话均值 − 已有均值」的中位。共同格子不够时 nil。
+    private func sessionOffset(_ samples: [(Point2, MagneticFeature)]) -> MagneticFeature? {
+        let tmp = MagneticFieldBuilder(widthCm: field.widthCm, heightCm: field.heightCm, cellCm: field.cellCm)
+        for (p, f) in samples { _ = tmp.add(position: p, feature: f) }
+        let a = tmp.snapshot(), b = field.snapshot()
+        var d: [[Double]] = [[], [], []]
+        for k in a.counts.indices where a.counts[k] >= 5 && b.counts[k] >= 5 {
+            for c in 0..<3 { d[c].append(a.means[k * 3 + c] - b.means[k * 3 + c]) }
+        }
+        guard d[0].count >= minCommonCells else { return nil }
+        func med(_ x: [Double]) -> Double { let s = x.sorted(); return s[s.count / 2] }
+        return MagneticFeature(total: med(d[0]), vertical: med(d[1]), horizontal: med(d[2]))
+    }
 
     // MARK: - 一次会话
 
@@ -141,6 +161,7 @@ public final class SurveyMapBuilder {
             let f = b.t > a.t ? Double(t - a.t) / Double(b.t - a.t) : 0
             return (Point2(a.p.x + (b.p.x - a.p.x) * f, a.p.y + (b.p.y - a.p.y) * f), a.ok && b.ok)
         }
+        var samples: [(Point2, MagneticFeature)] = []
         for (t, f) in feats {
             guard let (p, ok) = posAt(t) else { rep.dropped["不在对齐范围内", default: 0] += 1; continue }
             guard ok else { rep.dropped["ARKit 跟踪受限", default: 0] += 1; continue }
@@ -148,8 +169,18 @@ public final class SurveyMapBuilder {
                 rep.dropped["站着不动", default: 0] += 1
                 continue
             }
-            if field.add(position: p, feature: f) { rep.samplesUsed += 1 }
+            samples.append((p, f))
         }
+        // 5. 会话整体偏移对齐：实测两次采集同一处整体能差 10～16 µT（磁力计偏置每次估得不一样），
+        //    直接平均会把地图糊掉。和已有数据有足够多共同格子时，减去「本会话 − 已有」的中位差再累积。
+        if alignSessionOffset, let off = sessionOffset(samples) {
+            rep.offsetUT = off
+            samples = samples.map { ($0.0, $0.1 - off) }
+            if abs(off.total) > 3 || abs(off.vertical) > 3 || abs(off.horizontal) > 3 {
+                rep.warnings.append(String(format: "这次整体比已有数据偏 |B| %+.1f、Bz %+.1f、Bh %+.1f µT，已对齐", off.total, off.vertical, off.horizontal))
+            }
+        }
+        for (p, f) in samples where field.add(position: p, feature: f) { rep.samplesUsed += 1 }
         return rep
     }
 

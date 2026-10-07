@@ -42,6 +42,20 @@ public struct MagneticConfig {
 
     /// 观测噪声下限（µT），与地图格子的标准差合成。
     public var observationSigmaFloorUT: Double = 1.5
+    /// 只比「起伏」不比「绝对值」：读数和地图各减去最近一段路的平均再比。
+    /// 实测两次采集同一处的磁场起伏很像（相关 0.78），但整体差 10～16 µT（手机磁力计偏置每次估得不一样），
+    /// 按绝对值比就对不上。打开后整体偏移被抵消掉。
+    public var offsetInvariant = false
+    /// 混合模式：没定到时按「起伏」找（不怕整体偏移），定到之后估出这次的整体偏移、改回按绝对值比（更准），
+    /// 偏移在定位过程中慢慢跟踪。优先于 offsetInvariant。
+    public var hybridOffset = false
+    /// 定到之后偏移跟踪的速度（每次更新）
+    public var offsetTrackRate = 0.03
+    /// 「最近一段路」有多长：按观测更新次数算的指数平均（每次约 20 cm，40 次约 8 m）
+    public var offsetWindowUpdates: Double = 40
+    /// 起伏模式下绝对值还占多少分量（0 = 完全不看绝对值）；绝对值那一项的标准差加上 offsetSlackUT
+    public var absoluteWeight: Double = 0
+    public var offsetSlackUT: Double = 12
     /// 总强度、垂直分量、水平分量的权重（Bh 与前两者相关，权重低一些）。
     public var featureWeights: (Double, Double, Double) = (1.0, 1.0, 0.5)
     /// 对数似然除以这个温度，抵消特征之间的相关性造成的过度自信。
@@ -139,6 +153,12 @@ public final class MagneticLocalizer {
     private var bias: [Double] = []     // 航向偏差，弧度
     private var scale: [Double] = []    // 步长比例
     private var logw: [Double] = []
+    /// 起伏模式：每个粒子沿自己走过的路，地图值的指数平均；读数的指数平均（NaN = 还没有）
+    private var ema0: [Double] = [], ema1: [Double] = [], ema2: [Double] = []
+    private var obsEma: (Double, Double, Double)?
+    /// 混合模式：这次读数相对地图的整体偏移（定到之后才有）
+    private var offsetEst: MagneticFeature?
+    public var currentOffset: MagneticFeature? { offsetEst }
 
     private var travelledCm = 0.0
     private var featureSum = MagneticFeature(total: 0, vertical: 0, horizontal: 0)
@@ -213,6 +233,9 @@ public final class MagneticLocalizer {
         ys = xs
         bias = xs
         scale = [Double](repeating: 1, count: n)
+        ema0 = [Double](repeating: .nan, count: n); ema1 = ema0; ema2 = ema0
+        obsEma = nil
+        offsetEst = nil
         logw = [Double](repeating: 0, count: n)
         for i in 0..<n {
             var p: Point2
@@ -282,6 +305,7 @@ public final class MagneticLocalizer {
                 bias[k] = headingUnknown ? (rng.uniform() * 2 - 1) * Double.pi : rng.normal() * config.initialHeadingBiasSigmaDeg * Double.pi / 180
                 scale[k] = 1 + rng.normal() * config.initialScaleSigma
                 logw[k] = floorW - 2          // 新粒子先给一个中等偏低的权重，靠后面的地磁观测说话
+                if k < ema0.count { ema0[k] = .nan; ema1[k] = .nan; ema2[k] = .nan }
             }
         }
         normalize()
@@ -433,13 +457,56 @@ public final class MagneticLocalizer {
         // - 已经收敛后不奖不罚（给有数据粒子的平均似然），否则路上一个数据空洞就会把整团粒子「赶」回别处有数据的地方
         var lls = [Double?](repeating: nil, count: xs.count)
         var sumLL = 0.0, sumW = 0.0
+        let a = 1 / max(config.offsetWindowUpdates, 1)
+        let usesEma = config.offsetInvariant || config.hybridOffset
+        // 读数沿路的平均（原始读数）
+        if usesEma {
+            if let o = obsEma { obsEma = (o.0 + a * (f.total - o.0), o.1 + a * (f.vertical - o.1), o.2 + a * (f.horizontal - o.2)) }
+            else { obsEma = (f.total, f.vertical, f.horizontal) }
+        }
+        // 混合模式：没定到 / 丢了 → 按起伏找；刚定到 → 偏移 = 读数平均 − 粒子沿路地图平均（按权重）；之后按绝对值比
+        if config.hybridOffset {
+            if !hasConverged {
+                offsetEst = nil
+            } else if offsetEst == nil, let o = obsEma {
+                var w0 = 0.0, s0 = 0.0, s1 = 0.0, s2 = 0.0
+                let mx = logw.max() ?? 0
+                for i in 0..<xs.count where !ema0[i].isNaN {
+                    let wi = exp(logw[i] - mx); w0 += wi; s0 += wi * ema0[i]; s1 += wi * ema1[i]; s2 += wi * ema2[i]
+                }
+                if w0 > 0 { offsetEst = MagneticFeature(total: o.0 - s0 / w0, vertical: o.1 - s1 / w0, horizontal: o.2 - s2 / w0) }
+            }
+        }
+        let rel = config.hybridOffset ? offsetEst == nil : config.offsetInvariant
+        let fAbs = offsetEst.map { f - $0 } ?? f
+        let slack2 = config.offsetSlackUT * config.offsetSlackUT
         for i in 0..<xs.count {
             guard let m = field.sample(at: Point2(xs[i], ys[i])) else { continue }
-            let d0 = f.total - m.mean.total, d1 = f.vertical - m.mean.vertical, d2 = f.horizontal - m.mean.horizontal
             let v0 = m.sigma.total * m.sigma.total + floor2
             let v1 = m.sigma.vertical * m.sigma.vertical + floor2
             let v2 = m.sigma.horizontal * m.sigma.horizontal + floor2
-            let ll = trust * (w.0 * t(d0 * d0 / v0) + w.1 * t(d1 * d1 / v1) + w.2 * t(d2 * d2 / v2)) / config.likelihoodTemperature
+            if usesEma {
+                // 粒子沿自己的路累积地图的平均；新粒子（NaN）从当前值开始
+                if ema0[i].isNaN { ema0[i] = m.mean.total; ema1[i] = m.mean.vertical; ema2[i] = m.mean.horizontal }
+                else {
+                    ema0[i] += a * (m.mean.total - ema0[i]); ema1[i] += a * (m.mean.vertical - ema1[i]); ema2[i] += a * (m.mean.horizontal - ema2[i])
+                }
+            }
+            var ll: Double
+            if rel, let o = obsEma {
+                let r0 = (f.total - o.0) - (m.mean.total - ema0[i])
+                let r1 = (f.vertical - o.1) - (m.mean.vertical - ema1[i])
+                let r2 = (f.horizontal - o.2) - (m.mean.horizontal - ema2[i])
+                ll = w.0 * t(r0 * r0 / v0) + w.1 * t(r1 * r1 / v1) + w.2 * t(r2 * r2 / v2)
+                if config.absoluteWeight > 0 {
+                    let d0 = f.total - m.mean.total, d1 = f.vertical - m.mean.vertical, d2 = f.horizontal - m.mean.horizontal
+                    ll += config.absoluteWeight * (w.0 * t(d0 * d0 / (v0 + slack2)) + w.1 * t(d1 * d1 / (v1 + slack2)) + w.2 * t(d2 * d2 / (v2 + slack2)))
+                }
+                ll *= trust / config.likelihoodTemperature
+            } else {
+                let d0 = fAbs.total - m.mean.total, d1 = fAbs.vertical - m.mean.vertical, d2 = fAbs.horizontal - m.mean.horizontal
+                ll = trust * (w.0 * t(d0 * d0 / v0) + w.1 * t(d1 * d1 / v1) + w.2 * t(d2 * d2 / v2)) / config.likelihoodTemperature
+            }
             lls[i] = ll
             let pw = exp(logw[i])
             sumLL += pw * ll
@@ -454,6 +521,13 @@ public final class MagneticLocalizer {
             }
         }
         normalize()
+        // 混合模式：定到之后慢慢跟踪偏移（读数 − 地图在当前位置的值）
+        if config.hybridOffset, let off = offsetEst, let c = committed ?? lastCenter, let m = field.sample(at: c) {
+            let r = config.offsetTrackRate
+            offsetEst = MagneticFeature(total: off.total + r * ((f.total - m.mean.total) - off.total),
+                                        vertical: off.vertical + r * ((f.vertical - m.mean.vertical) - off.vertical),
+                                        horizontal: off.horizontal + r * ((f.horizontal - m.mean.horizontal) - off.horizontal))
+        }
         updateCount += 1
         let neff = effectiveCount()
         lastEffectiveRatio = neff / Double(xs.count)
@@ -546,6 +620,7 @@ public final class MagneticLocalizer {
         let step = acc / Double(m)
         var u = rng.uniform() * step
         var nx = [Double](repeating: 0, count: m), ny = nx, nb = nx, ns = nx
+        var e0 = [Double](repeating: .nan, count: m), e1 = e0, e2 = e0
         var j = 0
         for i in 0..<m {
             while j < n - 1 && cum[j] < u { j += 1 }
@@ -553,6 +628,7 @@ public final class MagneticLocalizer {
             ny[i] = ys[j] + rng.normal() * config.roughenCm
             nb[i] = bias[j]
             ns[i] = scale[j]
+            if j < ema0.count { e0[i] = ema0[j]; e1[i] = ema1[j]; e2[i] = ema2[j] }
             u += step
         }
         let inject = Int(Double(m) * (hasConverged ? config.randomInjectionConverged : config.randomInjection))
@@ -563,6 +639,7 @@ public final class MagneticLocalizer {
             ny[i] = p.y
             nb[i] = rng.normal() * config.initialHeadingBiasSigmaDeg * Double.pi / 180
             ns[i] = 1 + rng.normal() * config.initialScaleSigma
+            e0[i] = .nan; e1[i] = .nan; e2[i] = .nan
         }
         for i in 0..<m {
             var p = Point2(min(max(nx[i], 0), field.widthCm), min(max(ny[i], 0), field.heightCm))
@@ -571,6 +648,7 @@ public final class MagneticLocalizer {
             ny[i] = p.y
         }
         xs = nx; ys = ny; bias = nb; scale = ns
+        ema0 = e0; ema1 = e1; ema2 = e2
         logw = [Double](repeating: -log(Double(m)), count: m)
     }
 

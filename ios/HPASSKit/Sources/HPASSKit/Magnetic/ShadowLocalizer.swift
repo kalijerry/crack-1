@@ -38,14 +38,17 @@ public final class ShadowLocalizer {
     public var crossCheckResets: Int { assist?.resets ?? 0 }
     public var outsideSurveyed: Bool { assist?.outsideSurveyed ?? false }
 
-    public init(field: MagneticFieldMap, walkable: WalkableMap?, useRawMag: Bool) {
+    public init(field: MagneticFieldMap, walkable: WalkableMap?, useRawMag: Bool,
+                configure: ((inout MagneticConfig) -> Void)? = nil, seed: UInt64 = 1) {
         var cfg = MagneticConfig()
         cfg.initialHeadingBiasSigmaDeg = 30
         // 和实时定位页视觉里程计模式一致
         cfg.featureWeights = (0.5, 1.0, 0.25)
         cfg.jumpConfirmUpdates = 15
         cfg.convergedPositionNoiseFraction = 0.03
-        localizer = MagneticLocalizer(field: field, walkable: walkable, config: cfg)
+        cfg.hybridOffset = true          // 实测同会话 P90 258→131 cm、首次定位 7→4 m（见 docs/roadmap.md）
+        configure?(&cfg)
+        localizer = MagneticLocalizer(field: field, walkable: walkable, config: cfg, seed: seed)
         localizer.reset(start: nil, headingUnknown: true)
         self.useRawMag = useRawMag
     }

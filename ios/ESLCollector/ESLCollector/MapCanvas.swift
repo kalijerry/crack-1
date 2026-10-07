@@ -69,6 +69,10 @@ struct MapCanvas: View {
     var nextTarget: Point2?
     /// 宽通道的建议走线（虚线）
     var laneGuides: [(Point2, Point2)] = []
+    /// 本次采集区域的通道段（紫色高亮）：两端、通道宽（cm）
+    var zoneSegments: [(Point2, Point2, Double)] = []
+    /// 进区入口（紫色圈）：从这里进，先沿已采路段走一段
+    var zoneEntry: Point2?
     /// 路线规划的下一段（橙色粗线 + 箭头，从 .0 走到 .1）
     var nextLane: (Point2, Point2)?
     /// 可能变了的地方（1 m 的橙色方块）
@@ -302,6 +306,13 @@ struct MapCanvas: View {
             ctx.fill(fp, with: .color(Color.blue.opacity(0.06)))
         }
 
+        // 本次采集区域：紫色底
+        if !zoneSegments.isEmpty {
+            for (a, b, w) in zoneSegments {
+                var zp = Path(); zp.move(to: t.toScreen(a)); zp.addLine(to: t.toScreen(b))
+                ctx.stroke(zp, with: .color(Color.purple.opacity(0.22)), style: StrokeStyle(lineWidth: Swift.max(t.len(w + 60), 4), lineCap: .butt))
+            }
+        }
         // 涂色图层：每格一个像素，按地图范围缩放，不插值
         if let pl = paintLayer {
             let o = t.toScreen(Point2(Double(pl.rect.minX), Double(pl.rect.minY)))
@@ -445,6 +456,12 @@ struct MapCanvas: View {
             let rect = CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)
             ctx.fill(Path(rect), with: .color(Color.orange.opacity(0.35)))
             ctx.stroke(Path(rect), with: .color(.orange), lineWidth: 1.2)
+        }
+        // 进区入口
+        if let e = zoneEntry {
+            let c = t.toScreen(e)
+            ctx.stroke(Path(ellipseIn: CGRect(x: c.x - 11, y: c.y - 11, width: 22, height: 22)), with: .color(.purple), lineWidth: 3)
+            ctx.fill(Path(ellipseIn: CGRect(x: c.x - 4, y: c.y - 4, width: 8, height: 8)), with: .color(.purple))
         }
         // 路线规划：下一段
         if case let (a, b)? = nextLane {

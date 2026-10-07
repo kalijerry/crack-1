@@ -229,6 +229,7 @@ async function loadReports() {
       div.innerHTML = `<h2>${esc(o.key.replace("reports/", ""))}</h2>
         <div class="kv">${esc(data.name || "")} · 磁场 ${data.fieldCells} 格 · 蓝牙 ${data.bleTags} 个价签 · 覆盖 ${data.coverage != null ? (data.coverage * 100).toFixed(1) + "%" : "—"} · 包 ${Math.round((data.packageBytes || 0) / 1024)} KB · ${data.components} 个连通分量</div>
         ${(data.warnings || []).map((w) => `<div class="log warn">${esc(w)}</div>`).join("")}
+        ${(data.zones || []).length ? `<div class="kv">采集区域：${data.zones.map((z) => `${z.id === data.nextZone ? "👉 " : ""}${esc(z.name)} ${Math.round(z.fraction * 100)}%${z.done ? " ✅" : ""}`).join(" · ")}${data.nextZone ? `（下次采区域 ${data.nextZone}）` : "（全部采完）"}</div>` : ""}
         ${qual ? `<table><tr><th>质量筛选</th><th>价签修正（人−价签中位）</th><th>价签距离</th><th>磁场残差</th><th>结果</th></tr>${qual}</table>` : ""}
         <table><tr><th>会话</th><th>格</th><th>偏移 |B|/Bz/Bh µT</th><th>分量</th><th>提示</th></tr>${sess}</table>
         ${tests ? `<table><tr><th>测试会话</th><th>覆盖区中位</th><th>P90</th><th>跳</th></tr>${tests}</table>` : ""}

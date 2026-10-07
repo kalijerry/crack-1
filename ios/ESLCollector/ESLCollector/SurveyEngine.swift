@@ -46,6 +46,17 @@ final class SurveyCoverage: ObservableObject {
     @Published private(set) var laneGuides: [(Point2, Point2)] = []
     /// 比这个宽的通道，走中间一趟涂不满（圆圈直径 80 cm），要分两边走
     static let wideCorridorCm = 100.0
+    /// 采集分区（每块约 25 分钟）；进采集模式自动分到一块，路线规划只在这块里
+    private(set) var zones: SurveyZones?
+    @Published private(set) var zoneId: Int?
+    @Published private(set) var zoneStatus: [SurveyZones.Status] = []
+    /// 本区还没怎么采时：从这里（已采过的地方）进区，先沿已采路段走 10～20 m，磁场才能和已有数据对齐
+    @Published private(set) var zoneEntry: Point2?
+    /// 本区的通道段（地图上紫色高亮）：两端、通道宽
+    @Published private(set) var zoneSegments: [(Point2, Point2, Double)] = []
+    private var lastZoneStatus = Date.distantPast
+    var zone: SurveyZones.Zone? { zones?.zone(zoneId) }
+    var currentZoneStatus: SurveyZones.Status? { zoneStatus.first { $0.id == zoneId } }
     private var paintDirty = false
     private var lastPaintImage = Date.distantPast
 
@@ -69,9 +80,44 @@ final class SurveyCoverage: ObservableObject {
             p = CoveragePaint(crosses: crosses, widthCm: widthCm, heightCm: heightCm)
         }
         planner = crosses.isEmpty ? nil : SurveyPlanner(crosses: crosses, radiusCm: p.radiusCm)
+        zones = crosses.isEmpty ? nil : SurveyZones(crosses: crosses, radiusCm: p.radiusCm)
+        zoneId = nil
         if let d = try? Data(contentsOf: Self.paintURL) { p.load(d) }
         paintGrid = p
         rebuildPaintImage()
+        assignZone()
+    }
+
+    // MARK: 采集分区
+
+    /// 自动分配本次的区域：开了头的先采完，否则离已采部分最近的（有重叠才能对齐磁场），都没采过就离我最近的
+    func assignZone(from pos: Point2? = nil) {
+        guard let zs = zones, let pt = paintGrid else { return }
+        zoneId = zs.next(pt, from: pos) ?? zs.zones.first?.id
+        refreshZone()
+    }
+
+    /// 手动换区域
+    func selectZone(_ id: Int) {
+        zoneId = id
+        refreshZone()
+        AppLog.i("建图", "换采集区域：\(zone?.name ?? "-")")
+    }
+
+    private func refreshZone() {
+        guard let zs = zones, let pt = paintGrid else { zoneStatus = []; zoneSegments = []; zoneEntry = nil; return }
+        zoneStatus = zs.status(pt)
+        lastZoneStatus = Date()
+        if let z = zone {
+            planner = zs.planner(for: z)
+            zoneSegments = z.pieces.map { ($0.a, $0.b, $0.widthCm) }
+            let f = currentZoneStatus?.fraction ?? 0
+            zoneEntry = f < zs.startedFraction ? zs.entry(z, paint: pt) : nil
+        } else {
+            planner = zs.planner
+            zoneSegments = []
+            zoneEntry = nil
+        }
     }
 
     /// 在 p 处涂一圈（采集质量合格时调用）。
@@ -88,6 +134,7 @@ final class SurveyCoverage: ObservableObject {
                 nextLane = pl.next(from: p, paint: pt)
                 planRemainingCm = pl.remainingCm(pt)
             }
+            if Date().timeIntervalSince(lastZoneStatus) > 5 { refreshZone() }
             laneGuides = ci.map { Self.lanes(pt.crosses[$0], radiusCm: pt.radiusCm) } ?? []
         }
     }
@@ -128,6 +175,7 @@ final class SurveyCoverage: ObservableObject {
     func mergePaintFromDisk() {
         guard let p = paintGrid, let d = try? Data(contentsOf: Self.paintURL), p.merge(d) else { return }
         rebuildPaintImage()
+        refreshZone()
         revision += 1
     }
 
@@ -391,6 +439,7 @@ final class SurveyEngine: ObservableObject {
         coverage.configurePaint(crosses: store.crosses, widthCm: store.widthCm, heightCm: store.heightCm,
                                 walkable: store.walkableMap())
         coverage.breakPaintStroke()
+        if coverage.zoneId == nil { coverage.assignZone() }
         lastError = nil
         recorder.deviceLabel = "survey"
         recorder.recordBLE = true          // 价签广播顺便录下来，生成磁场图时自动做成蓝牙指纹
@@ -402,6 +451,8 @@ final class SurveyEngine: ObservableObject {
             "map_width_cm": store.widthCm, "map_height_cm": store.heightCm,
             "map_id": MapLibrary.shared.activeId ?? "",
             "purpose": isTestSession ? "test" : "build",
+            "zone": coverage.zoneId ?? 0,
+            "zone_name": coverage.zone?.name ?? "",
             "arkit": true,
             "arkit_frame": "gravity-aligned, x right, y up, z toward viewer; map = pRef + R(phi)(a - aRef), a = (x, z) cm",
         ]

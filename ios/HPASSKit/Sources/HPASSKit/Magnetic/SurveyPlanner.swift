@@ -48,6 +48,16 @@ public struct SurveyPlanner {
         lanes = out
     }
 
+    init(lanes: [Lane]) { self.lanes = lanes }
+
+    /// 只规划这些通道（采集区域）
+    public func restricted(to corridors: Set<String>) -> SurveyPlanner {
+        SurveyPlanner(lanes: lanes.filter { corridors.contains($0.corridor) })
+    }
+
+    /// 一条走线还没涂的长度（cm）
+    public func remainingCm(_ l: Lane, _ p: CoveragePaint) -> Double { unpainted(l, p).0 }
+
     /// 走线上每 50 cm 一个点，看涂没涂：返回 (没涂的长度, 没涂的点)
     private func unpainted(_ l: Lane, _ p: CoveragePaint) -> (Double, [Point2]) {
         let n = max(Int(l.length / 50), 1)

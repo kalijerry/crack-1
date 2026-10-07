@@ -34,6 +34,10 @@ struct Report: Encodable {
     var quality: [SessionQualityGate.Report]
     /// 价签锚定修正的统计
     var corrections: [String: EslTrajectoryCorrector.Stats]
+    /// 采集分区进度 + 下次该采的区域（手机进采集模式按同一套分区自动分配）
+    var zones: [SurveyZones.Status]
+    var nextZone: Int?
+    var nextZoneEntry: [Double]?
 }
 
 guard let mapPath = arg("--map"), let out = arg("--out"), let id = arg("--id") else {
@@ -145,6 +149,20 @@ do {
         }
         print(String(format: "覆盖：%.1f%%（%.0f / %.0f m²），没涂完一半的通道 %d 条", (coverage ?? 0) * 100, covered ?? 0, walkableM2 ?? 0, unfinished.count))
     }
+    // 采集分区：各区域进度、下次去哪
+    var zoneStatus: [SurveyZones.Status] = []
+    var nextZone: Int?
+    var nextEntry: [Double]?
+    if let p = paint, !map.crosses.isEmpty {
+        let zs = SurveyZones(crosses: map.crosses, radiusCm: p.radiusCm)
+        zoneStatus = zs.status(p)
+        nextZone = zs.next(p)
+        if let z = zs.zone(nextZone), let e = zs.entry(z, paint: p) { nextEntry = [e.x.rounded(), e.y.rounded()] }
+        for st in zoneStatus {
+            print(String(format: "  %@：%.0f%%，还剩 %.2f km（约 %d 分钟）%@", st.name, st.fraction * 100, st.remainingCm / 100_000,
+                         Int(st.remainingCm / 100 / 0.8 / 60), st.id == nextZone ? " ← 下次采这里" : ""))
+        }
+    }
     // 测试会话
     var tests: [EvalReport] = []
     let runs = max(Int(arg("--runs") ?? "3") ?? 3, 1)
@@ -174,7 +192,8 @@ do {
         let rep = Report(mapId: id, name: meta.name, version: meta.version, sessions: r.sessions, components: r.components,
                          fieldCells: r.field.coveredCells, bleTags: ble?.tags.count ?? 0, coverage: coverage, coveredM2: covered,
                          walkableM2: walkableM2, unfinishedCorridors: unfinished, tests: tests, packageBytes: pkg.count, warnings: warnings,
-                         eslMismatches: eslMismatches, quality: quality, corrections: corrStats)
+                         eslMismatches: eslMismatches, quality: quality, corrections: corrStats,
+                         zones: zoneStatus, nextZone: nextZone, nextZoneEntry: nextEntry)
         let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         try enc.encode(rep).write(to: URL(fileURLWithPath: rp))
     }

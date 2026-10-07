@@ -181,6 +181,8 @@ struct MagneticView: View {
                          paintRadiusCm: surveying && paintMode ? survey.coverage.paintLayer?.radiusCm : nil,
                          nextTarget: surveying && paintMode ? survey.coverage.nextUnpainted : nil,
                          laneGuides: surveying && paintMode ? survey.coverage.laneGuides : [],
+                         zoneSegments: isSurvey && paintMode ? survey.coverage.zoneSegments : [],
+                         zoneEntry: isSurvey && paintMode ? survey.coverage.zoneEntry : nil,
                          nextLane: surveying && paintMode ? survey.coverage.nextLane.map { ($0.from, $0.to) } : nil,
                          alertSpots: step == .live || isSurvey ? engine.changedSpots : [],
                          highlightShelf: step == .live ? engine.findTarget?.shelfCode : nil,
@@ -603,6 +605,29 @@ struct MagneticView: View {
 
     // MARK: 建图采集
 
+    /// 本次采集区域：自动分配（推荐），也可以手动换
+    @ViewBuilder private var zonePicker: some View {
+        let cov = survey.coverage
+        if !cov.zoneStatus.isEmpty {
+            Menu {
+                ForEach(cov.zoneStatus, id: \.id) { z in
+                    Button { cov.selectZone(z.id) } label: {
+                        Text("\(z.name) · \(Int(z.fraction * 100))%" + (z.done ? " · 已完成" : " · 约 \(Int(z.remainingCm / 100 / 0.8 / 60)) 分钟"))
+                    }
+                }
+                Button("按推荐重新分配") { cov.assignZone(from: survey.position) }
+            } label: {
+                if let z = cov.currentZoneStatus {
+                    Label("本次区域：\(z.name)（\(Int(z.fraction * 100))%，约 \(Int(z.remainingCm / 100 / 0.8 / 60)) 分钟）", systemImage: "square.dashed")
+                } else {
+                    Label("全部区域都采完了", systemImage: "checkmark.seal")
+                }
+            }
+            Text("全店分成 \(cov.zoneStatus.count) 个区域（每块约 25 分钟），地图上紫色是本次区域，橙色箭头只在本区里规划。融合后各区域进度会更新，开了头的先采完，再接着采挨着已采部分的。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
     @ViewBuilder private var surveyPanel: some View {
         let rec = survey.recorder
         if !survey.isRunning { fieldSection }
@@ -620,6 +645,7 @@ struct MagneticView: View {
                         .onChange(of: survey.isTestSession) { on in if on { survey.evaluate = true } }
                     Toggle("同时测地磁定位精度", isOn: $survey.evaluate)
                 }
+                if paintMode { zonePicker }
                 bigButton("开始建图采集", name: "建图·开始") { survey.start(note: surveyNote) }
                     .disabled(!store.usesStoreMap)
             } else {
@@ -692,8 +718,16 @@ struct MagneticView: View {
                 } else if paintMode, let p = survey.position, let tg = survey.coverage.nextUnpainted {
                     row("最近没涂的地方（橙色圈）", "\(Int(p.distance(to: tg) / 100)) m").font(.footnote)
                 }
-                if paintMode, let r = survey.coverage.planRemainingCm {
-                    row("全部走线还剩", "\(Fmt.f(r / 100000, 2)) km · 约 \(Int(r / 100 / 60)) 分钟").font(.footnote)
+                if paintMode, let z = survey.coverage.currentZoneStatus {
+                    row("本次区域（紫色）", "\(z.name) · \(Int(z.fraction * 100))% · 还剩 \(Fmt.f(z.remainingCm / 100000, 2)) km · 约 \(Int(z.remainingCm / 100 / 0.8 / 60)) 分钟")
+                        .font(.footnote)
+                    if z.done {
+                        Text("这个区域采完了，可以结束；下次进采集会自动分到下一个区域。").font(.caption).foregroundStyle(.green)
+                    }
+                }
+                if paintMode, survey.coverage.zoneEntry != nil {
+                    Text("先到紫色圈（已采过的地方），沿已采路段走 10～20 m 再进本区：有重叠，云端融合才能把这次的磁场和已有数据对齐。")
+                        .font(.caption).foregroundStyle(.purple)
                 }
                 if !paintMode, let p = survey.position, let todo = survey.coverage.nearestTodo(from: p) {
                     row("最近没采完", "\(todo.code) · \(Int(todo.distanceM)) m" + (todo.oneWay ? " · 差一个方向" : ""))

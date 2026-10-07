@@ -132,19 +132,26 @@ struct MagneticView: View {
             engine.loadMonitor()
             mapUpText = store.mapUpBearingDeg.map { Fmt.f($0, 0) } ?? ""
             startId = store.points.first?.id ?? ""
-            survey.coverage.configure(crosses: store.crosses)
-            survey.coverage.configurePaint(crosses: store.crosses, widthCm: store.widthCm, heightCm: store.heightCm,
-                                           walkable: store.walkableMap())
+            configureCoverage()
         }
         .onAppear {
-            survey.coverage.configure(crosses: store.crosses)
-            survey.coverage.configurePaint(crosses: store.crosses, widthCm: store.widthCm, heightCm: store.heightCm,
-                                           walkable: store.walkableMap())
+            store.adopt(map: storeData.map)       // 先补上通道，再建涂色网格（不然会按「没有通道的房间」建，云端涂色对不上）
+            configureCoverage()
             mapService.refresh()
             engine.loadMonitor()
         }
+        // 通道变了（换地图、装上云端新版本）：重建采集进度 / 涂色网格
+        .onChange(of: store.crosses.count) { _ in configureCoverage() }
         .onChange(of: survey.isRunning) { running in if !running { mapService.refresh() } }
         .onChange(of: survey.lastSessionDir) { _ in exportURL = nil; exportError = nil }
+    }
+
+    private func configureCoverage() {
+        // 门店地图有通道、但内存里的通道还没补上时不建（会建成房间网格）
+        if let m = storeData.map, !m.crosses.isEmpty, store.crosses.isEmpty { return }
+        survey.coverage.configure(crosses: store.crosses)
+        survey.coverage.configurePaint(crosses: store.crosses, widthCm: store.widthCm, heightCm: store.heightCm,
+                                       walkable: store.walkableMap())
     }
 
     // MARK: 画布

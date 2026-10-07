@@ -159,6 +159,8 @@ final class MapLibrary: ObservableObject {
         MagMapStore.shared.reloadFromDisk()
         setActive(id)
         try StoreDataStore.shared.save(data, as: .map)
+        // reloadFromDisk 清掉了通道 / 货架，马上按门店地图补回来（同一张图时页面收不到「地图变了」，不会自己补）
+        MagMapStore.shared.adopt(map: StoreDataStore.shared.map)
         lastError = nil
         AppLog.i("地图库", "切换地图：\(e.name)")
     }
@@ -264,9 +266,6 @@ final class MapLibrary: ObservableObject {
             try d.write(to: cloudDirectionURL(m.id), options: .atomic)
             try? fm.removeItem(at: ws.appendingPathComponent("survey-coverage.json"))
         }
-        if isActive && (c.paint != nil || c.direction != nil) {
-            NotificationCenter.default.post(name: .surveyPaintFileChanged, object: nil)
-        }
         // 价签位置表（价签 → 绑定的货架、商品）：包里带了就用包里的（比单独拉的新）
         if let e = c.eslCSV, m.kind == "store" {
             do { try StoreDataStore.shared.installEslLocations(e) } catch { AppLog.w("地图库", "价签位置表：\(error)") }
@@ -279,6 +278,11 @@ final class MapLibrary: ObservableObject {
             UserDefaults.standard.set(src, forKey: Self.fieldSourceKey)
             MagMapStore.shared.reloadFromDisk()
             try StoreDataStore.shared.save(c.mapJSON, as: .map)
+            MagMapStore.shared.adopt(map: StoreDataStore.shared.map)
+            // 通道补回来之后再让采集页重读云端涂色 / 方向图
+            if c.paint != nil || c.direction != nil {
+                NotificationCenter.default.post(name: .surveyPaintFileChanged, object: nil)
+            }
         } else {
             try Data(src.utf8).write(to: ws.appendingPathComponent("field-source.txt"))
         }

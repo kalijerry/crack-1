@@ -66,11 +66,19 @@ public enum SessionEvaluator {
     /// 回放一个测试会话：按时间顺序送 IMU、原始磁力计、蓝牙、ARKit 位姿，和参考轨迹比
     public static func evaluate(dir: URL, map: StoreMap, field: MagneticFieldMap, ble: BLEFingerprintMap?,
                                 walkable: WalkableMap?, crossCheck: Bool = true,
-                                configure: ((inout MagneticConfig) -> Void)? = nil, seed: UInt64 = 1) throws -> EvalReport {
+                                configure: ((inout MagneticConfig) -> Void)? = nil, seed: UInt64 = 1,
+                                refTagPositions: [String: Point2]? = nil) throws -> EvalReport {
         let s = try SurveySessionLoader.load(dir)
-        // 参考轨迹：这个会话自己的对齐结果（只用它的锚点和贴通道，不用磁场）
+        // 参考轨迹：这个会话自己的对齐结果（只用它的锚点和贴通道，不用磁场）；给了价签位置时再用价签锚定修正一遍
+        // （采集轨迹中途偏航时，不修正的参考本身就是错的）
         let refB = SurveyMapBuilder(widthCm: map.width, heightCm: map.height, crosses: map.crosses)
-        let ref = refB.add(s).track
+        var ref = refB.add(s).track
+        if let tp = refTagPositions, !map.crosses.isEmpty,
+           let (fn, _) = EslTrajectoryCorrector(tagPositions: tp).solve(track: ref, ble: SurveySessionLoader.loadBLE(dir)) {
+            let b2 = SurveyMapBuilder(widthCm: map.width, heightCm: map.height, crosses: map.crosses)
+            b2.correction = fn
+            ref = b2.prepare(s).0.track
+        }
         func refAt(_ t: Int64) -> Point2? {
             var lo = 0, hi = ref.count - 1
             guard hi > 0, t >= ref[0].tMs, t <= ref[hi].tMs else { return nil }

@@ -13,6 +13,23 @@ public final class BLEAssist {
     public var minKnownFraction = 0.4
     public var crossCheckSeconds = 6
     public var crossCheckCm = 1500.0
+    /// 逐片价签的范围约束（见 MagneticLocalizer.applyTagRanges）；false = 老办法（只用加权平均出来的粗位置）
+    public var tagRanges = BLEAssist.defaultTagRanges
+    /// 评估对比用（hpass-eval --old-ble）
+    nonisolated(unsafe) public static var defaultTagRanges = true
+    public var tagRangeMinRssi = -90.0
+    public var tagRangeMax = 8
+
+    /// 信号（2.5 秒平均，dBm）→ 人离价签所在货架中心最远多少（cm）：实测 P90 + 1 m 余量（平均值比单次读数稳、表里位置是货架中心）
+    public static func rangeCm(_ rssi: Double) -> Double {
+        switch rssi {
+        case (-75)...: return 350
+        case (-80)...: return 420
+        case (-85)...: return 600
+        case (-90)...: return 900
+        default: return 1500
+        }
+    }
 
     private var unknownStreak = 0
     private var knownStreak = 0
@@ -54,6 +71,14 @@ public final class BLEAssist {
             }
         }
         let conv = localizer.isConverged
+        if tagRanges {
+            let tags = BLEFingerprintMap.strongest(obs, k: tagRangeMax, minRssi: tagRangeMinRssi)
+                .compactMap { o in map.tags[o.0].map { (position: Point2($0.x, $0.y), rangeCm: Self.rangeCm(o.1)) } }
+            if tags.count >= 2 {
+                localizer.applyTagRanges(tags, weight: conv ? 0.5 : 1, injectFraction: conv ? 0 : 0.2)
+                return
+            }
+        }
         localizer.applyPositionPrior(e.position, sigmaCm: max(e.spreadCm, conv ? 500 : 400),
                                      weight: conv ? 0.3 : 1, injectFraction: conv ? 0 : 0.2)
     }

@@ -311,6 +311,42 @@ public final class MagneticLocalizer {
         normalize()
     }
 
+    /// 价签范围约束：每片听到的价签都要求「人在它 rangeCm 以内」（按信号强弱定，实测 P90：−75 dBm 2.5 m、
+    /// −80 3.2 m、−85 5 m、−90 8 m）。磁场平缓的地方几处长得像，粒子会被拉到别处；附近没有这片价签的位置直接被压下去。
+    /// 每片价签的惩罚有上限 capLog（价签表个别位置不对、反射，不至于一片就把正确的位置否掉）。
+    /// 还没定到时，把一部分最差的粒子撒到最强那片价签的范围里。
+    public func applyTagRanges(_ tags: [(position: Point2, rangeCm: Double)], sigmaCm: Double = 150, capLog: Double = 3,
+                               weight: Double = 1, injectFraction: Double = 0) {
+        guard !xs.isEmpty, !tags.isEmpty, weight > 0 else { return }
+        let s2 = 2 * sigmaCm * sigmaCm
+        for i in 0..<xs.count {
+            var pen = 0.0
+            for t in tags {
+                let d = ((xs[i] - t.position.x) * (xs[i] - t.position.x) + (ys[i] - t.position.y) * (ys[i] - t.position.y)).squareRoot()
+                let e = d - t.rangeCm
+                if e > 0 { pen += min(e * e / s2, capLog) }
+            }
+            logw[i] -= weight * pen
+        }
+        if !hasConverged && injectFraction > 0, let best = tags.min(by: { $0.rangeCm < $1.rangeCm }) {
+            let m = Int(Double(xs.count) * min(injectFraction, 0.5))
+            let order = logw.indices.sorted { logw[$0] < logw[$1] }
+            let floorW = logw.max() ?? 0
+            for k in order.prefix(m) {
+                let a = rng.uniform() * 2 * Double.pi, r = best.rangeCm * rng.uniform().squareRoot()
+                var p = Point2(best.position.x + cos(a) * r, best.position.y + sin(a) * r)
+                if let w = walkable, !w.isWalkable(p) { p = w.nearestWalkable(to: p, radiusCm: 300) ?? p }
+                xs[k] = min(max(p.x, 0), field.widthCm)
+                ys[k] = min(max(p.y, 0), field.heightCm)
+                bias[k] = headingUnknown ? (rng.uniform() * 2 - 1) * Double.pi : rng.normal() * config.initialHeadingBiasSigmaDeg * Double.pi / 180
+                scale[k] = 1 + rng.normal() * config.initialScaleSigma
+                logw[k] = floorW - 2
+                if k < ema0.count { ema0[k] = .nan; ema1[k] = .nan; ema2[k] = .nan }
+            }
+        }
+        normalize()
+    }
+
     /// 送入一次惯导位移增量（cm，地图系）和这段时间内最新的磁场特征，返回当前估计。
     ///
     /// - Parameter trust: 这一刻磁场读数可信度 0...1（见 `MagneticTrustMonitor`）。

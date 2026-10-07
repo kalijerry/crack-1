@@ -32,6 +32,27 @@ final class SurveyMapService: ObservableObject {
         return try? JSONDecoder().decode(MapBuildState.self, from: d)
     }
 
+    @Published private(set) var uploadStatus: String?
+
+    /// 把当前地图的所有会话（建图 + 测试）里后台还没有的上传上去：云端融合只用后台有的会话
+    func uploadAll() async {
+        guard Telemetry.shared.enabled else { uploadStatus = "先连上云端后台"; return }
+        let all = items + testItems
+        var have = Set<String>()
+        var listData: Data?
+        if let r = Telemetry.shared.sessionsRequest() { listData = try? await URLSession.shared.data(for: r).0 }
+        if let d = listData, let arr = try? JSONSerialization.jsonObject(with: d) as? [[String: Any]] {
+            for o in arr { if let k = o["key"] as? String { have.insert(k.replacingOccurrences(of: "sessions/", with: "").replacingOccurrences(of: ".zip", with: "")) } }
+        }
+        let todo = all.filter { !have.contains($0.id) }
+        var ok = 0
+        for (i, it) in todo.enumerated() {
+            uploadStatus = "上传中 \(i + 1) / \(todo.count)：\(it.id)"
+            if await Telemetry.shared.upload(sessionDir: it.url) { ok += 1 }
+        }
+        uploadStatus = todo.isEmpty ? "后台已经有全部 \(all.count) 个会话" : "上传了 \(ok) / \(todo.count) 个，云端稍后自动融合"
+    }
+
     /// 选中的会话里还没加进磁场图的
     var newSelected: [Item] { items.filter { selected.contains($0.id) && !included.contains($0.id) } }
 
@@ -135,11 +156,8 @@ final class SurveyMapService: ObservableObject {
                 MagMapStore.shared.applyBuilt(f, source: "\(doneNames.count) 个会话（\(names.joined(separator: "、"))），\(df.string(from: Date())) " + (append ? "追加" : "生成"), ble: ble)
                 if let d = try? JSONEncoder().encode(state) { try? d.write(to: Self.stateURL, options: .atomic) }
                 self.included = Set(doneNames)
-                // 连着云端就顺手上传，别的手机能直接下载
-                if Telemetry.shared.enabled {
-                    self.lines.append("正在上传到云端……")
-                    Task { await CloudMaps.shared.uploadActive(); self.lines.append(CloudMaps.shared.message ?? "") }
-                }
+                // 不自动上传：云端（GitHub Actions）用后台所有会话融合出来的才是正式版本；
+                // 手机上生成的只是本机预览，要给别人用可以在「门店数据 → 云端地图」手动上传
                 self.lines.append("完成：有数据的格子 \(valid) 个（补齐后 \(f.coveredCells)），已启用")
                 AppLog.i("建图", "手机上生成磁场图完成：样本 \(total)，有效格 \(valid)，补齐后 \(f.coveredCells)")
             }

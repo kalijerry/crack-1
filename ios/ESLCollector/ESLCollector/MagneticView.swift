@@ -698,6 +698,10 @@ struct MagneticView: View {
                 if mapService.items.isEmpty {
                     Text("还没有建图采集会话。").foregroundStyle(.secondary)
                 }
+                if Telemetry.shared.enabled {
+                    Button("把这张地图的会话都上传到后台（云端融合用）") { Task { await mapService.uploadAll() } }
+                    if let u = mapService.uploadStatus { Text(u).font(.caption).foregroundStyle(.secondary) }
+                }
                 if !mapService.testItems.isEmpty {
                     Text("另有 \(mapService.testItems.count) 个测试会话（不参与建图，可上传到后台评估）").font(.caption).foregroundStyle(.secondary)
                 }

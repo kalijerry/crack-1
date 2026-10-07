@@ -114,12 +114,14 @@ public final class SurveyMapBuilder {
     // MARK: - 一次会话
 
     @discardableResult
-    public func add(_ s: SurveySession) -> SurveySessionReport {
+    /// 一个会话：对齐、贴通道、算磁场特征，返回带位置的样本（不累积）。多会话云端融合先把所有会话都算出来，
+    /// 统一解出各会话的偏移再累积（见 MultiSessionFusion）。
+    public func prepare(_ s: SurveySession) -> (SurveySessionReport, [(Point2, MagneticFeature)]) {
         var rep = SurveySessionReport(name: s.name)
         let poses = s.poses.sorted { $0.tMs < $1.tMs }
-        guard poses.count > 30 else { rep.warnings.append("ARKit 位姿太少"); return rep }
+        guard poses.count > 30 else { rep.warnings.append("ARKit 位姿太少"); return (rep, []) }
         let segs = segments(s.anchors.sorted { $0.tMs < $1.tMs }, poses, &rep)
-        guard !segs.isEmpty else { return rep }
+        guard !segs.isEmpty else { return (rep, []) }
 
         // 1. 每个位姿换到地图坐标
         var cum = [0.0]
@@ -133,7 +135,7 @@ public final class SurveyMapBuilder {
             if sg.tail, cum[i] - sg.path0 > tailMaxCm { continue }
             mapped.append((ps.tMs, sg.toMap(ps.a, t: ps.tMs), cum[i], ps.normal))
         }
-        guard mapped.count > 10 else { rep.warnings.append("对齐后没有可用的轨迹"); return rep }
+        guard mapped.count > 10 else { rep.warnings.append("对齐后没有可用的轨迹"); return (rep, []) }
 
         // 2. 自动贴通道
         if snapEnabled && !crosses.isEmpty {
@@ -171,6 +173,13 @@ public final class SurveyMapBuilder {
             }
             samples.append((p, f))
         }
+        return (rep, samples)
+    }
+
+    @discardableResult
+    public func add(_ s: SurveySession) -> SurveySessionReport {
+        var (rep, samples) = prepare(s)
+        guard !samples.isEmpty else { return rep }
         // 5. 会话整体偏移对齐：实测两次采集同一处整体能差 10～16 µT（磁力计偏置每次估得不一样），
         //    直接平均会把地图糊掉。和已有数据有足够多共同格子时，减去「本会话 − 已有」的中位差再累积。
         if alignSessionOffset, let off = sessionOffset(samples) {

@@ -194,8 +194,22 @@ async function loadReports() {
   const box = $("reports"); box.innerHTML = list.length ? "" : '<div class="kv">还没有报告。电脑上跑 hpass-eval --json 后上传（见 server/telemetry/README.md）。</div>';
   for (const o of list.slice(0, 20)) {
     const rr = await api("/api/" + o.key); if (!rr.ok) continue;
-    const rows = await rr.json();
+    const data = await rr.json();
     const div = document.createElement("div");
+    if (!Array.isArray(data)) {
+      // 云端融合报告
+      const sess = (data.sessions || []).map((s) => `<tr><td>${esc(s.name)}</td><td>${s.cells}</td><td>${s.offset.map((x) => x.toFixed(1)).join(" / ")}</td><td>${s.component}</td><td>${esc((s.warnings || []).join("；"))}</td></tr>`).join("");
+      const tests = (data.tests || []).map((x) => `<tr><td>${esc(x.session)}</td><td>${x.inMapMedianCm != null ? Math.round(x.inMapMedianCm) + " cm" : "—"}</td><td>${x.inMapP90Cm != null ? Math.round(x.inMapP90Cm) + " cm" : "—"}</td><td>${x.jumps}</td></tr>`).join("");
+      div.innerHTML = `<h2>${esc(o.key.replace("reports/", ""))}</h2>
+        <div class="kv">${esc(data.name || "")} · 磁场 ${data.fieldCells} 格 · 蓝牙 ${data.bleTags} 个价签 · 覆盖 ${data.coverage != null ? (data.coverage * 100).toFixed(1) + "%" : "—"} · 包 ${Math.round((data.packageBytes || 0) / 1024)} KB · ${data.components} 个连通分量</div>
+        ${(data.warnings || []).map((w) => `<div class="log warn">${esc(w)}</div>`).join("")}
+        <table><tr><th>会话</th><th>格</th><th>偏移 |B|/Bz/Bh µT</th><th>分量</th><th>提示</th></tr>${sess}</table>
+        ${tests ? `<table><tr><th>测试会话</th><th>覆盖区中位</th><th>P90</th><th>跳</th></tr>${tests}</table>` : ""}
+        ${(data.unfinishedCorridors || []).length ? `<div class="kv">没涂完一半的通道：${esc(data.unfinishedCorridors.slice(0, 30).join("、"))}</div>` : ""}`;
+      box.appendChild(div);
+      continue;
+    }
+    const rows = data;
     div.innerHTML = `<h2>${esc(o.key.replace("reports/", ""))}</h2><table><tr><th>测试会话</th><th>中位</th><th>P90</th><th>≤1m</th><th>跳</th><th>首次定位</th></tr>` +
       rows.map((x) => `<tr><td>${esc(x.session)}</td><td>${x.medianCm != null ? Math.round(x.medianCm) + " cm" : "—"}</td><td>${x.p90Cm != null ? Math.round(x.p90Cm) + " cm" : "—"}</td><td>${x.within1m != null ? Math.round(x.within1m * 100) + "%" : "—"}</td><td>${x.jumps}</td><td>${x.firstFixM != null ? x.firstFixM.toFixed(1) + " m" : "没定到"}</td></tr>`).join("") + "</table>";
     box.appendChild(div);

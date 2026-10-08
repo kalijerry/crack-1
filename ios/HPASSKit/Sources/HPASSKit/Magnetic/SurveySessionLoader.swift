@@ -17,7 +17,8 @@ public enum SurveySessionLoader {
             && fm.fileExists(atPath: dir.appendingPathComponent("anchors.csv").path)
     }
 
-    public static func load(_ dir: URL) throws -> SurveySession {
+    /// requireAnchors = false：实时定位记录没有 anchors.csv
+    public static func load(_ dir: URL, requireAnchors: Bool = true) throws -> SurveySession {
         func rows(_ name: String, required: Bool = true) throws -> [[Substring]] {
             let url = dir.appendingPathComponent(name)
             guard let text = try? String(contentsOf: url, encoding: .utf8) else {
@@ -39,7 +40,7 @@ public enum SurveySessionLoader {
             guard r.count >= 9, let t = Int64(r[0]), let x = Double(r[1]), let z = Double(r[3]) else { return nil }
             return SurveySession.Pose(tMs: t, a: Point2(x * 100, z * 100), normal: r[8] == "2")
         }
-        let anchors = try rows("anchors.csv").compactMap { r -> SurveySession.Anchor? in
+        let anchors = try rows("anchors.csv", required: requireAnchors).compactMap { r -> SurveySession.Anchor? in
             guard r.count >= 7, let t = Int64(r[0]), let mx = Double(r[2]), let my = Double(r[3]),
                   let ax = Double(r[4]), let az = Double(r[5]) else { return nil }
             return SurveySession.Anchor(tMs: t, kind: String(r[1]), map: Point2(mx, my), ar: Point2(ax, az),

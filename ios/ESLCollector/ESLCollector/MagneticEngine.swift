@@ -196,6 +196,12 @@ final class MagneticEngine: ObservableObject {
     @Published private(set) var navRoute: Route?
     @Published private(set) var navHint: NavHint?
     @Published private(set) var navLabel: String?
+    /// 目标货架（播报"在左手边 / 右手边"用）；点位 / 坐标导航时为 nil
+    @Published private(set) var navShelf: NavInstruction.Shelf?
+    @Published private(set) var navArrived = false
+    private var navArrivedText = "已到达"
+    /// 这次导航是寻找模式自动开的（不找了 / 换目标时一起结束）
+    private var navFromFind = false
     private var nav: NavigationSession?
     private var navMapKey = ""
     private static let navArriveCm: Double = 120
@@ -715,6 +721,7 @@ final class MagneticEngine: ObservableObject {
     private var lastProximity = 0
 
     func setFindTarget(_ e: EslLocation?) {
+        if navFromFind { stopNavigation() }
         findTarget = e
         finderBox.set(e?.id)
         findRssi = nil
@@ -723,6 +730,8 @@ final class MagneticEngine: ObservableObject {
         lastProximity = 0
         if let e { AppLog.i("寻找", "找价签 \(e.id)：\(e.label) \(e.plano)") }
         if e != nil && phase == .live && ble == nil { startFinderScanOnly() }
+        // 有货架就直接导航过去；还没定位的话等第一个位置
+        if let code = e?.shelfCode { navigateToShelf(code: code, fromFind: true) }
     }
 
     /// 没有蓝牙底图时也要能找：只开扫描
@@ -1072,27 +1081,51 @@ final class MagneticEngine: ObservableObject {
     }
 
     /// 沿通道导航到地图上的一个位置（比如货架中心；规划会落到货架旁的通道上）。
-    func navigate(to target: Point2, label: String) {
-        guard let map = StoreDataStore.shared.map, !map.crosses.isEmpty else {
+    func navigate(to target: Point2, label: String, shelf: NavInstruction.Shelf? = nil) {
+        let store = StoreDataStore.shared
+        guard let map = store.map, !map.crosses.isEmpty || MagMapStore.shared.walkableMap() != nil else {
             lastError = "导航需要门店地图（货架和通道）"
             return
         }
         let key = "\(map.shelves.count)/\(map.crosses.count)"
         if nav == nil || key != navMapKey {
-            nav = NavigationSession(planner: RoutePlanner(shelves: map.shelves, crosses: map.crosses))
+            var cfg = RoutePlannerConfig()
+            cfg.offRouteDistanceCm = 300          // 偏离 3 m 以上
+            cfg.offRouteConfirmUpdates = 3        // 连续 3 次定位更新才重新规划
+            nav = NavigationSession(planner: RoutePlanner(shelves: map.shelves, crosses: map.crosses,
+                                                          walkable: MagMapStore.shared.walkableMap(), config: cfg))
             navMapKey = key
         }
         targetId = nil
         hint = nil
         navLabel = label
+        navShelf = shelf
+        navArrived = false
         navHint = nav?.start(targets: [target], from: position)
         navRoute = nav?.route
-        if navRoute == nil {
+        if position == nil {
+            // 还没定位：先记下目标，第一个位置出来后自动规划
+            AppLog.i("地磁", "导航到 \(label)：等定位")
+        } else if navRoute == nil {
             lastError = "规划不出到「\(label)」的路线"
             navLabel = nil
+            navShelf = nil
         } else {
             AppLog.i("地磁", "导航到 \(label)：路线 \(Int((navRoute?.length ?? 0) / 100)) m")
         }
+    }
+
+    /// 导航到一个货架：目标是货架朝通道那一面前方 90 cm 的站位点（不是货架中心），路线会停在正确的那条通道里。
+    func navigateToShelf(code: String, fromFind: Bool = false) {
+        guard let map = StoreDataStore.shared.map, let s = map.shelves.first(where: { $0.code == code }) else {
+            lastError = "地图里没有货架 \(code)"
+            return
+        }
+        let signs = ShelfSigns(map: map, walkable: MagMapStore.shared.walkableMap())
+        let target = signs.sign(forShelfCode: code).map { signs.standPoint($0) } ?? Point2(s.x, s.y)
+        navigate(to: target, label: code,
+                 shelf: NavInstruction.Shelf(name: String(code.dropFirst("Shelf-".count)), center: Point2(s.x, s.y)))
+        navFromFind = fromFind && navLabel != nil
     }
 
     func stopNavigation() {
@@ -1100,6 +1133,16 @@ final class MagneticEngine: ObservableObject {
         navRoute = nil
         navHint = nil
         navLabel = nil
+        navShelf = nil
+        navArrived = false
+        navFromFind = false
+    }
+
+    /// 导航栏的一句话（寻找模式和导航面板共用）
+    var navText: String {
+        if navArrived { return navArrivedText }
+        guard let h = navHint else { return position == nil ? "等定位…" : "正在规划路线…" }
+        return NavInstruction.text(h, shelf: navShelf)
     }
 
     func setTarget(_ id: String?) {
@@ -1555,10 +1598,11 @@ final class MagneticEngine: ObservableObject {
             navRoute = h.route
             if h.remainingDistance <= Self.navArriveCm {
                 AppLog.i("地磁", "导航到达 \(navLabel ?? "")")
+                navArrivedText = NavInstruction.text(h, shelf: navShelf)
                 n.stop()
                 navRoute = nil
                 navHint = nil
-                navLabel = (navLabel ?? "") + "（已到达）"
+                navArrived = true
             }
         }
     }

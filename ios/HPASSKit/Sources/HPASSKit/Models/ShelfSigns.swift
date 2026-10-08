@@ -52,6 +52,12 @@ public struct ShelfSigns {
         return nil
     }
 
+    /// 按地图货架编号（Shelf-082-20）找；EslLocation.shelfCode 用
+    public func sign(forShelfCode code: String) -> Sign? {
+        guard let s = byCode[code] else { return nil }
+        return face(s, text: String(code.dropFirst("Shelf-".count)))
+    }
+
     func face(_ s: ShelfRect, text: String) -> Sign {
         let r = s.rotation * .pi / 180
         // 矩形自身坐标：width 沿 (cos, sin)，height 沿 (-sin, cos)

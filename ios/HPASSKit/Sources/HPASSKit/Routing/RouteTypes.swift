@@ -120,6 +120,8 @@ public struct RoutePlannerConfig {
     public var hintWindowCm: Double = 200
     /// 横向偏离超过该值视为脱线
     public var offRouteDistanceCm: Double = 500
+    /// 连续多少次定位更新都脱线才重新规划（定位偶尔抖一下不要换路线）
+    public var offRouteConfirmUpdates: Int = 1
     /// 新路线至少要比“裁剪后的旧路线”短这么多才替换
     public var replanLengthDeltaCm: Double = 500
     /// 节点合并 / 交点判定容差

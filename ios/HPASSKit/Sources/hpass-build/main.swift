@@ -54,10 +54,12 @@ do {
     var sessions: [SurveySession] = []
     var bleSamples: [[BLESample]] = []
     var signSamples: [[SignSample]] = []
+    var headingSamples: [[(tMs: Int64, deg: Double)]] = []
     for d in dirs {
         do {
             sessions.append(try SurveySessionLoader.load(d)); bleSamples.append(SurveySessionLoader.loadBLE(d))
             signSamples.append(SignSample.load(d))
+            headingSamples.append(MapBearingEstimator.loadHeadings(d))
         }
         catch { print("⚠️ 跳过 \(d.lastPathComponent)：\(error)") }
     }
@@ -203,10 +205,25 @@ do {
             }
         }
     }
+    // 地图朝向（地图上方的罗盘方位）：从合格会话的轨迹 + 罗盘自动估；冷启动时粒子按它定朝向，不用全方向猜
+    var bearing = arg("--bearing").flatMap(Double.init)
+    if !map.crosses.isEmpty {
+        var ests: [(deg: Double, devDeg: Double, n: Int)] = []
+        for (j, k) in keepIdx.enumerated() where j < r.tracks.count && k < headingSamples.count {
+            if let e = MapBearingEstimator.estimate(track: r.tracks[j], headings: headingSamples[k]) {
+                ests.append(e)
+                print(String(format: "  地图朝向 %@：%.0f°（中位偏差 %.0f°，%d 段）", sessions[k].name, e.deg, e.devDeg, e.n))
+            }
+        }
+        if let b = MapBearingEstimator.combine(ests) {
+            print(String(format: "地图朝向：%.0f°（之前 %@）", b, bearing.map { String(format: "%.0f°", $0) } ?? "没有"))
+            bearing = b
+        }
+    }
     // 打包
     var meta = MapPackage.Meta(id: id, name: arg("--name") ?? id, kind: arg("--kind") ?? (map.crosses.isEmpty ? "room" : "store"),
                                version: Int64((Date().timeIntervalSince1970 * 1000).rounded()),
-                               source: "云端融合 \(keptSessions.count - magExcluded.count) 个会话（共 \(sessions.count) 个，质量筛选后）", mapUpBearingDeg: arg("--bearing").flatMap(Double.init),
+                               source: "云端融合 \(keptSessions.count - magExcluded.count) 个会话（共 \(sessions.count) 个，质量筛选后）", mapUpBearingDeg: bearing,
                                magSource: "raw")
     meta.fieldCells = rm.field.coveredCells
     meta.origin = "cloud"

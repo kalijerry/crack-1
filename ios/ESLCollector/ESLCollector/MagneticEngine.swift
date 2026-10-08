@@ -899,7 +899,9 @@ final class MagneticEngine: ObservableObject {
             let imuW = try? CSVWriter(url: d.appendingPathComponent("imu.csv"),
                                       header: "t_ms,ax,ay,az,gx,gy,gz,mx,my,mz,mag_acc,qw,qx,qy,qz,heading_deg")
             let rawW = try? CSVWriter(url: d.appendingPathComponent("mag_raw.csv"), header: "t_ms,mx,my,mz")
-            let meta: [String: Any] = ["platform": "ios", "live": true, "start_ms": Fmt.nowMs(),
+            // map_id：云端融合按它把实时定位的记录归到同一张地图；survey = false：不当建图会话用
+            let meta: [String: Any] = ["platform": "ios", "live": true, "survey": false, "start_ms": Fmt.nowMs(),
+                                       "map_id": MapLibrary.shared.activeId ?? "", "arkit": true,
                                        "map_source": MagMapStore.shared.magSource]
             if let data = try? JSONSerialization.data(withJSONObject: meta, options: [.prettyPrinted]) {
                 try? data.write(to: d.appendingPathComponent("meta.json"))

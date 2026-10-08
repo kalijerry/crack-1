@@ -22,6 +22,10 @@ public struct EvalReport: Codable {
     public var inMapWithin1m: Double?
     /// 参考轨迹有多少比例在磁场图覆盖范围内
     public var inMapShare: Double?
+    /// 每个已定位点的误差（cm），汇总多个会话时用
+    public var errorsCm: [Double] = []
+    /// 参考轨迹上的点数（含没定到位的），算「定位覆盖率」
+    public var refPoints: Int = 0
 
     public var line: String {
         func f(_ v: Double?) -> String { v.map { String(format: "%.0f", $0) } ?? "—" }
@@ -63,17 +67,30 @@ public enum SessionEvaluator {
         return nil
     }
 
+    /// 读 truth.csv（t_ms,x_cm,y_cm）。没有返回 nil
+    static func loadTruth(_ dir: URL) -> [(tMs: Int64, p: Point2)]? {
+        guard let text = try? String(contentsOf: dir.appendingPathComponent("truth.csv"), encoding: .utf8) else { return nil }
+        let out = text.split(separator: "\n").dropFirst().compactMap { l -> (tMs: Int64, p: Point2)? in
+            let r = l.split(separator: ",")
+            guard r.count >= 3, let t = Int64(r[0]), let x = Double(r[1]), let y = Double(r[2]) else { return nil }
+            return (t, Point2(x, y))
+        }
+        return out.count > 1 ? out.sorted { $0.tMs < $1.tMs } : nil
+    }
+
     /// 回放一个测试会话：按时间顺序送 IMU、原始磁力计、蓝牙、ARKit 位姿，和参考轨迹比
     public static func evaluate(dir: URL, map: StoreMap, field: MagneticFieldMap, ble: BLEFingerprintMap?,
                                 walkable: WalkableMap?, crossCheck: Bool = true,
                                 configure: ((inout MagneticConfig) -> Void)? = nil, seed: UInt64 = 1,
-                                refTagPositions: [String: Point2]? = nil) throws -> EvalReport {
+                                refTagPositions: [String: Point2]? = nil, oracleStart: Bool = false) throws -> EvalReport {
         let s = try SurveySessionLoader.load(dir)
         // 参考轨迹：这个会话自己的对齐结果（只用它的锚点和贴通道，不用磁场）；给了价签位置时再用价签锚定修正一遍
         // （采集轨迹中途偏航时，不修正的参考本身就是错的）
         let refB = SurveyMapBuilder(widthCm: map.width, heightCm: map.height, crosses: map.crosses)
-        var ref = refB.add(s).track
-        if let tp = refTagPositions, !map.crosses.isEmpty,
+        // 公开数据集基准：会话里有 truth.csv（t_ms,x_cm,y_cm）就直接当参考轨迹（位姿是合成的，不能再对齐）
+        let truth = Self.loadTruth(dir)
+        var ref = truth ?? refB.add(s).track
+        if truth == nil, let tp = refTagPositions, !map.crosses.isEmpty,
            let (fn, _) = EslTrajectoryCorrector(tagPositions: tp).solve(track: ref, ble: SurveySessionLoader.loadBLE(dir)) {
             let b2 = SurveyMapBuilder(widthCm: map.width, heightCm: map.height, crosses: map.crosses)
             b2.correction = fn
@@ -88,6 +105,19 @@ public enum SessionEvaluator {
         let sh = ShadowLocalizer(field: field, walkable: walkable, useRawMag: !s.raw.isEmpty, configure: configure, seed: seed)
         sh.bleMap = ble
         sh.crossCheckEnabled = crossCheck
+        // 已知起点 + 已知朝向的「跟踪」模式（基准用，看磁场图本身有多准，不含冷启动）：
+        // 用参考轨迹前 8 m 把位姿坐标系转到地图坐标系，粒子从真实起点出发
+        var poseRot = (c: 1.0, s: 0.0)
+        if oracleStart, let r0 = ref.first, let pi0 = s.poses.firstIndex(where: { $0.tMs >= r0.tMs }) {
+            let a0 = s.poses[pi0].a
+            if let pj = s.poses[pi0...].firstIndex(where: { $0.a.distance(to: a0) >= 800 }),
+               let rj = ref.first(where: { $0.tMs >= s.poses[pj].tMs }) {
+                let da = s.poses[pj].a - a0, dm = rj.p - r0.p
+                let phi = atan2(dm.y, dm.x) - atan2(da.y, da.x)
+                poseRot = (cos(phi), sin(phi))
+                sh.localizer.reset(start: r0.p, spreadCm: 150, headingUnknown: false)
+            }
+        }
         let bleSamples = ble == nil ? [] : SurveySessionLoader.loadBLE(dir)
         enum Ev { case imu(IMUSample), raw(Int64, (Double, Double, Double)), ble(BLESample), pose(SurveySession.Pose) }
         var evs: [(Int64, Int, Ev)] = []
@@ -106,7 +136,8 @@ public enum SessionEvaluator {
             case .raw(let t, let v): sh.rawMag(tMs: t, v)
             case .ble(let b): sh.bleReading(tMs: b.tMs, id: b.id, rssi: b.rssi)
             case .pose(let p):
-                guard let est = sh.pose(a: p.a, normal: p.normal, tMs: p.tMs), let r = refAt(p.tMs) else { continue }
+                let pa = Point2(p.a.x * poseRot.c - p.a.y * poseRot.s, p.a.x * poseRot.s + p.a.y * poseRot.c)
+                guard let est = sh.pose(a: pa, normal: p.normal, tMs: p.tMs), let r = refAt(p.tMs) else { continue }
                 ev.add(estimate: est, reference: r)
                 let covered = field.sample(at: r) != nil
                 refTotal += 1
@@ -114,7 +145,7 @@ public enum SessionEvaluator {
                 if covered && est.converged { inMapErr.append(est.position.distance(to: r)) }
             }
         }
-        return EvalReport(session: dir.lastPathComponent, medianCm: ev.percentile(0.5), p90Cm: ev.percentile(0.9),
+        var rep = EvalReport(session: dir.lastPathComponent, medianCm: ev.percentile(0.5), p90Cm: ev.percentile(0.9),
                           within1m: ev.within1m, jumps: ev.jumps, firstFixM: ev.firstFixPathCm.map { $0 / 100 },
                           pathM: ev.pathCm / 100, points: ev.errors.count, usedBLE: ble != nil,
                           wrongFixShare: ev.errors.isEmpty ? nil : Double(ev.errors.filter { $0 > 500 }.count) / Double(ev.errors.count),
@@ -122,5 +153,8 @@ public enum SessionEvaluator {
                           inMapMedianCm: pct(inMapErr, 0.5), inMapP90Cm: pct(inMapErr, 0.9),
                           inMapWithin1m: inMapErr.isEmpty ? nil : Double(inMapErr.filter { $0 <= 100 }.count) / Double(inMapErr.count),
                           inMapShare: refTotal > 0 ? Double(refInMap) / Double(refTotal) : nil)
+        rep.errorsCm = ev.errors
+        rep.refPoints = refTotal
+        return rep
     }
 }

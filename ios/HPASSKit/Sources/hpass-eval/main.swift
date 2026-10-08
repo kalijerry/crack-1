@@ -11,7 +11,16 @@ func arg(_ name: String) -> String? {
     guard let i = CommandLine.arguments.firstIndex(of: name), i + 1 < CommandLine.arguments.count else { return nil }
     return CommandLine.arguments[i + 1]
 }
-func list(_ s: String?) -> [URL] { (s ?? "").split(separator: ",").map { URL(fileURLWithPath: String($0)) } }
+// 逗号分隔的会话目录；某项下面没有 imu.csv 就当成「会话的父目录」，展开成所有子目录（公开数据集基准用）
+func list(_ s: String?) -> [URL] {
+    (s ?? "").split(separator: ",").flatMap { part -> [URL] in
+        let u = URL(fileURLWithPath: String(part))
+        if FileManager.default.fileExists(atPath: u.appendingPathComponent("imu.csv").path) { return [u] }
+        let kids = (try? FileManager.default.contentsOfDirectory(at: u, includingPropertiesForKeys: nil)) ?? []
+        return kids.filter { FileManager.default.fileExists(atPath: $0.appendingPathComponent("imu.csv").path) }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+}
 
 guard let mapPath = arg("--map") else {
     print("用法：hpass-eval --map map.json --build 会话1,会话2 --test 会话3,会话4 [--no-ble] [--json 输出.json]")
@@ -54,10 +63,12 @@ do {
                 if CommandLine.arguments.contains("--offset") { cfg.offsetInvariant = true }
                 if CommandLine.arguments.contains("--hybrid") { cfg.hybridOffset = true }
                 if CommandLine.arguments.contains("--absolute") { cfg.offsetInvariant = false }
+                if CommandLine.arguments.contains("--no-hybrid") { cfg.hybridOffset = false }
                 if let w = arg("--abs").flatMap(Double.init) { cfg.absoluteWeight = w }
                 if let w = arg("--win").flatMap(Double.init) { cfg.offsetWindowUpdates = w }
                 if let w = arg("--missing").flatMap(Double.init) { cfg.missingDataPenalty = w }
-            }, seed: UInt64(k + 1), refTagPositions: refTags)
+            }, seed: UInt64(k + 1), refTagPositions: refTags,
+                                                  oracleStart: CommandLine.arguments.contains("--oracle-start"))
             if runs == 1 { print(r.line) }
             rs.append(r)
         }
@@ -73,6 +84,21 @@ do {
                   + "  ≤1m \(summary(rs.map { $0.inMapWithin1m.map { $0 * 100 } }, unit: "%"))")
         }
         out.append(contentsOf: rs)
+    }
+    // 汇总（所有会话、所有次数的点混在一起）：基准用
+    do {
+        let errs = out.flatMap(\.errorsCm).sorted()
+        let ff = out.compactMap(\.firstFixM).sorted()
+        let refN = out.reduce(0) { $0 + $1.refPoints }
+        if !errs.isEmpty {
+            func q(_ a: [Double], _ p: Double) -> Double { a[min(Int(Double(a.count - 1) * p + 0.5), a.count - 1)] }
+            print(String(format: "【汇总】%d 次回放：中位 %.0f cm  P90 %.0f cm  >5m %.0f%%  ≤2m %.0f%%  定位覆盖 %.0f%%  首次定位中位 %@（%d/%d 次定到）",
+                         out.count, q(errs, 0.5), q(errs, 0.9),
+                         100 * Double(errs.filter { $0 > 500 }.count) / Double(errs.count),
+                         100 * Double(errs.filter { $0 <= 200 }.count) / Double(errs.count),
+                         refN > 0 ? 100 * Double(errs.count) / Double(refN) : 0,
+                         ff.isEmpty ? "—" : String(format: "%.1f m", q(ff, 0.5)), ff.count, out.count))
+        } else { print("【汇总】没有任何定位结果") }
     }
     let all = out.compactMap(\.medianCm)
     if all.count > 1 { print(String(format: "测试会话中位误差的中位：%.0f cm", all.sorted()[all.count / 2])) }

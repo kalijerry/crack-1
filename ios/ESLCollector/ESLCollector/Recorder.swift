@@ -69,6 +69,8 @@ final class SensorTap: @unchecked Sendable {
     private let lock = NSLock()
     private var _imu: (@Sendable (IMUSample) -> Void)?
     private var _raw: (@Sendable (Int64, (Double, Double, Double)) -> Void)?
+    private var _ble: (@Sendable (Int64, String, Double) -> Void)?
+    private var _heading: (@Sendable (Int64, Double) -> Void)?
 
     var imu: (@Sendable (IMUSample) -> Void)? {
         get { lock.lock(); defer { lock.unlock() }; return _imu }
@@ -77,6 +79,16 @@ final class SensorTap: @unchecked Sendable {
     var raw: (@Sendable (Int64, (Double, Double, Double)) -> Void)? {
         get { lock.lock(); defer { lock.unlock() }; return _raw }
         set { lock.lock(); _raw = newValue; lock.unlock() }
+    }
+    /// 价签读数：时间、价签编号、信号
+    var ble: (@Sendable (Int64, String, Double) -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return _ble }
+        set { lock.lock(); _ble = newValue; lock.unlock() }
+    }
+    /// 罗盘：时间、真北方位（度）
+    var heading: (@Sendable (Int64, Double) -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return _heading }
+        set { lock.lock(); _heading = newValue; lock.unlock() }
     }
 }
 
@@ -181,11 +193,13 @@ final class Recorder: ObservableObject {
             try writeMeta(endMs: nil)
 
             let shared = self.shared
+            let tapForBLE = self.tap
             ble.onlyESL = onlyESL
             ble.onReading = { r in
                 let point = shared.currentPoint
                 bleW.append("\(r.tMs),\(Fmt.csv(point)),\(r.eslId ?? ""),\(r.rssi),\(r.src),\(r.mfgHex)")
                 shared.addReading(t: r.tMs, id: r.eslId ?? r.src, rssi: r.rssi)
+                if let id = r.eslId { tapForBLE.ble?(r.tMs, id, Double(r.rssi)) }
             }
             let tap = self.tap
             sensors.tap = tap

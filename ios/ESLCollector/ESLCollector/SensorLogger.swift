@@ -142,7 +142,11 @@ final class SensorLogger: NSObject, CLLocationManagerDelegate {
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateHeading h: CLHeading) {
         let t = Int64((h.timestamp.timeIntervalSince1970 * 1000).rounded())
         let line = "\(t),\(Fmt.f(h.magneticHeading, 2)),\(Fmt.f(h.trueHeading, 2)),\(Fmt.f(h.headingAccuracy, 1)),\(Fmt.f(h.x, 3)),\(Fmt.f(h.y, 3)),\(Fmt.f(h.z, 3))"
-        Task { @MainActor in self.headingWriter?.append(line) }
+        let deg = h.trueHeading >= 0 ? h.trueHeading : h.magneticHeading
+        Task { @MainActor in
+            self.headingWriter?.append(line)
+            self.tap?.heading?(t, deg)
+        }
     }
 
     /// 不弹系统的罗盘校准界面，避免打断走线。

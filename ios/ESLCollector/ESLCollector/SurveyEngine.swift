@@ -422,6 +422,22 @@ final class SurveyEngine: ObservableObject {
     private var lastSignFixMs: Int64 = 0
     /// 轨迹离标签所在货架段前的区域超过这么远（cm）才自动纠（区域本身已经含了站位误差）
     static let signFixCm = 300.0
+
+    // 蓝牙打底：全店价签位置表不用采集就能定到 2 m 左右（实测中位 1.4～2.3 m）。采集时它做「低精度的底」——
+    // 自动定起点（罗盘 + 地图朝向定方向）、发现 ARKit 轨迹走偏就拉回；ARKit + 贴通道 + 地磁做高精度。
+    @Published var bleBase = true
+    @Published private(set) var bleFix: (position: Point2, spreadCm: Double)?
+    @Published private(set) var bleTagCount = 0
+    @Published private(set) var bleBaseFixes = 0
+    private var bleBaseMap: BLEFingerprintMap?
+    private var bleWalk: WalkableMap?
+    private var bleObs: [(t: Int64, id: String, rssi: Double)] = []
+    private var lastBleTick: Int64 = 0
+    private var compassDeg: Double?
+    private var bleStable = 0
+    private var lastFixPos: Point2?
+    private var disagreeTicks = 0
+    private var lastBleCorrectionMs: Int64 = 0
     private var cancellable: AnyCancellable?
 
     // 对齐参数：map = pRef + R(phi) · (a − aRef)，a 是 ARKit 的 (x, z)，单位 cm
@@ -472,6 +488,12 @@ final class SurveyEngine: ObservableObject {
         recorder.tap.raw = { t, v in sq.async { box.sh?.rawMag(tMs: t, v) } }
         ar.onFloor = { [weak self] y in
             Task { @MainActor in self?.arFloorY = y }
+        }
+        recorder.tap.ble = { [weak self] t, id, rssi in
+            Task { @MainActor in self?.bleReading(tMs: t, id: id, rssi: rssi) }
+        }
+        recorder.tap.heading = { [weak self] _, deg in
+            Task { @MainActor in self?.compassDeg = deg }
         }
         signReader.onRead = { [weak self] t, text, conf in
             Task { @MainActor in self?.handleSign(tMs: t, text: text, confidence: conf) }
@@ -542,6 +564,15 @@ final class SurveyEngine: ObservableObject {
             signCount = 0
             signFixes = 0
             lastSign = nil
+            if bleBase {
+                let locs = StoreDataStore.shared.eslLocations
+                bleBaseMap = locs.isEmpty ? MagMapStore.shared.bleMap : EslLocations.seededBLEMap(locs, learned: MagMapStore.shared.bleMap)
+                bleWalk = store.walkableMap()
+            } else {
+                bleBaseMap = nil
+            }
+            bleObs = []; bleFix = nil; bleTagCount = 0; bleBaseFixes = 0; bleStable = 0; lastFixPos = nil
+            disagreeTicks = 0; lastBleCorrectionMs = 0
             anchorsWriter = try CSVWriter(url: dir.appendingPathComponent("anchors.csv"),
                                           header: "t_ms,kind,map_x_cm,map_y_cm,ar_x_cm,ar_z_cm,heading_rad,note")
             try ar.start(dir: dir, wantsDepth: true, lateralFile: dir.appendingPathComponent("depth_lateral.csv"),
@@ -656,6 +687,63 @@ final class SurveyEngine: ObservableObject {
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     }
 
+    // MARK: 蓝牙打底
+
+    private func bleReading(tMs: Int64, id: String, rssi: Double) {
+        guard stage != .idle, bleBaseMap != nil else { return }
+        bleObs.append((tMs, id, rssi))
+        if tMs - lastBleTick >= 1000 { lastBleTick = tMs; bleTick(tMs) }
+    }
+
+    private func bleTick(_ t: Int64) {
+        guard let m = bleBaseMap else { return }
+        bleObs.removeAll { $0.t < t - 2500 }
+        var acc: [String: (Double, Int)] = [:]
+        for r in bleObs { let a = acc[r.id] ?? (0, 0); acc[r.id] = (a.0 + r.rssi, a.1 + 1) }
+        let tags = TagRangeFix.tags(acc.mapValues { $0.0 / Double($0.1) }, map: m)
+        bleTagCount = tags.count
+        bleFix = TagRangeFix.fix(tags, walkable: bleWalk)
+        switch stage {
+        case .needPosition:
+            // 站着几秒、价签定位稳定（连续 3 秒落在 3 m 内、范围 ≤ 4 m）→ 自动定起点
+            guard let f = bleFix, f.spreadCm <= 400 else { bleStable = 0; return }
+            bleStable = (lastFixPos.map { $0.distance(to: f.position) <= 300 } ?? false) ? bleStable + 1 : 1
+            lastFixPos = f.position
+            guard bleStable >= 3 else { return }
+            anchor(at: f.position)
+            AppLog.i("建图", "蓝牙定了起点（\(tags.count) 片价签，范围 ±\(Int(f.spreadCm / 100)) m）")
+            autoHeadingFromCompass()
+        case .tracking:
+            guard tags.count >= 3, let p = position else { disagreeTicks = 0; return }
+            disagreeTicks = TagRangeFix.agreement(tags, at: p) < 0.4 ? disagreeTicks + 1 : 0
+            guard disagreeTicks >= 4, t - lastBleCorrectionMs > 15_000,
+                  let q = TagRangeFix.nearestConsistent(tags, to: p, walkable: bleWalk), q.distance(to: p) > 500 else { return }
+            let d = q.distance(to: p)
+            disagreeTicks = 0
+            lastBleCorrectionMs = t
+            anchor(at: q)
+            bleBaseFixes += 1
+            AppLog.w("建图", "蓝牙判断轨迹走偏 \(Int(d / 100)) m，已拉回")
+        default:
+            return
+        }
+    }
+
+    /// 罗盘 + 地图朝向（云端融合自动估的）→ 直接设好朝向，往前走 1.5 m 就对齐，不用手动设
+    private func autoHeadingFromCompass() {
+        guard stage == .needHeading, let c = compassDeg, let up = MagMapStore.shared.mapUpBearingDeg,
+              let p = position, let a = latestA else { return }
+        headingRad = TagRangeFix.mapHeading(compassDeg: c, mapUpBearingDeg: up)
+        targetHeading = headingRad
+        pRef = p
+        aRef = a
+        stage = .aligning
+        lock?.reset()
+        publishAlignment()
+        writeAnchor(kind: "heading", map: p, ar: a, heading: headingRad, note: "罗盘 \(Int(c))°")
+        AppLog.i("建图", "罗盘定朝向：\(Int(c))°（地图朝向 \(Int(up))°），往前走就行")
+    }
+
     /// 读到一个货架标签
     private func handleSign(tMs: Int64, text: String, confidence: Float) {
         guard stage != .idle else { return }
@@ -669,6 +757,7 @@ final class SurveyEngine: ObservableObject {
             // 还没有起点：站在这段货架前
             anchor(at: ss.standPoint(sg))
             AppLog.i("建图", "货架标签 \(text) 定了起点（\(sg.shelfCode)）")
+            autoHeadingFromCompass()
         case .tracking:
             guard let p = position, ss.distance(sg, from: p) > Self.signFixCm, tMs - lastSignFixMs > 10_000 else { return }
             let before = ss.distance(sg, from: p)

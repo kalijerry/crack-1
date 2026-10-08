@@ -74,3 +74,22 @@ final class EslFusionTests: XCTestCase {
     }
 }
 
+
+final class TagRangeFixTests: XCTestCase {
+    func testFixAndNearestConsistent() {
+        // 人在 (1000, 500)；四片价签在周围 1～3 m，信号对应范围 3.5～6 m
+        let tags: [TagRangeFix.Tag] = [(Point2(1100, 500), 350), (Point2(900, 600), 420), (Point2(1000, 300), 600), (Point2(1250, 450), 600)]
+        let f = TagRangeFix.fix(tags)!
+        XCTAssertLessThan(f.position.distance(to: Point2(1000, 500)), 250)
+        XCTAssertEqual(TagRangeFix.agreement(tags, at: Point2(1000, 500)), 1)
+        // 轨迹偏到 (3000, 500)：最近的一致点回到价签附近
+        let q = TagRangeFix.nearestConsistent(tags, to: Point2(3000, 500))!
+        XCTAssertLessThan(q.distance(to: Point2(1000, 500)), 700)
+    }
+
+    func testMapHeading() {
+        // 地图上方 = 318°；罗盘 318° → 朝地图上方（-y）= π；罗盘 48°（上方顺时针 90°）→ 朝 +x = π/2
+        XCTAssertEqual(abs(TagRangeFix.mapHeading(compassDeg: 318, mapUpBearingDeg: 318)), Double.pi, accuracy: 1e-9)
+        XCTAssertEqual(TagRangeFix.mapHeading(compassDeg: 48, mapUpBearingDeg: 318), Double.pi / 2, accuracy: 1e-9)
+    }
+}

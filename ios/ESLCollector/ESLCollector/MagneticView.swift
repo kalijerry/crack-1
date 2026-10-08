@@ -174,7 +174,7 @@ struct MagneticView: View {
                          headingRad: isSurvey ? survey.headingRad : engine.headingRad,
                          uncertaintyCm: isSurvey ? 0 : engine.uncertaintyCm,
                          // 蓝牙粗定位：和显示位置差得远时画橙色空心圈
-                         rawEstimate: step == .live ? engine.bleEstimate : nil,
+                         rawEstimate: step == .live ? engine.bleEstimate : (isSurvey && survey.bleBase ? survey.bleFix?.position : nil),
                          route: step == .live ? engine.navRoute : nil,
                          showFingerprints: false,
                          markPoints: store.points,
@@ -657,6 +657,7 @@ struct MagneticView: View {
                 }
                 TextField("备注：保护壳 / 手持姿态 / 营业状态", text: $surveyNote)
                     .autocorrectionDisabled()
+                Toggle("蓝牙打底（价签自动定起点、罗盘定朝向、发现走偏自动拉回）", isOn: $survey.bleBase)
                 Toggle("识别货架黄色标签（摄像头，自动定起点、自动纠偏）", isOn: $survey.readSigns)
                 Toggle("LiDAR 实景扫描（结束时导出网格，文件较大）", isOn: $survey.scanMesh)
                     .disabled(!ARKitLogger.supportsMesh)
@@ -725,6 +726,10 @@ struct MagneticView: View {
                     }
                 }
                 Toggle("自动贴通道（实时）", isOn: $survey.corridorLock)
+                if survey.bleBase {
+                    let fixText = survey.bleFix.map { "\(survey.bleTagCount) 片价签 · 范围 ±\(Int($0.spreadCm / 100)) m（黄圈）" } ?? "等价签信号…"
+                    row("蓝牙打底", fixText + (survey.bleBaseFixes > 0 ? " · 走偏拉回 \(survey.bleBaseFixes) 次" : "")).font(.footnote)
+                }
                 if survey.readSigns {
                     if let s = survey.lastSign {
                         row("货架标签", "\(s.text)\(s.shelf == nil ? "（地图里没有）" : "") · \(Int(Date().timeIntervalSince(s.at))) 秒前 · 共 \(survey.signCount) 次 · 自动纠偏 \(survey.signFixes) 次")
@@ -907,7 +912,7 @@ struct MagneticView: View {
 
     private var surveyInstruction: String {
         switch survey.stage {
-        case .needPosition: return "把摄像头对准货架立柱上的黄色标签（如 082-20），读到就自动定好起点；也可以长按地图：我现在在这里。已经有磁场图的区域也可以点「自动定位起点」直接走。"
+        case .needPosition: return "站着别动几秒：价签自动定起点、罗盘定朝向，然后直接往前走。也可以把摄像头对准货架立柱上的黄色标签（如 082-20），读到就自动定好起点；也可以长按地图：我现在在这里。已经有磁场图的区域也可以点「自动定位起点」直接走。"
         case .autoLocating: return "沿采集过的通道正常往前走，地磁定位成功后会自动设好起点和方向（震动提示）。想手动也可以随时长按地图。"
         case .needHeading: return "点「设朝向」（或双击地图），在地图上点或拖动，让橙色箭头指向你要走的方向，再点「确定朝向」（或再双击）。"
         case .aligning: return "朝箭头方向直线走 1.5 m，App 会自动对齐 ARKit 轨迹。"

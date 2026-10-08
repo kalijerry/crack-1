@@ -27,6 +27,8 @@ do {
     for r in reps { print("建图 \(r.name)：样本 \(r.samplesUsed)" + (r.warnings.isEmpty ? "" : "，⚠️ \(r.warnings.joined(separator: "；"))")) }
     print("磁场图：有数据 \(field.coveredCells) 格；蓝牙指纹：\(bleMap.map { "\($0.tags.count) 个价签" } ?? "无")")
     if CommandLine.arguments.contains("--old-ble") { BLEAssist.defaultTagRanges = false }
+    if CommandLine.arguments.contains("--no-pregate") { BLEAssist.defaultPreGate = false }
+    if CommandLine.arguments.contains("--no-covgate") { BLEAssist.defaultCoverageGate = false }
     var ble = CommandLine.arguments.contains("--no-ble") ? nil : bleMap
     var refTags: [String: Point2]?
     if let p = arg("--esl-locations"), let t = try? String(contentsOfFile: p, encoding: .utf8) {
@@ -54,6 +56,7 @@ do {
                 if CommandLine.arguments.contains("--absolute") { cfg.offsetInvariant = false }
                 if let w = arg("--abs").flatMap(Double.init) { cfg.absoluteWeight = w }
                 if let w = arg("--win").flatMap(Double.init) { cfg.offsetWindowUpdates = w }
+                if let w = arg("--missing").flatMap(Double.init) { cfg.missingDataPenalty = w }
             }, seed: UInt64(k + 1), refTagPositions: refTags)
             if runs == 1 { print(r.line) }
             rs.append(r)

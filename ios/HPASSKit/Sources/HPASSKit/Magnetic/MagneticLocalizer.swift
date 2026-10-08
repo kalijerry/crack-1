@@ -273,6 +273,9 @@ public final class MagneticLocalizer {
     /// 外部判断「现在不在采集过的区域」（例如听到的价签大多不在指纹里）时设为 true：不允许收敛，
     /// 宁可不显示位置，也不在别处「定」一个错的。
     public var convergenceBlocked = false
+    /// 有价签约束时（BLEAssist 设）：没有磁场数据的地方不罚。全店只有一小部分采过磁场，重罚会把粒子都推到
+    /// 采过的地方，人在没采过的地方时就会「先漂到别处、走几步再被价签拉回来」；价签全场都有，交给价签定。
+    public var missingDataPenaltyOverride: Double?
 
     /// 外部判断「定错了」（例如蓝牙粗定位持续离得很远）：退回没把握的状态，重新找。
     /// 粒子不清空，靠后面的观测和外部粗定位把它们拉回去。
@@ -592,7 +595,7 @@ public final class MagneticLocalizer {
             if let ll = lls[i] {
                 logw[i] += ll
             } else {
-                logw[i] += hasConverged ? neutral : config.missingDataPenalty
+                logw[i] += hasConverged ? neutral : (missingDataPenaltyOverride ?? config.missingDataPenalty)
             }
         }
         normalize()

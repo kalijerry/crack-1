@@ -10,6 +10,10 @@ import Foundation
 // 冷启动：  没有起点时在可走区域均匀撒粒子，收敛后缩到较少的粒子数。
 
 public struct MagneticConfig {
+    /// 按场景调地磁权重（见 MagneticLocalizer.magneticWeight）：磁场图稀、走得还短、磁场平、和价签对不上时，
+    /// 地磁似然打折，交给价签 / 通道 / 运动去定，免得地磁把位置带偏（公开数据集上「只用地磁比纯推算还差」）
+    public var adaptiveMagWeight = false
+    public var magWeightFloor = 0.15
     /// 已知起点或收敛之后用的粒子数。
     public var particleCount = 1500
     /// 冷启动（没有起点）时用的粒子数，收敛后自动缩到 `particleCount`。
@@ -224,6 +228,9 @@ public final class MagneticLocalizer {
     /// - Parameter priorFraction: 朝向不知道时，有一部分粒子仍按惯导给的方向（偏差 1σ = `initialHeadingBiasSigmaDeg`），
     ///   其余在整圆上均匀。惯导方向来自罗盘 + 地图朝向时设 0.5 左右；完全没有参考时设 0。
     public func reset(start: Point2?, spreadCm: Double = 150, headingUnknown: Bool = false, priorFraction: Double = 0) {
+        pathSinceResetCm = start == nil ? 0 : 3000     // 已知起点：不用等走够路
+        recentTotals = []
+        magneticWeight = 1
         coldStart = start == nil
         self.headingUnknown = (start == nil || headingUnknown) && config.uniformHeadingWhenUnknown
         firstUpdateDone = false
@@ -276,10 +283,20 @@ public final class MagneticLocalizer {
     /// 有价签约束时（BLEAssist 设）：没有磁场数据的地方不罚。全店只有一小部分采过磁场，重罚会把粒子都推到
     /// 采过的地方，人在没采过的地方时就会「先漂到别处、走几步再被价签拉回来」；价签全场都有，交给价签定。
     public var missingDataPenaltyOverride: Double?
+    /// 外部（BLEAssist）给的：当前位置落在几成强价签的范围里；nil = 不知道
+    public var externalAgreement: Double?
+    /// 当前地磁权重（0…1，adaptiveMagWeight 打开时才变），和它的各项因子（调试 / 日志用）
+    public private(set) var magneticWeight = 1.0
+    public private(set) var magWeightFactors: (coverage: Double, path: Double, info: Double, agree: Double) = (1, 1, 1, 1)
+    private var pathSinceResetCm = 0.0
+    private var recentTotals: [Double] = []
+    private var weightUpdates = 0
 
     /// 外部判断「定错了」（例如蓝牙粗定位持续离得很远）：退回没把握的状态，重新找。
     /// 粒子不清空，靠后面的观测和外部粗定位把它们拉回去。
     public func declareLost() {
+        pathSinceResetCm = 0
+        recentTotals = []
         hasConverged = false
         convergedStreak = 0
         committed = nil
@@ -479,6 +496,7 @@ public final class MagneticLocalizer {
     private var meanMotion = Point2.zero
 
     private func predict(delta: Point2, dist: Double) {
+        pathSinceResetCm += dist
         var mx = 0.0, my = 0.0, mw = 0.0
         let distM = dist / 100
         let frac = hasConverged ? (config.convergedPositionNoiseFraction ?? config.positionNoiseFraction) : config.positionNoiseFraction
@@ -555,6 +573,8 @@ public final class MagneticLocalizer {
                 if w0 > 0 { offsetEst = MagneticFeature(total: o.0 - s0 / w0, vertical: o.1 - s1 / w0, horizontal: o.2 - s2 / w0) }
             }
         }
+        if config.adaptiveMagWeight { updateMagWeight(f) }
+        let mw = config.adaptiveMagWeight ? magneticWeight : 1
         let rel = config.hybridOffset ? offsetEst == nil : config.offsetInvariant
         let fAbs = offsetEst.map { f - $0 } ?? f
         let slack2 = config.offsetSlackUT * config.offsetSlackUT
@@ -580,10 +600,10 @@ public final class MagneticLocalizer {
                     let d0 = f.total - m.mean.total, d1 = f.vertical - m.mean.vertical, d2 = f.horizontal - m.mean.horizontal
                     ll += config.absoluteWeight * (w.0 * t(d0 * d0 / (v0 + slack2)) + w.1 * t(d1 * d1 / (v1 + slack2)) + w.2 * t(d2 * d2 / (v2 + slack2)))
                 }
-                ll *= trust / config.likelihoodTemperature
+                ll *= mw * trust / config.likelihoodTemperature
             } else {
                 let d0 = fAbs.total - m.mean.total, d1 = fAbs.vertical - m.mean.vertical, d2 = fAbs.horizontal - m.mean.horizontal
-                ll = trust * (w.0 * t(d0 * d0 / v0) + w.1 * t(d1 * d1 / v1) + w.2 * t(d2 * d2 / v2)) / config.likelihoodTemperature
+                ll = mw * trust * (w.0 * t(d0 * d0 / v0) + w.1 * t(d1 * d1 / v1) + w.2 * t(d2 * d2 / v2)) / config.likelihoodTemperature
             }
             lls[i] = ll
             let pw = exp(logw[i])
@@ -672,6 +692,50 @@ public final class MagneticLocalizer {
     public private(set) var lostCount = 0
 
     /// 减去最大值再归一到 Σw = 1（对数域），防止下溢。
+    /// 按场景算地磁权重（每 5 次观测更新一次）。找位置时用下面四项相乘，已经定到时基本全给（见函数末尾）：
+    /// - 磁场图密度：粒子加权中心 4 m 内有数据的格子比例（< 20% 几乎不用地磁，≥ 70% 全用）；
+    /// - 走过的路：冷启动后走得越长，磁场序列越有区分度（< 5 m 只给一半，20 m 后全给）；
+    /// - 磁场起伏：最近约 20 次读数 |B| 的标准差（< 1 µT 很平、匹配不出东西 → 打折）；
+    /// - 价签一致：当前位置落在几成强价签范围里（≤ 30% 只给三成）。
+    private func updateMagWeight(_ f: MagneticFeature) {
+        recentTotals.append(f.total)
+        if recentTotals.count > 20 { recentTotals.removeFirst(recentTotals.count - 20) }
+        weightUpdates += 1
+        guard weightUpdates % 5 == 0 || magneticWeight == 1 && weightUpdates < 5 else { return }
+        // 加权中心
+        let mx = logw.max() ?? 0
+        var sw = 0.0, cx = 0.0, cy = 0.0
+        for i in xs.indices { let w = exp(logw[i] - mx); sw += w; cx += w * xs[i]; cy += w * ys[i] }
+        let c = Point2(cx / max(sw, 1e-12), cy / max(sw, 1e-12))
+        var n = 0, cov = 0
+        for gx in stride(from: -400.0, through: 400, by: 100) {
+            for gy in stride(from: -400.0, through: 400, by: 100) where gx * gx + gy * gy <= 160_000 {
+                let p = Point2(c.x + gx, c.y + gy)
+                if let w = walkable, !w.isWalkable(p) { continue }
+                n += 1
+                if field.sample(at: p) != nil { cov += 1 }
+            }
+        }
+        let coverage = n > 0 ? Double(cov) / Double(n) : 0
+        let fCov = min(max((coverage - 0.2) / 0.5, 0), 1)
+        let fPath = min(1, 0.5 + pathSinceResetCm / 4000)
+        var fInfo = 1.0
+        if recentTotals.count >= 10 {
+            let m = recentTotals.reduce(0, +) / Double(recentTotals.count)
+            let sd = (recentTotals.reduce(0) { $0 + ($1 - m) * ($1 - m) } / Double(recentTotals.count)).squareRoot()
+            fInfo = min(1, 0.4 + sd / 2.5)
+        }
+        let fAgree = externalAgreement.map { min(max(($0 - 0.3) / 0.4, 0), 1) * 0.7 + 0.3 } ?? 1
+        magWeightFactors = (fCov, fPath, fInfo, fAgree)
+        if hasConverged {
+            // 已经定到（跟踪）：地磁跟踪很准（实测 0.7～1.1 m），全权给地磁；只有和价签明显对不上才打折
+            magneticWeight = max(0.5, fAgree)
+        } else {
+            // 找位置（冷启动 / 丢了）：地磁容易被长得像的地方带偏，按场景打折，让价签 / 通道 / 运动先把范围定下来
+            magneticWeight = max(config.magWeightFloor, fCov * fPath * fInfo * fAgree)
+        }
+    }
+
     private func normalize() {
         guard let mx = logw.max(), mx.isFinite else {
             logw = [Double](repeating: 0, count: logw.count)

@@ -67,6 +67,7 @@ do {
                 if let w = arg("--abs").flatMap(Double.init) { cfg.absoluteWeight = w }
                 if let w = arg("--win").flatMap(Double.init) { cfg.offsetWindowUpdates = w }
                 if let w = arg("--missing").flatMap(Double.init) { cfg.missingDataPenalty = w }
+                if CommandLine.arguments.contains("--adaptive") { cfg.adaptiveMagWeight = true }
             }, seed: UInt64(k + 1), refTagPositions: refTags,
                                                   oracleStart: CommandLine.arguments.contains("--oracle-start"))
             if runs == 1 { print(r.line) }

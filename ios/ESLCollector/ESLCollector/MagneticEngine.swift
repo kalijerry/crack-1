@@ -103,6 +103,8 @@ private final class MagPipeline {
     var lastBleApply: Int64 = 0
     /// 上次「贴近价签」定位的时间
     var lastTouchMs: Int64 = 0
+    /// 实时定位录下来的蓝牙 / 货架标签（和 imu、mag_raw 一起上传，电脑上能原样回放）
+    var bleWriter: CSVWriter?
     var rawLastA: Point2?
 
     // 磁场来源：地图用「原始磁力计减偏置」建的，实时也必须一样
@@ -219,6 +221,8 @@ final class MagneticEngine: ObservableObject {
     /// 最近一次抓定位（界面显示）
     @Published private(set) var lastAnchorEvent: (text: String, at: Date)?
     @Published private(set) var anchorFixes = 0
+    private var liveSignsWriter: CSVWriter?
+    private var liveFilesDir: URL?
     /// 蓝牙扫描（有蓝牙指纹时才建，第一次用会问蓝牙权限）
     private var ble: BLEScanner?
     /// 蓝牙粗定位的位置（地图上画橙色空心圈）
@@ -446,14 +450,36 @@ final class MagneticEngine: ObservableObject {
             pipe.trackWriter?.close()
             pipe.trackWriter = nil
             pipe.tracking = false
+            pipe.bleWriter?.close()
+            pipe.bleWriter = nil
         }
+        liveSignsWriter?.close()
+        liveSignsWriter = nil
         isTracking = false
         stopBLE()
+        uploadLiveRecording()
         saveMonitor()
         searching = false
         searchStarted = nil
         headingEditing = false
         AppLog.i("地磁", "实时定位停止，修正 \(checks.count) 次")
+    }
+
+    /// 这次实时定位的完整记录（惯导、磁力计、ARKit、蓝牙、货架标签、定位轨迹）传到后台，电脑上能原样回放分析。
+    /// 连着后台才传；不参与建图（meta 里 live = true）。
+    private func uploadLiveRecording() {
+        guard let d = liveFilesDir, Telemetry.shared.enabled else { return }
+        liveFilesDir = nil
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        if let name = trackFileName {
+            let src = docs.appendingPathComponent("mag-tracks", isDirectory: true).appendingPathComponent(name)
+            try? FileManager.default.removeItem(at: d.appendingPathComponent("track.csv"))
+            try? FileManager.default.copyItem(at: src, to: d.appendingPathComponent("track.csv"))
+        }
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)     // 等文件写完
+            _ = await Telemetry.shared.upload(sessionDir: d)
+        }
     }
 
     /// 长按地图：我现在在这里。走动中长按 = 修正位置，同时记下修正前的误差。
@@ -657,6 +683,7 @@ final class MagneticEngine: ObservableObject {
             if finder.matches(id) { Task { @MainActor in self?.heardTarget(rssi: Double(r.rssi)) } }
             queue.async {
                 pipe.bleWindow.append((r.tMs, id, Double(r.rssi)))
+                pipe.bleWriter?.append("\(r.tMs),,\(id),\(r.rssi),,")
                 if pipe.bleWindow.count > 2000 { pipe.bleWindow.removeFirst(pipe.bleWindow.count - 2000) }
                 // 手机贴近价签：信号特别强 → 人就在这片价签所在的货架前（2.5 m 以内）
                 if Double(r.rssi) >= BLEAssist.touchRssi, r.tMs - pipe.lastTouchMs > 4000,
@@ -768,6 +795,7 @@ final class MagneticEngine: ObservableObject {
         guard phase == .live, isTracking || searching, let ss = shelfSigns, let sg = ss.sign(for: text) else { return }
         if let l = lastSignText, l.0 == text, Date().timeIntervalSince(l.1) < 3 { return }
         lastSignText = (text, Date())
+        liveSignsWriter?.append("\(Fmt.nowMs()),\(text),\(sg.shelfCode),")
         queue.async { [pipe] in
             guard let loc = pipe.localizer else { return }
             let relocated = loc.applyRegion(distance: { ss.distance(sg, from: $0) },
@@ -876,7 +904,10 @@ final class MagneticEngine: ObservableObject {
             if let data = try? JSONSerialization.data(withJSONObject: meta, options: [.prettyPrinted]) {
                 try? data.write(to: d.appendingPathComponent("meta.json"))
             }
-            queue.sync { pipe.imuWriter = imuW; pipe.rawWriter = rawW }
+            let bleW = try? CSVWriter(url: d.appendingPathComponent("ble.csv"), header: "t_ms,point_id,esl_id,rssi,src,mfg_hex")
+            liveSignsWriter = try? CSVWriter(url: d.appendingPathComponent("signs.csv"), header: "t_ms,text,shelf_code,confidence")
+            liveFilesDir = d
+            queue.sync { pipe.imuWriter = imuW; pipe.rawWriter = rawW; pipe.bleWriter = bleW }
         }
         do {
             let wm = visualAvailable ? MapLibrary.shared.activeWorldMapURL.flatMap(ARKitLogger.loadWorldMap) : nil

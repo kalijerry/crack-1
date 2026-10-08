@@ -16,12 +16,16 @@ public final class RoutePlanner {
     private let shelves: [ShelfRect]
     private let crosses: [CrossSegment]
     private let baseGraph: RouteGraph
+    /// 栅格 A* 兜底（通道图缺失 / 目标在图上不可达时用）；nil = 不兜底
+    private let grid: GridRouter?
 
-    public convenience init(map: StoreMap, config: RoutePlannerConfig = .init()) {
-        self.init(shelves: map.shelves, crosses: map.crosses, config: config)
+    public convenience init(map: StoreMap, walkable: WalkableMap? = nil, config: RoutePlannerConfig = .init()) {
+        self.init(shelves: map.shelves, crosses: map.crosses, walkable: walkable, config: config)
     }
 
-    public init(shelves: [ShelfRect], crosses: [CrossSegment], config: RoutePlannerConfig = .init()) {
+    public init(shelves: [ShelfRect], crosses: [CrossSegment], walkable: WalkableMap? = nil,
+                config: RoutePlannerConfig = .init()) {
+        self.grid = walkable.map { GridRouter(walkable: $0) }
         let validShelves = shelves.filter {
             $0.x.isFinite && $0.y.isFinite && $0.width.isFinite && $0.height.isFinite && $0.rotation.isFinite
         }
@@ -141,6 +145,22 @@ public final class RoutePlanner {
     /// 不可达的目标进入 Route.unreachableTargets，其余目标继续规划。
     /// 没有任何通道时返回 nil；没有有效目标时返回只含起点的单点路线。
     public func plan(from start: Point2, targets: [Point2]) -> Route? {
+        let r = planOnGraph(from: start, targets: targets)
+        // 兜底：只有一个目标，通道图给不出路线（没有通道 / 起终点不连通）时走栅格
+        guard grid != nil, targets.count == 1 else { return r }
+        if let r, !r.targetPoints.isEmpty { return r }
+        return planOnGrid(from: start, to: targets[0]) ?? r
+    }
+
+    /// 栅格 A* 路线（兜底）。起终点不在可走格上时先吸附。
+    func planOnGrid(from start: Point2, to target: Point2) -> Route? {
+        guard let grid, let pts = grid.path(from: start, to: target), !pts.isEmpty else { return nil }
+        var raw: [(point: Point2, isTarget: Bool)] = pts.map { (point: $0, isTarget: false) }
+        raw[raw.count - 1].isTarget = true
+        return makeRoute(from: raw)
+    }
+
+    private func planOnGraph(from start: Point2, targets: [Point2]) -> Route? {
         guard start.x.isFinite, start.y.isFinite else { return nil }
         guard !crosses.isEmpty else { return nil }
 
@@ -310,6 +330,8 @@ public final class RoutePlanner {
         let tol = mergeTolerance
         for n in last.nodes where n.isTarget {
             let stillWanted = snappedTargets.contains { $0.distance(to: n.point) <= tol }
+                // 栅格兜底的路线终点是吸附到可走格的，不是吸附到通道的
+                || (grid != nil && targets.contains { $0.distance(to: n.point) <= (grid?.snapRadiusCm ?? 0) })
             if !stillWanted {
                 return plan(from: location, targets: targets) ?? last
             }
@@ -414,7 +436,7 @@ public final class RoutePlanner {
     ///
     /// 共线化简是 Douglas–Peucker 的退化形式（逐点判断对前后连线的垂距），
     /// 容差 collinearToleranceCm，**目标点和首尾点永不删除**。
-    private func makeRoute(from raw: [(point: Point2, isTarget: Bool)]) -> Route {
+    func makeRoute(from raw: [(point: Point2, isTarget: Bool)]) -> Route {
         // 相邻重复点合并（目标标记取并）
         var pts: [(point: Point2, isTarget: Bool)] = []
         for p in raw {

@@ -24,6 +24,8 @@ public final class NavigationSession {
     public private(set) var route: Route? = nil
     /// 最近一次收到的位置
     public private(set) var lastLocation: Point2? = nil
+    /// 连续脱线的定位更新次数
+    public private(set) var offRouteCount = 0
 
     public init(planner: RoutePlanner) {
         self.planner = planner
@@ -55,6 +57,16 @@ public final class NavigationSession {
         guard isActive else { return nil }
         guard p.x.isFinite, p.y.isFinite else { return nil }
         lastLocation = p
+        if let cur = route, cur.nodes.count >= 2 {
+            if RouteGeometry.project(p, onRoute: cur).distance > planner.config.offRouteDistanceCm {
+                offRouteCount += 1
+                // 还没连续脱线够次数：先沿用旧路线（hint 里 isOffRoute 已置位）
+                if offRouteCount < planner.config.offRouteConfirmUpdates { return planner.hint(for: p, on: cur) }
+            } else {
+                offRouteCount = 0
+            }
+        }
+        offRouteCount = 0
         guard let r = planner.update(location: p, targets: targets, lastRoute: route) else { return nil }
         route = r
         return planner.hint(for: p, on: r)
@@ -65,5 +77,6 @@ public final class NavigationSession {
         targets = []
         route = nil
         lastLocation = nil
+        offRouteCount = 0
     }
 }

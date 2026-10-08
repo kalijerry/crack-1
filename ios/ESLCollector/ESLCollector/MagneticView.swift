@@ -1117,6 +1117,7 @@ struct MagneticView: View {
                     Text(t.shelfCode.map { "货架 \($0)（地图上红框）" } ?? "地图上没有对应货架（表里位置缺失或不对），只能靠信号找").font(.caption)
                         .foregroundStyle(t.shelfCode == nil ? .orange : .secondary)
                 }
+                navBanner
                 if let r = engine.findRssi, let heard = engine.findLastHeard, Date().timeIntervalSince(heard) < 8 {
                     let prox = MagneticEngine.proximity(r)
                     HStack {
@@ -1133,7 +1134,10 @@ struct MagneticView: View {
                 }
                 HStack {
                     if let p = t.position {
-                        Button("导航到货架") { engine.navigate(to: p, label: t.shelfCode ?? t.id) }.buttonStyle(.bordered)
+                        Button("导航到货架") {
+                            if let code = t.shelfCode { engine.navigateToShelf(code: code, fromFind: true) }
+                            else { engine.navigate(to: p, label: t.id) }
+                        }.buttonStyle(.bordered)
                     }
                     Spacer()
                     Button("不找了", role: .cancel) { engine.setFindTarget(nil) }.buttonStyle(.bordered)
@@ -1170,25 +1174,13 @@ struct MagneticView: View {
                 .autocorrectionDisabled()
             ForEach(shelfMatches, id: \.code) { s in
                 Button {
-                    engine.navigate(to: Point2(s.x, s.y), label: s.code)
+                    engine.navigateToShelf(code: s.code)
                     shelfQuery = ""
                 } label: {
                     HStack { Text(s.code).font(.callout.monospaced()); Spacer(); Image(systemName: "location.north.line") }
                 }
             }
-            if let label = engine.navLabel {
-                HStack(spacing: 16) {
-                    Image(systemName: Self.turnSymbol(engine.navHint?.direction))
-                        .font(.system(size: 40, weight: .bold))
-                        .foregroundStyle(engine.navHint == nil ? .green : .blue)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(navText).font(.headline)
-                        Text(label).font(.subheadline).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("结束") { engine.stopNavigation() }.buttonStyle(.bordered)
-                }
-            }
+            navBanner
             // 点位导航（直线方向）
             Picker("到点位（直线方向）", selection: Binding(get: { engine.targetId ?? "" },
                                              set: { engine.setTarget($0.isEmpty ? nil : $0) })) {
@@ -1223,18 +1215,29 @@ struct MagneticView: View {
         return Array(m.shelves.filter { $0.kind == .standard && $0.code.lowercased().contains(q) }.prefix(8))
     }
 
-    private var navText: String {
-        guard let h = engine.navHint else { return "已到达" }
-        let remain = "还有 \(Fmt.f(h.remainingDistance / 100, 0)) m"
-        guard let turn = h.distanceToNextTurn, h.direction != .straight else { return "直走，" + remain }
-        let dir: String
-        switch h.direction {
-        case .left: dir = "左转"
-        case .right: dir = "右转"
-        case .uturn: dir = "掉头"
-        case .straight: dir = "直走"
+    /// 转弯提示条：寻找模式和导航面板共用
+    @ViewBuilder private var navBanner: some View {
+        if let label = engine.navLabel {
+            HStack(spacing: 16) {
+                Image(systemName: engine.navArrived ? "checkmark.circle.fill"
+                      : (engine.navHint == nil ? "ellipsis.circle" : Self.turnSymbol(nextTurnDirection)))
+                    .font(.system(size: 40, weight: .bold))
+                    .foregroundStyle(engine.navArrived ? .green : (engine.navHint?.isOffRoute == true ? .orange : .blue))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(engine.navText).font(.headline)
+                    Text(label).font(.subheadline).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("结束") { engine.stopNavigation() }.buttonStyle(.bordered)
+            }
         }
-        return "前方 \(Fmt.f(turn / 100, 0)) m \(dir)，" + remain
+    }
+
+    /// 图标：路线上下一个转弯的方向（离得近或没有转弯时是直行箭头）
+    private var nextTurnDirection: TurnDirection? {
+        guard let h = engine.navHint else { return nil }
+        if let t = NavInstruction.nextTurn(h), t.distanceCm <= 1500 { return t.direction }
+        return .straight
     }
 
     private static func turnSymbol(_ d: TurnDirection?) -> String {

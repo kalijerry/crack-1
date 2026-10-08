@@ -102,6 +102,7 @@ public final class BLEAssist {
         if tagRanges { localizer.missingDataPenaltyOverride = Self.defaultMissingPenalty }
         if agreementGate, let c = current ?? candidate {
             lastAgreement = agreement(obs, at: c)
+            localizer.externalAgreement = lastAgreement
             if let a = lastAgreement {
                 if localizer.isConverged && a < agreeFraction {
                     disagreeStreak += 1

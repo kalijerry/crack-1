@@ -417,7 +417,7 @@ public final class SurveyMapBuilder {
 
     // MARK: 磁场特征
 
-    private func features(_ s: SurveySession, _ rep: inout SurveySessionReport) -> [(Int64, MagneticFeature)] {
+    func features(_ s: SurveySession, _ rep: inout SurveySessionReport) -> [(Int64, MagneticFeature)] {
         let ex = MagneticFeatureExtractor()
         var out: [(Int64, MagneticFeature)] = []
         let imu = s.imu.sorted { $0.tMs < $1.tMs }

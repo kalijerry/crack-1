@@ -7,6 +7,7 @@ import HPASSKit
 //   hpass-build --map map.json --sessions 目录1,目录2,… [--test 测试会话,…] [--esl-ids 价签名单.txt]
 //               --id 地图编号 --name 名字 [--kind store|room] [--bearing 316]
 //               [--esl-locations 价签位置表.csv（也打进包里）] --out 包.hpmp --report 报告.json [--runs 3]
+//               [--live 实时定位记录目录1,目录2,…]  地图自愈：普通定位记录里可信的路段低权重并进磁场图（见 LiveRunLoader / LiveFieldMerger）
 
 func arg(_ name: String) -> String? {
     guard let i = CommandLine.arguments.firstIndex(of: name), i + 1 < CommandLine.arguments.count else { return nil }
@@ -40,6 +41,8 @@ struct Report: Encodable {
     var nextZoneEntry: [Double]?
     /// 质量合格但和主体连不上、磁场图没用的会话
     var magExcluded: [String]
+    /// 地图自愈：实时定位记录并进磁场图的情况（没给 --live 为 nil）
+    var live: LiveFieldMerger.Report?
 }
 
 guard let mapPath = arg("--map"), let out = arg("--out"), let id = arg("--id") else {
@@ -147,6 +150,32 @@ do {
         print("⚠️ 磁场图不用（和主体没有足够重叠，整体偏移对不齐）：\(magExcluded.joined(separator: "、"))；价签读数照用。补采一段和已采区域重叠的路段后会自动加入")
         print("磁场图：\(main.count) 个会话，磁场 \(rm.field.coveredCells) 格")
     }
+    // 地图自愈：实时定位记录里可信的路段，低权重并进磁场图（要和建图数据有重叠才能对齐，对不齐的跳过）
+    var liveReport: LiveFieldMerger.Report?
+    let liveDirs = list(arg("--live"))
+    if !liveDirs.isEmpty {
+        let runs = liveDirs.map { LiveRunLoader.load($0, tagPositions: tagPos, shelfSigns: shelfSigns) }
+        let merger = LiveFieldMerger()
+        let (lb, lr) = merger.merge(survey: rm.builder, runs: runs, gate: gate)
+        liveReport = lr
+        for i in lr.runs {
+            let t = i.trust
+            let rej = t.rejectedWindows.sorted { $0.value > $1.value }.map { "\($0.key) \($0.value) 段" }.joined(separator: "、")
+            if i.used {
+                print(String(format: "✅ 实时 %@：路程 %.0f m，可信 %d / %d 段（佐证 %d 段），样本 %d 个并入", i.name, t.pathM, t.trustedWindows, t.windows, t.verifiedWindows, i.samplesUsed)
+                      + (rej.isEmpty ? "" : "；丢段：" + rej))
+            } else {
+                print("❌ 实时 \(i.name)：不用 —— \(i.reason ?? "")" + (rej.isEmpty ? "" : "（丢段：" + rej + "）"))
+            }
+        }
+        print("地图自愈：\(lr.runsUsed) / \(lr.runsGiven) 个实时记录、\(lr.samplesUsed) 个样本并入；补 \(lr.cellsAdded) 格、更新 \(lr.cellsUpdated) 格"
+              + (lr.maxShiftUT.map { String(format: "（均值挪动中位 %.2f、最大 %.2f µT）", lr.medianShiftUT ?? 0, $0) } ?? "") + "、冲突没动 \(lr.cellsConflict) 格")
+        if lr.runsUsed > 0 {
+            rm.builder = lb
+            rm.field = lb.build()
+            print("磁场图：并入实时数据后 \(rm.field.coveredCells) 格")
+        }
+    }
     // 蓝牙指纹
     let bb = BLEFingerprintBuilder(widthCm: map.width, heightCm: map.height)
     if let p = arg("--esl-ids"), let t = try? String(contentsOfFile: p, encoding: .utf8) { bb.whitelist = BLEFingerprintBuilder.parseIdList(t) }
@@ -223,7 +252,7 @@ do {
     // 打包
     var meta = MapPackage.Meta(id: id, name: arg("--name") ?? id, kind: arg("--kind") ?? (map.crosses.isEmpty ? "room" : "store"),
                                version: Int64((Date().timeIntervalSince1970 * 1000).rounded()),
-                               source: "云端融合 \(keptSessions.count - magExcluded.count) 个会话（共 \(sessions.count) 个，质量筛选后）", mapUpBearingDeg: bearing,
+                               source: "云端融合 \(keptSessions.count - magExcluded.count) 个会话（共 \(sessions.count) 个，质量筛选后）" + ((liveReport?.runsUsed ?? 0) > 0 ? "，并入 \(liveReport!.runsUsed) 个实时定位记录" : ""), mapUpBearingDeg: bearing,
                                magSource: "raw")
     meta.fieldCells = rm.field.coveredCells
     meta.origin = "cloud"
@@ -240,7 +269,7 @@ do {
                          fieldCells: rm.field.coveredCells, bleTags: ble?.tags.count ?? 0, coverage: coverage, coveredM2: covered,
                          walkableM2: walkableM2, unfinishedCorridors: unfinished, tests: tests, packageBytes: pkg.count, warnings: warnings,
                          eslMismatches: eslMismatches, quality: quality, corrections: corrStats,
-                         zones: zoneStatus, nextZone: nextZone, nextZoneEntry: nextEntry, magExcluded: magExcluded)
+                         zones: zoneStatus, nextZone: nextZone, nextZoneEntry: nextEntry, magExcluded: magExcluded, live: liveReport)
         let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         try enc.encode(rep).write(to: URL(fileURLWithPath: rp))
     }

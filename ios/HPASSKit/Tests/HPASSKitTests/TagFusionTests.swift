@@ -1,8 +1,8 @@
 import XCTest
 @testable import HPASSKit
 
-/// 价签锚定修正 + 质量筛选：合成一条沿 x 走的路，中间一段轨迹被推偏 12 m
-final class EslFusionTests: XCTestCase {
+/// 标签锚定修正 + 质量筛选：合成一条沿 x 走的路，中间一段轨迹被推偏 12 m
+final class TagFusionTests: XCTestCase {
     func scenario() -> (track: [(tMs: Int64, p: Point2)], ble: [BLESample], tags: [String: Point2]) {
         var tags: [String: Point2] = [:]
         for i in 0..<120 { tags["T\(i)"] = Point2(Double(i) * 50, i % 2 == 0 ? 150 : -150) }
@@ -21,7 +21,7 @@ final class EslFusionTests: XCTestCase {
 
     func testCorrectorPullsDriftBack() {
         let s = scenario()
-        let c = EslTrajectoryCorrector(tagPositions: s.tags)
+        let c = TagTrajectoryCorrector(tagPositions: s.tags)
         c.smoothCm = 600
         guard let (fn, st) = c.solve(track: s.track, ble: s.ble) else { return XCTFail("没解") }
         XCTAssertGreaterThan(st.maxShiftM, 10)
@@ -50,16 +50,16 @@ final class EslFusionTests: XCTestCase {
         XCTAssertNil(ShelfSigns.parse("IP54"))
     }
 
-    /// 只有货架标签、没有价签：每 10 秒读到一次标签（人在 y≈0 的通道里），中间 20 秒轨迹偏 12 m
+    /// 只有货架标签、没有蓝牙标签：每 10 秒读到一次标签（人在 y≈0 的通道里），中间 20 秒轨迹偏 12 m
     func testSignsAloneCorrectDrift() {
         let s = scenario()
         // 区域：x 在读到时真实位置 ±150、y 在 [-100, 100]
-        var signs: [EslTrajectoryCorrector.SignObservation] = []
+        var signs: [TagTrajectoryCorrector.SignObservation] = []
         for k in stride(from: 0, to: 600, by: 50) {
             let x = Double(k) * 10
             signs.append(.init(tMs: Int64(k * 100), region: { p in Point2(min(max(p.x, x - 150), x + 150), min(max(p.y, -100), 100)) }))
         }
-        let c = EslTrajectoryCorrector(tagPositions: [:])
+        let c = TagTrajectoryCorrector(tagPositions: [:])
         c.smoothCm = 600
         guard let (fn, st) = c.solve(track: s.track, ble: [], signs: signs) else { return XCTFail("没解") }
         XCTAssertEqual(st.signs, signs.count)
@@ -77,12 +77,12 @@ final class EslFusionTests: XCTestCase {
 
 final class TagRangeFixTests: XCTestCase {
     func testFixAndNearestConsistent() {
-        // 人在 (1000, 500)；四片价签在周围 1～3 m，信号对应范围 3.5～6 m
+        // 人在 (1000, 500)；四片标签在周围 1～3 m，信号对应范围 3.5～6 m
         let tags: [TagRangeFix.Tag] = [(Point2(1100, 500), 350), (Point2(900, 600), 420), (Point2(1000, 300), 600), (Point2(1250, 450), 600)]
         let f = TagRangeFix.fix(tags)!
         XCTAssertLessThan(f.position.distance(to: Point2(1000, 500)), 250)
         XCTAssertEqual(TagRangeFix.agreement(tags, at: Point2(1000, 500)), 1)
-        // 轨迹偏到 (3000, 500)：最近的一致点回到价签附近
+        // 轨迹偏到 (3000, 500)：最近的一致点回到标签附近
         let q = TagRangeFix.nearestConsistent(tags, to: Point2(3000, 500))!
         XCTAssertLessThan(q.distance(to: Point2(1000, 500)), 700)
     }

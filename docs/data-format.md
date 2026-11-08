@@ -20,12 +20,12 @@ t_ms,point_id,esl_id,rssi,src,mfg_hex
 ```
 
 - `point_id`：录制这条广播时正在进行的打点编号，不在打点期间为空。
-- `esl_id`：价签 ID。解析规则与 Handy+ 的 `NativeBluetoothManager.shortPackageParse` 一致：
-  1. 取公司 ID = 13（0x000D）的厂商数据；
+- `esl_id`：标签 ID。解析规则：
+  1. 取公司 ID = 13（0x000D）的厂商数据（目标标签广播的厂商 ID）；
   2. 去掉公司 ID 后，payload 长度必须 ≥4 且 <8；
   3. 取前 4 字节，转成大写十六进制，用 `-` 连接，例如 `1A-2B-3C-4D`。
 
-  非价签广播的 `esl_id` 为空。只有关闭「仅价签」开关时才会记录这类广播。
+  非标签广播的 `esl_id` 为空。只有关闭「仅标签」开关时才会记录这类广播。
 - `rssi`：dBm。iOS 上 RSSI 返回 127 表示不可用，这类记录直接丢弃。
 - `src`：发出广播的设备标识。Android 记录 MAC 地址；iOS 拿不到 MAC，记录 CoreBluetooth 分配的 peripheral UUID。
 - `mfg_hex`：完整的厂商数据，**包含** 2 字节公司 ID（小端序）。
@@ -57,7 +57,7 @@ iOS 端的换算方法：
 point_id,x_cm,y_cm,t_start_ms,t_end_ms,note
 ```
 
-- `x_cm`、`y_cm` 是门店地图坐标，单位 cm，可以不填。
+- `x_cm`、`y_cm` 是场地地图坐标，单位 cm，可以不填。
 - 做标定时，**两台手机要并排同时打点，并使用相同的 point_id**。
 
 ---
@@ -99,8 +99,8 @@ point_id,x_cm,y_cm,t_start_ms,t_end_ms,note
 `tools/magmap.py` 的输出，也是 App「地磁定位」页导入的格式：
 
 ```json
-{ "width": 19606, "height": 9206, "mapElementList": [], "markPoints": [{"id":"1","x":100,"y":200}],
-  "magField": { "cellCm": 50, "cols": 393, "rows": 185,
+{ "width": 2000, "height": 1000, "mapElementList": [], "markPoints": [{"id":"1","x":100,"y":200}],
+  "magField": { "cellCm": 50, "cols": 40, "rows": 20,
                 "cells": [[|B|, Bz, Bh] 或 null, …], "sigma": [[…] 或 null, …], "counts": [n, …] } }
 ```
 

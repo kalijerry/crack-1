@@ -167,15 +167,15 @@ def main():
             g = groups.setdefault(mid, {"build": [], "test": [], "live": []})
             g["live" if is_live else ("test" if meta.get("purpose") == "test" else "build")].append(d)
     reports = get_json("/api/reports")
-    # 价签位置表（App「门店数据 → 蓝牙」导入时会传到后台）：当蓝牙底图
-    esl_path = None
+    # 标签位置表（App「场地数据 → 蓝牙」导入时会传到后台）：当蓝牙底图
+    tag_path = None
     try:
-        esl = req("/api/esl/locations.csv")
-        esl_path = os.path.join(work, "esl_locations.csv")
-        open(esl_path, "wb").write(esl)
-        print(f"价签位置表 {len(esl) // 1024} KB")
+        tags_csv = req("/api/esl/locations.csv")
+        tag_path = os.path.join(work, "esl_locations.csv")
+        open(tag_path, "wb").write(tags_csv)
+        print(f"标签位置表 {len(tags_csv) // 1024} KB")
     except urllib.error.HTTPError:
-        print("后台没有价签位置表，蓝牙只用采集学到的")
+        print("后台没有标签位置表，蓝牙只用采集学到的")
     for mid, g in sorted(groups.items()):
         if ONLY and mid != ONLY:
             continue
@@ -249,8 +249,8 @@ def main():
             cmd += ["--test", ",".join(g["test"])]
         if g["live"]:
             cmd += ["--live", ",".join(g["live"])]
-        if esl_path:
-            cmd += ["--esl-locations", esl_path]
+        if tag_path:
+            cmd += ["--tag-locations", tag_path]
         if wm_path:
             cmd += ["--worldmap", wm_path]
         if pm.get("mapUpBearingDeg") is not None:

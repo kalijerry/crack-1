@@ -61,7 +61,7 @@ final class WorldMapTests: XCTestCase {
         let wm = Data((0..<5000).map { UInt8(truncatingIfNeeded: $0 &* 31) })
         let meta = MapPackage.Meta(id: "room_x", name: "办公室", kind: "room", version: 1)
         let pkg = try MapPackage.encode(meta: meta, mapJSON: Data("{}".utf8), field: nil, ble: nil, worldMap: wm,
-                                        paint: Data([9]), eslCSV: nil, direction: Data([7]))
+                                        paint: Data([9]), tagCSV: nil, direction: Data([7]))
         let c = try MapPackage.decode(pkg)
         XCTAssertEqual(c.worldMap, wm)
         XCTAssertEqual(c.paint, Data([9]))

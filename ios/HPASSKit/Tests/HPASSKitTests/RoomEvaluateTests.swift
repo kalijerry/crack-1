@@ -1,7 +1,7 @@
 import XCTest
 @testable import HPASSKit
 
-/// 房间地图没有通道：测试会话的参考轨迹 = 自己的 ARKit + 起点锚点对齐（不贴通道、不做价签修正），
+/// 房间地图没有通道：测试会话的参考轨迹 = 自己的 ARKit + 起点锚点对齐（不贴通道、不做标签修正），
 /// 可走区域取地面多边形。这里用合成房间走一遍建图 + 评估，确认整条路能走通。
 final class RoomEvaluateTests: XCTestCase {
     func testRoomMapEvaluatesWithoutCorridors() throws {

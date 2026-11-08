@@ -1,4 +1,4 @@
-package com.example.eslcollector
+package com.example.hpasscollector
 
 import android.Manifest
 import android.app.Activity
@@ -31,7 +31,7 @@ class MainActivity : Activity() {
 
     private lateinit var status: TextView
     private lateinit var labelInput: EditText
-    private lateinit var onlyEsl: CheckBox
+    private lateinit var onlyTags: CheckBox
     private lateinit var recordBtn: Button
     private lateinit var markPanel: LinearLayout
     private lateinit var pointInput: EditText
@@ -95,7 +95,7 @@ class MainActivity : Activity() {
             Toast.makeText(this, "请先打开蓝牙", Toast.LENGTH_SHORT).show()
             return
         }
-        recorder.onlyEsl = onlyEsl.isChecked
+        recorder.onlyTags = onlyTags.isChecked
         recorder.start(labelInput.text.toString().trim())
         startRt = SystemClock.elapsedRealtime()
         markCount = 0
@@ -148,7 +148,7 @@ class MainActivity : Activity() {
         status.text = buildString {
             append("蓝牙：${if (recorder.bluetoothEnabled) "已开启" else "已关闭"}\n")
             append(String.format(Locale.US, "录制时长：%02d:%02d:%02d\n", secs / 3600, (secs / 60) % 60, secs % 60))
-            append("读数/秒：${s.blePerSec}    唯一价签/秒：${s.uniquePerSec}\n")
+            append("读数/秒：${s.blePerSec}    唯一标签/秒：${s.uniquePerSec}\n")
             append("IMU：${s.imuHz} Hz    磁场精度：${magText(s.magAccuracy)}\n")
             append("已写入：BLE ${s.bleRows} 行 · IMU ${s.imuRows} 行 · 打点 $markCount")
             recorder.lastError?.let { append("\n⚠ $it") }
@@ -162,7 +162,7 @@ class MainActivity : Activity() {
         val rec = recorder.isRecording
         recordBtn.text = if (rec) "停止录制" else "开始录制"
         labelInput.isEnabled = !rec
-        onlyEsl.isEnabled = !rec
+        onlyTags.isEnabled = !rec
         markPanel.visibility = if (rec) View.VISIBLE else View.GONE
         val marking = recorder.currentPoint.isNotEmpty()
         durationSpinner.isEnabled = !marking
@@ -208,12 +208,12 @@ class MainActivity : Activity() {
 
         status = TextView(this).apply { textSize = 15f }
         labelInput = EditText(this).apply {
-            hint = "设备标签（如 s25plus）"
-            setText("s25plus")
+            hint = "设备标签（如 refphone）"
+            setText("refphone")
             inputType = InputType.TYPE_CLASS_TEXT
         }
-        onlyEsl = CheckBox(this).apply {
-            text = "仅记录价签广播（公司ID 13）"
+        onlyTags = CheckBox(this).apply {
+            text = "仅记录标签广播（公司ID 13）"
             isChecked = true
         }
         recordBtn = Button(this).apply { setOnClickListener { toggleRecording() } }
@@ -260,12 +260,12 @@ class MainActivity : Activity() {
         root.addView(status)
         root.addView(header("录制（保持前台、亮屏）"))
         root.addView(labelInput)
-        root.addView(onlyEsl)
+        root.addView(onlyTags)
         root.addView(recordBtn)
         root.addView(markPanel)
-        root.addView(header("最强价签（近 2 秒）"))
+        root.addView(header("最强标签（近 2 秒）"))
         root.addView(topTags)
-        root.addView(header("停止录制后自动打包到 下载/ESLCollector/"))
+        root.addView(header("停止录制后自动打包到 下载/HPassCollector/"))
 
         setContentView(ScrollView(this).apply { addView(root) })
         updateControls()

@@ -1,11 +1,11 @@
 import Foundation
 
-/// 只用价签（全店价签位置表，不用采集）定位：每片听到的价签给一个「人在它多少米以内」的圆（BLEAssist.rangeCm），
-/// 找同时落在最多圆里的地方。采集时当「底」：自动定起点、发现轨迹走偏（地磁 / ARKit 做高精度，价签做低精度兜底）。
+/// 只用标签（全场标签位置表，不用采集）定位：每片听到的标签给一个「人在它多少米以内」的圆（BLEAssist.rangeCm），
+/// 找同时落在最多圆里的地方。采集时当「底」：自动定起点、发现轨迹走偏（地磁 / ARKit 做高精度，标签做低精度兜底）。
 public enum TagRangeFix {
     public typealias Tag = (position: Point2, rangeCm: Double)
 
-    /// 最近几秒每片价签的平均信号 → 最强的 k 片（表里有位置的）
+    /// 最近几秒每片标签的平均信号 → 最强的 k 片（表里有位置的）
     public static func tags(_ obs: [String: Double], map: BLEFingerprintMap, k: Int = 6, minRssi: Double = -88) -> [Tag] {
         BLEFingerprintMap.strongest(obs, k: k, minRssi: minRssi).compactMap { o in
             map.tags[o.0].map { (Point2($0.x, $0.y), BLEAssist.rangeCm(o.1)) }
@@ -24,7 +24,7 @@ public enum TagRangeFix {
         }
     }
 
-    /// 位置估计：在最强（范围最小）那片价签的圆里按 50 cm 网格找罚分最小的点，取最优附近一圈点的中心；
+    /// 位置估计：在最强（范围最小）那片标签的圆里按 50 cm 网格找罚分最小的点，取最优附近一圈点的中心；
     /// spread = 这些点离中心的均方根（cm）。可走区域给了就只在能走的地方找。
     public static func fix(_ tags: [Tag], walkable: WalkableMap? = nil) -> (position: Point2, spreadCm: Double)? {
         guard tags.count >= 3, let s = tags.min(by: { $0.rangeCm < $1.rangeCm }) else { return nil }

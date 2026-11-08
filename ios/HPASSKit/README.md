@@ -8,7 +8,7 @@
 
 | 模块 | 职责 | 主要方法 |
 |---|---|---|
-| `Models/` | 坐标类型、门店数据解析（地图 / 指纹 / 价签 JSON） | — |
+| `Models/` | 坐标类型、场地数据解析（地图 / 指纹 / 标签 JSON） | — |
 | `Positioning/` | 蓝牙指纹定位；气压楼层检测（`FloorDetector`） | 高斯指纹似然、WKNN 加权质心、HMM 在线 Viterbi；相对高度 + 迟滞判楼层切换，按垂直速度和步频分电梯 / 扶梯 / 楼梯 |
 | `Fusion/` | 惯导推算与融合 | 互补滤波姿态、峰谷计步、Weinberg 步长、3 状态 EKF |
 | `Routing/` | 路径规划与导航提示 | 通道建图、A\*（带转弯惩罚）、最近邻 + 2-opt、路线防抖 |
@@ -27,16 +27,16 @@
 ```swift
 import HPASSKit
 
-// 1. 读门店数据
+// 1. 读场地数据
 let map = try StoreDataLoader.loadMap(Data(contentsOf: mapURL))
 let points = try StoreDataLoader.loadFingerprints(Data(contentsOf: fpURL))
-let esls = try StoreDataLoader.loadEslItems(Data(contentsOf: eslURL))
+let tags = try StoreDataLoader.loadTagItems(Data(contentsOf: tagURL))
 
 // 2. 定位
 var cfg = PositioningConfig()
 cfg.rssiOffset = 7.0          // 跨机型补偿，由 tools/calibrate.py 得出
 let positioner = FingerprintPositioner(points: points,
-                                       eslToShelf: StoreDataLoader.eslToShelf(esls),
+                                       tagToShelf: StoreDataLoader.tagToShelf(tags),
                                        config: cfg)
 print(positioner.validate())   // 空数组表示数据没问题
 

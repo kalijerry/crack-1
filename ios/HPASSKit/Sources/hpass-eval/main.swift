@@ -34,22 +34,22 @@ do {
     if !overlap.isEmpty { print("⚠️ 有会话同时在建图和测试里：\(overlap.map(\.lastPathComponent))，结果会偏乐观") }
     let (field, bleMap, reps) = try SessionEvaluator.buildMaps(sessions: build, map: map)
     for r in reps { print("建图 \(r.name)：样本 \(r.samplesUsed)" + (r.warnings.isEmpty ? "" : "，⚠️ \(r.warnings.joined(separator: "；"))")) }
-    print("磁场图：有数据 \(field.coveredCells) 格；蓝牙指纹：\(bleMap.map { "\($0.tags.count) 个价签" } ?? "无")")
+    print("磁场图：有数据 \(field.coveredCells) 格；蓝牙指纹：\(bleMap.map { "\($0.tags.count) 个标签" } ?? "无")")
     if CommandLine.arguments.contains("--old-ble") { BLEAssist.defaultTagRanges = false }
     if CommandLine.arguments.contains("--no-pregate") { BLEAssist.defaultPreGate = false }
     if CommandLine.arguments.contains("--no-covgate") { BLEAssist.defaultCoverageGate = false }
     var ble = CommandLine.arguments.contains("--no-ble") ? nil : bleMap
     var refTags: [String: Point2]?
-    if let p = arg("--esl-locations"), let t = try? String(contentsOfFile: p, encoding: .utf8) {
-        let locs = EslLocations.parse(t, map: map)
+    if let p = arg("--tag-locations") ?? arg("--esl-locations"), let t = try? String(contentsOfFile: p, encoding: .utf8) {
+        let locs = TagLocations.parse(t, map: map)
         var tp: [String: Point2] = [:]
         for e in locs { if let q = e.position { tp[e.id] = q } }
         refTags = tp
-        print("参考轨迹：用价签锚定修正")
+        print("参考轨迹：用标签锚定修正")
     }
-    if ble != nil, let p = arg("--esl-locations"), let t = try? String(contentsOfFile: p, encoding: .utf8) {
-        ble = EslLocations.seededBLEMap(EslLocations.parse(t, map: map), learned: bleMap)
-        print("蓝牙底图：价签位置表 + 学到的，\(ble!.tags.count) 个价签")
+    if ble != nil, let p = arg("--tag-locations") ?? arg("--esl-locations"), let t = try? String(contentsOfFile: p, encoding: .utf8) {
+        ble = TagLocations.seededBLEMap(TagLocations.parse(t, map: map), learned: bleMap)
+        print("蓝牙底图：标签位置表 + 学到的，\(ble!.tags.count) 个标签")
     }
     let walk = SessionEvaluator.walkable(map)
     var out: [EvalReport] = []

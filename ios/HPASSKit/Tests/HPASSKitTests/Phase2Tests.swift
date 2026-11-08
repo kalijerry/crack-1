@@ -22,7 +22,7 @@ final class Phase2Tests: XCTestCase {
         XCTAssertNotEqual(n2.from.y, n1.from.y, accuracy: 10)      // 换到另一侧或另一条通道
     }
 
-    /// 增量建图：累积状态存盘再读回，蓝牙价签一个不少；名单过滤生效
+    /// 增量建图：累积状态存盘再读回，蓝牙标签一个不少；名单过滤生效
     func testBLEStateRoundTripAndWhitelist() throws {
         let b = BLEFingerprintBuilder(widthCm: 2300, heightCm: 1200)
         b.whitelist = ["AA-AA-AA-AA", "BB-BB-BB-BB"]
@@ -39,7 +39,7 @@ final class Phase2Tests: XCTestCase {
         XCTAssertEqual(BLEFingerprintBuilder.parseIdList("id\n88-a7-20-91, x\nFE-D7-85-92").count, 2)
     }
 
-    /// 到处都听得到的「价签」（跟着人走的设备）不进指纹
+    /// 到处都听得到的「标签」（跟着人走的设备）不进指纹
     func testMovingDeviceRejected() {
         let b = BLEFingerprintBuilder(widthCm: 10000, heightCm: 1200)
         for i in 0..<100 {

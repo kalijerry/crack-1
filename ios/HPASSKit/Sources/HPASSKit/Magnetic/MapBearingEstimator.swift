@@ -4,7 +4,7 @@ import Foundation
 ///
 /// 采集时手机朝前拿着走，手机罗盘方向 ≈ 行进方向；对齐好的轨迹给出同一时刻在地图上的行进方向。
 /// 两者之差就是地图上方的方位。逐会话取圆周中位，再在会话之间取中位（轨迹偏航的会话会差很多，自然被排除）。
-/// 实测 1266 店：三个正常会话 313° / 319° / 323°，偏航的那个 26°。
+/// 实测某场地：三个正常会话 313° / 319° / 323°，偏航的那个 26°。
 public enum MapBearingEstimator {
     /// heading.csv：t_ms,magnetic_deg,true_deg,…（用 true_deg）
     public static func loadHeadings(_ dir: URL) -> [(tMs: Int64, deg: Double)] {

@@ -95,27 +95,63 @@ def ladder_level(m: dict, ladder: list[dict]) -> str | None:
     return best
 
 
-def compare(cur: dict, base: dict | None, tolerance: dict) -> dict:
-    """逐项和基线比：regressions / improvements 是 [(指标, 基线, 现在)]。"""
-    res = {"regressions": [], "improvements": [], "new": base is None}
+LOWER_IS_BETTER = ("median_cm", "p75_cm", "p90_cm", "wrong_fix", "first_fix_m")
+
+
+def target_metric(m: dict, k: str):
+    """场景目标里用的指标值。一个位置都没报时错定率没有定义，按 0 算（没报出任何错的位置）——
+    只看错定的场景（只靠地磁冷启动）要的就是「宁可不报」。"""
+    v = m.get(k)
+    if v is None and k == "wrong_fix" and m.get("points") == 0 and m.get("replays"):
+        return 0.0
+    return v
+
+
+def meets_target(m: dict, target: dict) -> bool:
+    """场景自己的目标（suite.json 里场景的 "target"）：列出的门槛同时满足才算达标，没列的不看。"""
+    for k, thr in target.items():
+        v = target_metric(m, k)
+        if v is None:
+            return False
+        if (v > thr) if k in LOWER_IS_BETTER else (v < thr):
+            return False
+    return True
+
+
+def scenario_target(r: dict, suite: dict) -> dict | None:
+    """结果条目（或场景定义）的场景目标；没有就是 None（用完整档位）。"""
+    if r.get("target"):
+        return r["target"]
+    s = next((s for s in suite.get("scenarios", []) if s["id"] == r.get("id")), None)
+    return (s or {}).get("target")
+
+
+def compare(cur: dict, base: dict | None, tolerance: dict, keys=None) -> dict:
+    """逐项和基线比：regressions / improvements / changes 是 [(指标, 基线, 现在)]。
+    keys 不是 None 时只有这些指标变差算退步，其余指标变差只记进 changes（只显示，不拦）——
+    场景目标不看的指标（例如只看错定的冷启动场景的覆盖）按设计就会变。"""
+    res = {"regressions": [], "improvements": [], "changes": [], "new": base is None}
     if base is None:
         return res
     for k, rule in tolerance.items():
         b, c = base.get(k), cur.get(k)
+        if keys is not None:
+            b, c = target_metric(base, k), target_metric(cur, k)
         if b is None:
             continue
+        bad = res["regressions"] if keys is None or k in keys else res["changes"]
         if c is None:
-            res["regressions"].append((k, b, c))
+            bad.append((k, b, c))
             continue
         slack = abs(b) * rule.get("rel", 0) + rule.get("abs", 0)
         if rule["better"] == "lower":
             if c > b + slack:
-                res["regressions"].append((k, b, c))
+                bad.append((k, b, c))
             elif c < b - slack:
                 res["improvements"].append((k, b, c))
         else:
             if c < b - slack:
-                res["regressions"].append((k, b, c))
+                bad.append((k, b, c))
             elif c > b + slack:
                 res["improvements"].append((k, b, c))
     return res
@@ -297,7 +333,7 @@ def run_suite(suite: dict, tier: str, work: Path, eval_cmd: list[str], only: str
         d = work / "public" / s["dataset"]
         record(s["id"], s["title"], s.get("gate", False),
                lambda d=d, s=s: run_eval(eval_cmd, d, "build", "test", runs, s["flags"]),
-               {"dataset": s["dataset"]})
+               {"dataset": s["dataset"], **({"target": s["target"]} if s.get("target") else {})})
 
     priv = suite.get("private", {})
     mf = work / "private" / "manifest.json"
@@ -345,6 +381,10 @@ def _fmt(k, v):
     return str(v)
 
 
+def target_text(target: dict) -> str:
+    return "、".join(f"{NAMES[k]} {'≤' if k in LOWER_IS_BETTER else '≥'} {_fmt(k, v)}" for k, v in target.items())
+
+
 NAMES = {"median_cm": "中位", "p75_cm": "P75", "p90_cm": "P90", "wrong_fix": "错定", "coverage": "覆盖",
          "first_fix_m": "首次定位", "fixed_share": "定到率", "within2m": "≤2 m"}
 
@@ -363,8 +403,11 @@ def build_report(res: dict, baseline: dict | None, suite: dict) -> tuple[str, bo
                 regressed = True
             notes.append(f"- `{r['id']}` 运行失败：`{(r.get('error') or '')[:300]}`")
             continue
-        cmp_ = compare(m, base_map.get(r["id"]), suite["tolerance"]) if r["id"] in base_map else {"new": True,
-                                                                                                    "regressions": [], "improvements": []}
+        target = scenario_target(r, suite)
+        if r["id"] in base_map:
+            cmp_ = compare(m, base_map[r["id"]], suite["tolerance"], keys=set(target) if target else None)
+        else:
+            cmp_ = {"new": True, "regressions": [], "improvements": [], "changes": []}
         if r.get("gate") and cmp_["regressions"]:
             regressed = True
         if cmp_["new"]:
@@ -375,12 +418,24 @@ def build_report(res: dict, baseline: dict | None, suite: dict) -> tuple[str, bo
             verdict = "🟢 改善：" + "，".join(f"{NAMES[k]} {_fmt(k, b)}→{_fmt(k, c)}" for k, b, c in cmp_["improvements"])
         else:
             verdict = "⚪ 持平"
-        level = ladder_level(m, suite["ladder"]) or "未达「可用」"
+        if cmp_.get("changes"):
+            verdict += "（目标不看：" + "，".join(f"{NAMES[k]} {_fmt(k, b)}→{_fmt(k, c)}" for k, b, c in cmp_["changes"]) + "）"
         gap = []
-        if m.get("median_cm") is not None and m["median_cm"] > targets["median_cm"]:
-            gap.append(f"中位差 {(m['median_cm'] - targets['median_cm']) / 100:.1f} m")
-        if m.get("wrong_fix") is not None and m["wrong_fix"] > targets["wrong_fix"]:
-            gap.append(f"错定多 {(m['wrong_fix'] - targets['wrong_fix']) * 100:.0f} 点")
+        if target:
+            # 场景自己的目标（例如只靠地磁冷启动只看错定）：档位列只写达没达标，差距按目标算
+            level = ("✅ 达标" if meets_target(m, target) else "未达标") + f"（场景目标：{target_text(target)}）"
+            if m.get("points") == 0:
+                level += "，没有报位置"
+            for k, thr in target.items():
+                v = target_metric(m, k)
+                if v is not None and ((v > thr) if k in LOWER_IS_BETTER else (v < thr)):
+                    gap.append(f"{NAMES[k]} {_fmt(k, v)}")
+        else:
+            level = ladder_level(m, suite["ladder"]) or "未达「可用」"
+            if m.get("median_cm") is not None and m["median_cm"] > targets["median_cm"]:
+                gap.append(f"中位差 {(m['median_cm'] - targets['median_cm']) / 100:.1f} m")
+            if m.get("wrong_fix") is not None and m["wrong_fix"] > targets["wrong_fix"]:
+                gap.append(f"错定多 {(m['wrong_fix'] - targets['wrong_fix']) * 100:.0f} 点")
         rows.append(f"| {r['title']}<br>`{r['id']}` | {_fmt('median_cm', m['median_cm'])} | {_fmt('p75_cm', m['p75_cm'])} | "
                     f"{_fmt('p90_cm', m['p90_cm'])} | {_fmt('wrong_fix', m['wrong_fix'])} | {_fmt('coverage', m['coverage'])} | "
                     f"{_fmt('first_fix_m', m['first_fix_m'])} | {level}{'（' + '，'.join(gap) + '）' if gap else ''}<br>{verdict} |")
@@ -395,6 +450,8 @@ def build_report(res: dict, baseline: dict | None, suite: dict) -> tuple[str, bo
                    f"覆盖 ≥ {lv['coverage'] * 100:g}%" for lv in suite["ladder"])
     md += ["<details><summary>口径说明</summary>", "",
            f"- 档位：{lad}。",
+           "- 有「场景目标」的场景（例如只靠地磁冷启动：只看错定 ≤ 20%，不要求覆盖）只按自己的目标判达标，"
+           "退步也只看目标里的指标；其余指标的变化写在「目标不看」里，只显示不拦。",
            "- 公开数据（Microsoft Indoor Location Competition 2.0 商场一层）的测试位姿是合成漂移，真值是稀疏路标插值，只适合比较版本之间的相对变化。",
            "- 自采数据的站点只用哈希代号。`walk-once` = 每个建图会话单独建图（只走一遍），换一天的测试会话来测。",
            "- 退步判定：中位、P90 变差超过 15% + 0.3 / 0.6 m，错定率多 5 个点，覆盖少 7 个点，定到率少 10 个点。",

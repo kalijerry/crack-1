@@ -1,0 +1,428 @@
+#!/usr/bin/env python3
+"""定位实验室（Lab CI）：每次改动都在固定的数据和协议上回放，量化精度、拦住退步、显示离 Oriient 档还差多少。
+
+子命令：
+  prepare-public --ilc <楼层目录> --work <目录>      把公开数据集转成 suite.json 里要的各个变体
+  prepare-private --work <目录>                      从后台拉自采会话（需要 HPASS_URL / HPASS_TOKEN）
+  run --tier pr|nightly --work <目录> --eval <hpass-eval> --out results.json
+  report --results results.json [--baseline baseline.json] [--md report.md] [--fail-on-regression]
+  baseline --results results.json --out baseline.json  用这次结果当新基线
+
+指标（每个场景把所有测试会话、所有随机种子的点混在一起算）：
+  median_cm / p75_cm（IPIN 竞赛口径）/ p90_cm、wrong_fix（已定位点里误差 > 5 m 的比例）、
+  within2m、coverage（参考轨迹上给出定位的比例）、first_fix_m（首次定位前走了多远，中位）、
+  fixed_share（定到过的回放比例）。
+
+自采数据的两个协议：
+  walk-once   每个建图会话单独建图（= 只走一遍），测试会话只用「不是同一天」的；Oriient「走一遍就能用」的对标指标
+  all-builds  全部建图会话融合后测试
+站点在报告里只用哈希代号（仓库公开）。
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import io
+import json
+import math
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[1]
+SUITE = HERE / "suite.json"
+MARKER = "<!-- hpass-lab -->"
+
+
+# ───────────────────────── 指标 ─────────────────────────
+
+def pct(sorted_vals, q):
+    """和 hpass-eval 同一种分位数取法。"""
+    if not sorted_vals:
+        return None
+    return sorted_vals[min(int((len(sorted_vals) - 1) * q + 0.5), len(sorted_vals) - 1)]
+
+
+def metrics(reports: list[dict]) -> dict:
+    """hpass-eval --json 的报告列表（可以来自多次调用）→ 场景指标。"""
+    errs = sorted(e for r in reports for e in (r.get("errorsCm") or []))
+    ref = sum(r.get("refPoints") or 0 for r in reports)
+    ff = sorted(r["firstFixM"] for r in reports if r.get("firstFixM") is not None)
+    n = len(reports)
+    out = {
+        "replays": n,
+        "points": len(errs),
+        "median_cm": pct(errs, 0.5),
+        "p75_cm": pct(errs, 0.75),
+        "p90_cm": pct(errs, 0.9),
+        "wrong_fix": (sum(e > 500 for e in errs) / len(errs)) if errs else None,
+        "within2m": (sum(e <= 200 for e in errs) / len(errs)) if errs else None,
+        "coverage": (len(errs) / ref) if ref else None,
+        "first_fix_m": pct(ff, 0.5),
+        "fixed_share": (len(ff) / n) if n else None,
+    }
+    for k in ("median_cm", "p75_cm", "p90_cm", "first_fix_m"):
+        if out[k] is not None:
+            out[k] = round(out[k], 1)
+    for k in ("wrong_fix", "within2m", "coverage", "fixed_share"):
+        if out[k] is not None:
+            out[k] = round(out[k], 4)
+    return out
+
+
+def ladder_level(m: dict, ladder: list[dict]) -> str | None:
+    """满足的最高档位。所有门槛同时满足才算。"""
+    best = None
+    for lv in ladder:
+        ok = True
+        for k in ("median_cm", "p90_cm", "wrong_fix"):
+            if k in lv and (m.get(k) is None or m[k] > lv[k]):
+                ok = False
+        if "coverage" in lv and (m.get("coverage") is None or m["coverage"] < lv["coverage"]):
+            ok = False
+        if ok:
+            best = lv["name"]
+    return best
+
+
+def compare(cur: dict, base: dict | None, tolerance: dict) -> dict:
+    """逐项和基线比：regressions / improvements 是 [(指标, 基线, 现在)]。"""
+    res = {"regressions": [], "improvements": [], "new": base is None}
+    if base is None:
+        return res
+    for k, rule in tolerance.items():
+        b, c = base.get(k), cur.get(k)
+        if b is None:
+            continue
+        if c is None:
+            res["regressions"].append((k, b, c))
+            continue
+        slack = abs(b) * rule.get("rel", 0) + rule.get("abs", 0)
+        if rule["better"] == "lower":
+            if c > b + slack:
+                res["regressions"].append((k, b, c))
+            elif c < b - slack:
+                res["improvements"].append((k, b, c))
+        else:
+            if c < b - slack:
+                res["regressions"].append((k, b, c))
+            elif c > b + slack:
+                res["improvements"].append((k, b, c))
+    return res
+
+
+# ───────────────────────── 场景 ─────────────────────────
+
+def load_suite(path=SUITE) -> dict:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def public_scenarios(suite: dict, tier: str) -> list[dict]:
+    return [s for s in suite["scenarios"] if tier in s.get("tiers", [])]
+
+
+DAY_RE = re.compile(r"(20\d{6})")
+
+
+def session_day(name: str) -> str | None:
+    m = DAY_RE.search(name)
+    return m.group(1) if m else None
+
+
+def walk_once_pairs(build: list[str], test: list[str]) -> list[tuple[str, list[str]]]:
+    """每个建图会话配「不是同一天」的测试会话；全是同一天就退一步用除它以外的全部。"""
+    out = []
+    for b in build:
+        bd = session_day(b)
+        ts = [t for t in test if t != b and (bd is None or session_day(t) != bd)]
+        if not ts:
+            ts = [t for t in test if t != b]
+        if ts:
+            out.append((b, ts))
+    return out
+
+
+def site_label(map_id: str) -> str:
+    return "site-" + hashlib.sha1(map_id.encode()).hexdigest()[:6]
+
+
+# ───────────────────────── 准备数据 ─────────────────────────
+
+def prepare_public(suite: dict, ilc_floor: Path, work: Path):
+    conv = ROOT / "tools" / "bench" / "ilc_convert.py"
+    for name, ds in suite["datasets"].items():
+        if ds.get("kind") != "ilc":
+            continue
+        dst = work / "public" / name
+        if (dst / "manifest.json").exists():
+            print(f"[lab] {name} 已转换，跳过")
+            continue
+        cmd = [sys.executable, str(conv), str(ilc_floor), str(dst), "--drift", ds["drift"]]
+        if ds.get("build_max"):
+            cmd += ["--build-max", str(ds["build_max"])]
+        print("[lab] " + " ".join(cmd[1:]))
+        subprocess.run(cmd, check=True)
+
+
+def _req(url, token, path):
+    r = urllib.request.Request(url + path, headers={"Authorization": "Bearer " + token, "User-Agent": "hpass-lab/1.0"})
+    with urllib.request.urlopen(r, timeout=300) as resp:
+        return resp.read()
+
+
+def prepare_private(work: Path) -> list[dict]:
+    """后台的建图 / 测试会话按地图分组，写 <work>/private/<代号>/{map.json, build/, test/}。"""
+    url = os.environ.get("HPASS_URL", "").rstrip("/")
+    token = os.environ.get("HPASS_TOKEN", "")
+    if not url or not token:
+        print("[lab] 没有 HPASS_URL / HPASS_TOKEN，跳过自采数据")
+        return []
+    if not url.startswith("http"):
+        url = "https://" + url
+    raw = work / "private-raw"
+    raw.mkdir(parents=True, exist_ok=True)
+    groups: dict[str, dict] = {}
+    for o in json.loads(_req(url, token, "/api/sessions")):
+        name = o["key"].split("/", 1)[1]
+        z = zipfile.ZipFile(io.BytesIO(_req(url, token, "/api/sessions/" + urllib.parse.quote(name))))
+        z.extractall(raw)
+        for m in [n for n in z.namelist() if n.endswith("meta.json") and n.count("/") == 1]:
+            d = raw / os.path.dirname(m)
+            meta = json.loads((raw / m).read_text(encoding="utf-8"))
+            if not meta.get("survey") or not (d / "anchors.csv").exists() or not meta.get("map_id"):
+                continue
+            g = groups.setdefault(meta["map_id"], {"build": [], "test": []})
+            g["test" if meta.get("purpose") == "test" else "build"].append(d)
+    manifest = []
+    for mid, g in sorted(groups.items()):
+        if not g["build"] or not g["test"]:
+            continue
+        label = site_label(mid)
+        dst = work / "private" / label
+        try:
+            map_json = _req(url, token, "/api/maps/" + urllib.parse.quote(mid))
+        except urllib.error.HTTPError:
+            continue
+        for kind in ("build", "test"):
+            (dst / kind).mkdir(parents=True, exist_ok=True)
+            for d in g[kind]:
+                tgt = dst / kind / d.name
+                if not tgt.exists():
+                    shutil.copytree(d, tgt)
+        (dst / "map.json").write_bytes(map_json)
+        manifest.append({"label": label, "build": sorted(d.name for d in g["build"]),
+                         "test": sorted(d.name for d in g["test"])})
+        print(f"[lab] {label}：建图 {len(g['build'])}，测试 {len(g['test'])}")
+    (work / "private").mkdir(parents=True, exist_ok=True)
+    (work / "private" / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
+    return manifest
+
+
+# ───────────────────────── 回放 ─────────────────────────
+
+def run_eval(eval_cmd: list[str], cwd: Path, build: str, test: str, runs: int, flags: list[str],
+             timeout_s: float = 3600) -> list[dict]:
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / "r.json"
+        cmd = eval_cmd + ["--map", "map.json", "--build", build, "--test", test, "--runs", str(runs),
+                          *flags, "--json", str(out)]
+        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout_s)
+        if p.returncode != 0 or not out.exists():
+            tail = (p.stdout or "")[-1500:] + (p.stderr or "")[-1500:]
+            raise RuntimeError(f"hpass-eval 失败（退出码 {p.returncode}）：{tail}")
+        return json.loads(out.read_text(encoding="utf-8"))
+
+
+def run_suite(suite: dict, tier: str, work: Path, eval_cmd: list[str], only: str | None = None) -> dict:
+    runs = suite["runs"][tier]
+    results = []
+
+    def record(sid, title, gate, fn, extra=None):
+        if only and only not in sid:
+            return
+        t0 = time.time()
+        entry = {"id": sid, "title": title, "gate": gate}
+        try:
+            reps = fn()
+            entry["metrics"] = metrics(reps)
+        except Exception as e:  # noqa: BLE001 — 失败本身就是要报告的结果
+            entry["error"] = str(e)[:3000]
+        entry["seconds"] = round(time.time() - t0, 1)
+        if extra:
+            entry.update(extra)
+        print(f"[lab] {sid}：{entry.get('metrics') or entry.get('error')}（{entry['seconds']} s）", flush=True)
+        results.append(entry)
+
+    for s in public_scenarios(suite, tier):
+        d = work / "public" / s["dataset"]
+        record(s["id"], s["title"], s.get("gate", False),
+               lambda d=d, s=s: run_eval(eval_cmd, d, "build", "test", runs, s["flags"]),
+               {"dataset": s["dataset"]})
+
+    priv = suite.get("private", {})
+    mf = work / "private" / "manifest.json"
+    if tier in priv.get("tiers", []) and mf.exists():
+        for site in json.loads(mf.read_text(encoding="utf-8")):
+            d = work / "private" / site["label"]
+            for proto, pcfg in priv["protocols"].items():
+                sid = f"private/{site['label']}/{proto}"
+                if proto == "walk-once":
+                    pairs = walk_once_pairs(site["build"], site["test"])
+
+                    def fn(d=d, pairs=pairs, pcfg=pcfg):
+                        reps = []
+                        for b, ts in pairs:
+                            reps += run_eval(eval_cmd, d, "build/" + b, ",".join("test/" + t for t in ts),
+                                             runs, pcfg["flags"])
+                        return reps
+                    record(sid, pcfg["title"], priv.get("gate", False), fn, {"pairs": len(pairs)})
+                else:
+                    record(sid, pcfg["title"], priv.get("gate", False),
+                           lambda d=d, site=site, pcfg=pcfg: run_eval(
+                               eval_cmd, d, ",".join("build/" + b for b in site["build"]),
+                               ",".join("test/" + t for t in site["test"]), runs, pcfg["flags"]))
+    return {"kind": "lab", "tier": tier, "runs": runs, "commit": os.environ.get("GITHUB_SHA", ""),
+            "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "results": results}
+
+
+# ───────────────────────── 报告 ─────────────────────────
+
+def _fmt(k, v):
+    if v is None:
+        return "—"
+    if k in ("wrong_fix", "within2m", "coverage", "fixed_share"):
+        return f"{v * 100:.0f}%"
+    if k.endswith("_cm"):
+        return f"{v / 100:.1f} m"
+    if k.endswith("_m"):
+        return f"{v:.1f} m"
+    return str(v)
+
+
+NAMES = {"median_cm": "中位", "p75_cm": "P75", "p90_cm": "P90", "wrong_fix": "错定", "coverage": "覆盖",
+         "first_fix_m": "首次定位", "fixed_share": "定到率", "within2m": "≤2 m"}
+
+
+def build_report(res: dict, baseline: dict | None, suite: dict) -> tuple[str, bool]:
+    """返回 (markdown, 是否有退步)。"""
+    base_map = {r["id"]: r.get("metrics") for r in (baseline or {}).get("results", [])}
+    rows, notes = [], []
+    regressed = False
+    targets = suite["ladder"][-1]
+    for r in res["results"]:
+        m = r.get("metrics")
+        if m is None:
+            rows.append(f"| {r['title']}<br>`{r['id']}` | ❌ 运行失败 | | | | | | |")
+            if r.get("gate") and r["id"] in base_map:
+                regressed = True
+            notes.append(f"- `{r['id']}` 运行失败：`{(r.get('error') or '')[:300]}`")
+            continue
+        cmp_ = compare(m, base_map.get(r["id"]), suite["tolerance"]) if r["id"] in base_map else {"new": True,
+                                                                                                    "regressions": [], "improvements": []}
+        if r.get("gate") and cmp_["regressions"]:
+            regressed = True
+        if cmp_["new"]:
+            verdict = "🆕 无基线"
+        elif cmp_["regressions"]:
+            verdict = "🔴 退步：" + "，".join(f"{NAMES[k]} {_fmt(k, b)}→{_fmt(k, c)}" for k, b, c in cmp_["regressions"])
+        elif cmp_["improvements"]:
+            verdict = "🟢 改善：" + "，".join(f"{NAMES[k]} {_fmt(k, b)}→{_fmt(k, c)}" for k, b, c in cmp_["improvements"])
+        else:
+            verdict = "⚪ 持平"
+        level = ladder_level(m, suite["ladder"]) or "未达「可用」"
+        gap = []
+        if m.get("median_cm") is not None and m["median_cm"] > targets["median_cm"]:
+            gap.append(f"中位差 {(m['median_cm'] - targets['median_cm']) / 100:.1f} m")
+        if m.get("wrong_fix") is not None and m["wrong_fix"] > targets["wrong_fix"]:
+            gap.append(f"错定多 {(m['wrong_fix'] - targets['wrong_fix']) * 100:.0f} 点")
+        rows.append(f"| {r['title']}<br>`{r['id']}` | {_fmt('median_cm', m['median_cm'])} | {_fmt('p75_cm', m['p75_cm'])} | "
+                    f"{_fmt('p90_cm', m['p90_cm'])} | {_fmt('wrong_fix', m['wrong_fix'])} | {_fmt('coverage', m['coverage'])} | "
+                    f"{_fmt('first_fix_m', m['first_fix_m'])} | {level}{'（' + '，'.join(gap) + '）' if gap else ''}<br>{verdict} |")
+    head = "🔴 **有退步**" if regressed else ("🟢 **没有退步**" if baseline else "🆕 **还没有基线**（这次结果可以作为第一版基线）")
+    md = [MARKER, f"## 定位实验室（{res['tier']}，每场景 {res['runs']} 个随机种子）", "",
+          f"{head}　·　提交 `{(res.get('commit') or 'local')[:7]}`", "",
+          "| 场景 | 中位 | P75 | P90 | 错定 >5 m | 覆盖 | 首次定位 | 档位 / 离「对标 Oriient」还差 · 对比基线 |",
+          "|---|---|---|---|---|---|---|---|", *rows, ""]
+    if notes:
+        md += ["**失败详情**", *notes, ""]
+    lad = "；".join(f"{lv['name']}：中位 ≤ {lv['median_cm'] / 100:g} m、P90 ≤ {lv['p90_cm'] / 100:g} m、错定 ≤ {lv['wrong_fix'] * 100:g}%、"
+                   f"覆盖 ≥ {lv['coverage'] * 100:g}%" for lv in suite["ladder"])
+    md += ["<details><summary>口径说明</summary>", "",
+           f"- 档位：{lad}。",
+           "- 公开数据（Microsoft Indoor Location Competition 2.0 商场一层）的测试位姿是合成漂移，真值是稀疏路标插值，只适合比较版本之间的相对变化。",
+           "- 自采数据的站点只用哈希代号。`walk-once` = 每个建图会话单独建图（只走一遍），换一天的测试会话来测。",
+           "- 退步判定：中位、P90 变差超过 15% + 0.3 / 0.6 m，错定率多 5 个点，覆盖少 7 个点，定到率少 10 个点。",
+           "", "</details>"]
+    return "\n".join(md), regressed
+
+
+# ───────────────────────── 命令行 ─────────────────────────
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("prepare-public")
+    p.add_argument("--ilc", type=Path, required=True)
+    p.add_argument("--work", type=Path, required=True)
+    p = sub.add_parser("prepare-private")
+    p.add_argument("--work", type=Path, required=True)
+    p = sub.add_parser("run")
+    p.add_argument("--tier", choices=["pr", "nightly"], default="pr")
+    p.add_argument("--work", type=Path, required=True)
+    p.add_argument("--eval", required=True, help="hpass-eval 可执行文件")
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--only", help="只跑 id 含这个字符串的场景")
+    p = sub.add_parser("report")
+    p.add_argument("--results", type=Path, required=True)
+    p.add_argument("--baseline", type=Path)
+    p.add_argument("--md", type=Path)
+    p.add_argument("--fail-on-regression", action="store_true")
+    p = sub.add_parser("baseline")
+    p.add_argument("--results", type=Path, required=True)
+    p.add_argument("--out", type=Path, default=HERE / "baseline.json")
+    a = ap.parse_args(argv)
+    suite = load_suite()
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")     # Windows 控制台默认 GBK，打不出表情符号
+
+    if a.cmd == "prepare-public":
+        prepare_public(suite, a.ilc, a.work)
+    elif a.cmd == "prepare-private":
+        prepare_private(a.work)
+    elif a.cmd == "run":
+        res = run_suite(suite, a.tier, a.work, [str(Path(a.eval).resolve())], a.only)
+        a.out.write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
+    elif a.cmd == "report":
+        res = json.loads(a.results.read_text(encoding="utf-8"))
+        base = None
+        if a.baseline and a.baseline.exists():
+            base = json.loads(a.baseline.read_text(encoding="utf-8"))
+            if not base.get("results"):
+                base = None
+        md, regressed = build_report(res, base, suite)
+        if a.md:
+            a.md.write_text(md, encoding="utf-8")
+        print(md)
+        if regressed and a.fail_on_regression:
+            return 1
+    elif a.cmd == "baseline":
+        res = json.loads(a.results.read_text(encoding="utf-8"))
+        keep = {"tier": res["tier"], "runs": res["runs"], "commit": res.get("commit"), "created": res.get("created"),
+                "results": [{"id": r["id"], "metrics": r["metrics"]} for r in res["results"] if r.get("metrics")]}
+        a.out.write_text(json.dumps(keep, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        print(f"基线已写入 {a.out}（{len(keep['results'])} 个场景）")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

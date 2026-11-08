@@ -75,6 +75,7 @@ python -m unittest discover -s tools/tests
 | 工作流 | 内容 |
 |---|---|
 | `ci.yml` | 核心库测试、iOS / Android 构建、Python 工具测试、后台检查 |
+| `lab.yml` | 定位实验室：固定数据和协议上回放，量化精度、拦住退步、跟踪离目标的差距 |
 | `map-build.yml` | 云端融合建图（手动触发） |
 | `ios-adhoc.yml` | 签名安装包 |
 

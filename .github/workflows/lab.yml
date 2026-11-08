@@ -1,0 +1,172 @@
+name: Lab
+
+# 定位实验室：每次改动在固定数据 + 固定协议上回放，量化精度、拦住退步、显示离「对标 Oriient」还差多少。
+# 场景和门槛见 tools/lab/suite.json，说明见 docs/lab-ci.md。
+#
+# - PR / main：pr 档（核心场景，每场景 3 个随机种子），结果贴在 PR 评论里；有退步就失败
+# - 每晚（北京时间 02:00）：nightly 档（全部场景，5 个种子），结果传后台看板画趋势
+# - 手动：可选档位、只跑某些场景、把这次结果提成新基线（开一个改 tools/lab/baseline.json 的分支 / PR）
+
+on:
+  pull_request:
+    paths:
+      - "ios/HPASSKit/Sources/**"
+      - "ios/HPASSKit/Package.swift"
+      - "tools/lab/**"
+      - "tools/bench/**"
+      - ".github/workflows/lab.yml"
+  push:
+    branches: [main]
+    paths:
+      - "ios/HPASSKit/Sources/**"
+      - "ios/HPASSKit/Package.swift"
+      - "tools/lab/**"
+      - "tools/bench/**"
+      - ".github/workflows/lab.yml"
+  schedule:
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: "档位"
+        type: choice
+        options: [nightly, pr]
+        default: nightly
+      only:
+        description: "只跑 id 含这个字符串的场景（留空 = 全部）"
+        required: false
+      update_baseline:
+        description: "把这次结果提成新基线（推一个分支并尝试开 PR）"
+        type: boolean
+        default: false
+
+concurrency:
+  group: lab-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  lab:
+    runs-on: macos-15
+    timeout-minutes: 150
+    env:
+      TIER: ${{ github.event_name == 'schedule' && 'nightly' || (github.event_name == 'workflow_dispatch' && github.event.inputs.tier || 'pr') }}
+      WORK: ${{ github.workspace }}/../lab-work
+      ILC: ${{ github.workspace }}/../lab-data/ilc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: ios/HPASSKit/.build
+          key: hpass-lab-${{ runner.os }}-${{ hashFiles('ios/HPASSKit/Package.swift', 'ios/HPASSKit/Sources/**') }}
+          restore-keys: hpass-lab-${{ runner.os }}-
+
+      - name: Build hpass-eval (release)
+        working-directory: ios/HPASSKit
+        run: swift build -c release --product hpass-eval 2>&1 | tail -5; exit ${PIPESTATUS[0]}
+
+      # 公开数据：Microsoft Indoor Location Competition 2.0（MIT），只取 site1/F1，缓存起来
+      - uses: actions/cache@v4
+        id: ilc-cache
+        with:
+          path: ${{ env.ILC }}
+          key: ilc-site1-F1-v1
+
+      - name: Fetch public dataset
+        if: steps.ilc-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --filter=blob:none --no-checkout \
+            https://github.com/location-competition/indoor-location-competition-20.git "$ILC"
+          cd "$ILC" && git sparse-checkout set data/site1/F1 && git checkout
+          rm -rf .git
+          ls data/site1/F1 | head
+
+      - name: Prepare datasets
+        env:
+          HPASS_URL: ${{ secrets.HPASS_URL }}
+          HPASS_TOKEN: ${{ secrets.HPASS_TOKEN }}
+        run: |
+          python3 tools/lab/lab.py prepare-public --ilc "$ILC/data/site1/F1" --work "$WORK"
+          # 自采数据：有后台口令才拉（fork 来的 PR 没有，自动跳过）；日志里只出现站点哈希代号
+          python3 tools/lab/lab.py prepare-private --work "$WORK" \
+            || echo "::warning::拉自采数据失败，这次只跑公开数据"
+
+      - name: Run lab
+        env:
+          ONLY: ${{ github.event.inputs.only }}
+        run: |
+          python3 tools/lab/lab.py run --tier "$TIER" --work "$WORK" \
+            --eval ios/HPASSKit/.build/release/hpass-eval --out lab-results.json ${ONLY:+--only "$ONLY"}
+
+      - name: Report
+        id: report
+        run: |
+          set +e
+          python3 tools/lab/lab.py report --results lab-results.json --baseline tools/lab/baseline.json \
+            --md lab-report.md --fail-on-regression > /dev/null
+          echo "regressed=$([ $? -ne 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          cat lab-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          # 同一个 PR 只保留一条实验室评论，每次更新它
+          ID=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate \
+                 --jq '.[] | select(.body | startswith("<!-- hpass-lab -->")) | .id' | tail -1)
+          if [ -n "$ID" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$ID" -F body=@lab-report.md > /dev/null
+          else
+            gh pr comment "$PR" --body-file lab-report.md
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lab-${{ env.TIER }}-${{ github.run_id }}
+          path: |
+            lab-results.json
+            lab-report.md
+          retention-days: 90
+
+      - name: Upload to dashboard
+        if: github.event_name != 'pull_request'
+        env:
+          HPASS_URL: ${{ secrets.HPASS_URL }}
+          HPASS_TOKEN: ${{ secrets.HPASS_TOKEN }}
+        run: |
+          if [ -z "$HPASS_URL" ] || [ -z "$HPASS_TOKEN" ]; then echo "没配后台，跳过"; exit 0; fi
+          case "$HPASS_URL" in http*) ;; *) HPASS_URL="https://$HPASS_URL" ;; esac
+          NAME="lab_${TIER}_$(date -u +%Y%m%d-%H%M)_${GITHUB_SHA::7}.json"
+          curl -fsS -X PUT --data-binary @lab-results.json -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $HPASS_TOKEN" -H "User-Agent: hpass-lab" \
+            "${HPASS_URL%/}/api/reports/$NAME"
+
+      - name: Propose new baseline
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.update_baseline == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 tools/lab/lab.py baseline --results lab-results.json --out tools/lab/baseline.json
+          BR="lab/baseline-${{ github.run_id }}"
+          git config user.name "hpass-lab"
+          git config user.email "hpass-lab@users.noreply.github.com"
+          git switch -c "$BR"
+          git add tools/lab/baseline.json
+          git commit -m "Lab：更新精度基线（run ${{ github.run_id }}，档位 $TIER）"
+          git push origin "$BR"
+          gh pr create --base "${{ github.ref_name }}" --head "$BR" --title "Lab：更新精度基线" \
+            --body-file lab-report.md \
+            || echo "没能自动开 PR（仓库设置里没允许 Actions 开 PR），手动开：https://github.com/${{ github.repository }}/compare/$BR"
+
+      - name: Fail on regression
+        if: steps.report.outputs.regressed == 'true'
+        run: |
+          echo "::error::定位精度有退步，见 PR 评论或本次运行的 Summary"
+          exit 1

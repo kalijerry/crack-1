@@ -45,7 +45,7 @@ enum VenueSettings {
 
     /// IMDF venue category 里常用的几个
     static let categories: [(id: String, label: String)] = [
-        ("businesscampus", "办公园区 / 写字楼"), ("shoppingcenter", "商场"), ("retailstore", "门店"),
+        ("businesscampus", "办公园区 / 写字楼"), ("shoppingcenter", "商场"), ("retailstore", "零售店"),
         ("hotel", "酒店"), ("university", "学校"), ("healthcarefacility", "医院"), ("museum", "博物馆"),
         ("airport", "机场"), ("trainstation", "火车站"), ("parkingfacility", "停车场"),
         ("conventioncenter", "会展中心"), ("governmentfacility", "政府机构"),

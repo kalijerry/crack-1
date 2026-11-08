@@ -57,7 +57,7 @@ struct RoomScanItem: Identifiable {
 /// 扫描时可以在入口记一次 GPS + 朝向（算 geoRef），气压计跟踪楼层序号；扫完后点选房间填类别和名字，
 /// 一个场馆的多层扫描能导出成 IMDF。操作说明见 docs/roomplan-imdf-authoring.md。
 ///
-/// 结果存成和门店地图同一种 JSON（墙 / 门 / 窗 / 家具 / 单元 / 地面多边形），「设为当前地图」之后，
+/// 结果存成和场地地图同一种 JSON（墙 / 门 / 窗 / 家具 / 单元 / 地面多边形），「设为当前地图」之后，
 /// 地磁定位页的建图采集、涂色、定位都直接在这里用（可走区域 = 可走单元 − 家具）。
 /// RoomCaptureView 的代理（协议要求 NSCoding，单独放一个小对象，不和界面状态混在一起）
 final class RoomCaptureDelegate: NSObject, RoomCaptureViewDelegate {

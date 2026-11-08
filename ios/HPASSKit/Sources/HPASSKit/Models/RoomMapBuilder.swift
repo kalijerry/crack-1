@@ -1,6 +1,6 @@
 import Foundation
 
-/// 房间扫描（Apple RoomPlan）的结果，换成和门店地图同一种 JSON（`mapElementList` 等），
+/// 房间扫描（Apple RoomPlan）的结果，换成和场地地图同一种 JSON（`mapElementList` 等），
 /// 这样 2D / 3D 显示、可走区域、建图采集、定位都能直接用。
 ///
 /// 输入是 ARKit 世界坐标（米，水平面取 (x, z)，与地图 (x, y) 同手性）；输出是地图坐标（cm，y 向下）。

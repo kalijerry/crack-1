@@ -180,7 +180,9 @@ public final class BLEAssist {
     /// - 不挡收敛、不因为「不在采集区域 / 标签范围里没有磁场数据」判丢（跟踪档自己按覆盖给地磁打折）；
     /// - 当前位置连续 disagreeSeconds 秒落不进大部分强标签的范围，或连续 crossCheckSeconds 秒离蓝牙粗位置很远：
     ///   只触发局部找回（declareLost(local: true)），不全图找；
-    /// - 每秒一个宽的位置先验（σ ≥ bleSoftPriorSigmaCm、低权重），不用逐片标签的硬范围约束。
+    /// - 底图学过本场地的标签范围（learnedRanges）：每片强标签一个有上限的软范围约束
+    ///   （超出学到的 P90 范围才罚，σ bleSoftRangeSigmaCm、每片每秒最多罚 bleSoftRangeCapLog、权重 bleSoftRangeWeight）；
+    /// - 没学过（固定表 / 标签位置表）：每秒一个宽的位置先验（σ ≥ bleSoftPriorSigmaCm、低权重），不用逐片标签的硬范围约束。
     private func softTrackingTick(obs: [String: Double], localizer: MagneticLocalizer, current: Point2?, candidate: Point2?) {
         lastHeard = obs.count
         localizer.convergenceBlocked = false
@@ -205,8 +207,17 @@ public final class BLEAssist {
             localizer.declareLost(local: true)
             resets += 1; disagreeStreak = 0; farStreak = 0
         }
-        guard let e else { return }
         let cfg = localizer.config
+        if useLearnedRanges, map.learnedRanges?.isEmpty == false, cfg.bleSoftRangeWeight > 0 {
+            let tags = BLEFingerprintMap.strongest(obs, k: tagRangeMax, minRssi: tagRangeMinRssi)
+                .compactMap { o in map.tags[o.0].map { (position: Point2($0.x, $0.y), rangeCm: self.rangeCm(o.1)) } }
+            if tags.count >= 2 {
+                localizer.applyTagRanges(tags, sigmaCm: cfg.bleSoftRangeSigmaCm, capLog: cfg.bleSoftRangeCapLog,
+                                         weight: cfg.bleSoftRangeWeight)
+            }
+            return
+        }
+        guard let e else { return }
         localizer.applyPositionPrior(e.position, sigmaCm: max(e.spreadCm, cfg.bleSoftPriorSigmaCm), weight: cfg.bleSoftPriorWeight)
     }
 }

@@ -100,6 +100,7 @@ do {
                 if CommandLine.arguments.contains("--ble-soft-no-recover") { cfg.bleSoftLocalRecovery = false }
                 if let w = arg("--ble-soft-weight").flatMap(Double.init) { cfg.bleSoftPriorWeight = w }
                 if let w = arg("--ble-soft-sigma").flatMap(Double.init) { cfg.bleSoftPriorSigmaCm = w }
+                if let w = arg("--ble-soft-range-weight").flatMap(Double.init) { cfg.bleSoftRangeWeight = w }
             }, seed: UInt64(k + 1), refTagPositions: refTags,
                                                   oracleStart: CommandLine.arguments.contains("--oracle-start"),
                                                   odometry: odometry)

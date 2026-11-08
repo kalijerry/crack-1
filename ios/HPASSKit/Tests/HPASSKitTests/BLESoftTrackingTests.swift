@@ -111,6 +111,36 @@ final class BLESoftTrackingTests: XCTestCase {
         XCTAssertLessThan(e.position.distance(to: start), 300)
     }
 
+    /// 学过范围：软范围约束把粒子往听到的标签那边拉，但每片有上限——和地磁完全对不上的远处标签不会把估计拽走
+    func testSoftTrackingUsesCappedLearnedRanges() {
+        let learned: [BLEFingerprintMap.RangeBin] = [.init(minRssi: -70, rangeCm: 700, samples: 500),
+                                                     .init(minRssi: -90, rangeCm: 1100, samples: 500)]
+        func run(_ obs: [String: Double], rangeWeight: Double, start: Point2, spread: Double) -> Point2 {
+            var cfg = MagneticConfig.tracking(odometry: .pdr)
+            cfg.particleCount = 600
+            cfg.bleSoftRangeWeight = rangeWeight
+            cfg.bleSoftLocalRecovery = false
+            let loc = MagneticLocalizer(field: field(), config: cfg, seed: 5)
+            loc.reset(start: start, spreadCm: spread)
+            let assist = BLEAssist(map: bleMap(learned: learned))
+            for _ in 0..<5 {
+                assist.tick(obs: obs, localizer: loc, current: start, candidate: start)
+                XCTAssertFalse(loc.convergenceBlocked)
+            }
+            return loc.particleMean
+        }
+        // 起点 x = 25 m、散得很开；听到的是 x = 7.5 m、12.5 m 的标签（学到的范围 7 m）→ 被拉向 x ≈ 10 m
+        let near: [String: Double] = ["T1": -62, "T2": -64]
+        let start = Point2(2500, 200)
+        let pulled = run(near, rangeWeight: 1, start: start, spread: 1200)
+        let priorOnly = run(near, rangeWeight: 0, start: start, spread: 1200)
+        XCTAssertLessThan(pulled.x, start.x - 300)
+        XCTAssertLessThan(pulled.x, priorOnly.x)
+        // 起点很准、听到的却是 40 m 外的标签：每片罚有上限、所有粒子一样远 → 估计不动
+        let held = run(farObs, rangeWeight: 1, start: Point2(500, 200), spread: 50)
+        XCTAssertLessThan(held.distance(to: Point2(500, 200)), 300)
+    }
+
     func testHardBehaviourWhenSoftTrackingOff() {
         let f = field()
         var cfg = MagneticConfig.tracking(odometry: .pdr)

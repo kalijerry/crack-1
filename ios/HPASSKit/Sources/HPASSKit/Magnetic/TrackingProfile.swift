@@ -24,7 +24,8 @@ public enum OdometrySource: String, CaseIterable {
 /// - 运动来源中途变了（视觉里程计没对齐 / 跟丢时计步顶上），调用方用 `MagneticLocalizer.setOdometry` 换参数；
 /// - 定到之后地磁只占一部分（`convergedMagWeight`），并按粒子落在有数据格子上的权重比例再打折
 ///   （`coverageGatedMagWeight`）：一段没采过的路上完全靠推算；
-/// - 蓝牙只做软约束（`bleSoftTracking`）：宽的位置先验，不挡收敛，持续对不上只触发局部找回，不全图找。
+/// - 蓝牙只做软约束（`bleSoftTracking`）：底图学过本场地标签范围时用有上限的软范围约束，没学过用宽的位置先验；
+///   不挡收敛，持续对不上只触发局部找回，不全图找。
 ///
 /// 数值在公开数据集的 Python 移植上挑的（见 PR 描述），不按单条测试轨迹调。
 public enum TrackingProfile {

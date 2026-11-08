@@ -4,13 +4,15 @@ import XCTest
 /// 评估建图（SessionEvaluator.buildMaps .fusion）= 云端出图流水线（MultiSessionFusion.buildProduction）：
 /// 多个会话各带已知的整体磁场偏移，检查偏移被解掉、和会话顺序无关、和主体连不上的会话不进磁场图、sequential 还是老办法。
 final class ProductionMapBuildTests: XCTestCase {
-    /// 四条互相重叠的路线（a 最长，当基准）+ 一条和别的都不重叠的（e，房间左边）
+    /// 四条互相重叠的路线（a 最长，当基准）+ 一条和别的都不重叠的（e，房间左边）。
+    /// 每条第一段都沿 +y 直走 ≥ 2 m（建图靠这段定 ARKit → 地图的旋转）
     static let routes: [(name: String, waypoints: [Point2], dz: Double)] = [
         ("a", SyntheticRoom.buildRoute, 0),
-        ("b", SyntheticRoom.testRoute, 8),
+        ("b", [Point2(250, 150), Point2(250, 400), Point2(600, 400), Point2(600, 300), Point2(250, 300), Point2(250, 200),
+               Point2(600, 200)], 8),
         ("c", [Point2(250, 150), Point2(250, 400), Point2(350, 400), Point2(350, 150), Point2(450, 150), Point2(450, 400),
                Point2(550, 400), Point2(550, 150)], -6),
-        ("d", [Point2(300, 200), Point2(300, 350), Point2(550, 350), Point2(550, 200), Point2(300, 200)], 12),
+        ("d", [Point2(300, 150), Point2(300, 400), Point2(550, 400), Point2(550, 250), Point2(350, 250)], 12),
         ("e", [Point2(60, 100), Point2(60, 450), Point2(110, 450), Point2(110, 100)], 4),
     ]
 

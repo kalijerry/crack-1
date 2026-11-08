@@ -49,9 +49,12 @@ public enum SessionEvaluator {
         /// 和云端出图（hpass-build）完全一样：MultiSessionFusion.buildProduction —— 三遍融合（全局解偏移，和会话顺序无关）、
         /// 有标签位置表 / 货架标签时的轨迹锚定修正、质量筛选（不合格的段 / 会话不用）、磁场图只用主体连通分量
         case production
-        /// 同一条流水线（同一份代码），只差最后一步：和主体连不上的分量也留在磁场图里（各分量各自对齐，分量之间不对齐）。
-        /// 评估默认用这个：公开数据集的建图轨迹不是按「分片之间要有重叠」采的，只用主体会把大片区域从图里去掉，
-        /// 量到的是采集覆盖而不是定位；云端会排除哪些会话见 BuiltMaps.offMain（hpass-eval 打印）
+        /// 同一条流水线（同一份代码）的融合核心：全局解偏移 + 有标签时的轨迹锚定修正，**不做**质量筛选、
+        /// **不排除**和主体连不上的分量（各分量各自对齐，分量之间不对齐）。评估默认用这个。
+        /// 原因（公开数据集实测，夜间 Lab）：建图轨迹不是按「分片之间要有重叠」采的，101 条分成 23～33 个连通分量，
+        /// 只用主体会从图里去掉约 36% 的格子；质量筛选拿「别的会话」比磁场，而别的会话分在互相没对齐的分量里，
+        /// 101 条里 36 条整条被判不合格。两者量到的都是采集方式，而不是定位。
+        /// 云端会排除哪些会话见 BuiltMaps.offMain（hpass-eval 打印）；要量云端地图包本身用 .production
         case fusion
         /// 手机上「生成磁场图」那套：会话按顺序一个个加，每个只和已经加进去的数据对齐偏移（结果和顺序有关）
         case sequential
@@ -60,11 +63,11 @@ public enum SessionEvaluator {
     public struct BuiltMaps {
         public var field: MagneticFieldMap
         public var ble: BLEFingerprintMap?
-        /// 进了磁场图的会话的建图说明（fusion：只有主体分量里合格的会话）
+        /// 进了磁场图的会话的建图说明（production：只有主体分量里合格的会话）
         public var reports: [SurveySessionReport]
         /// 合格会话分成几个连通分量（sequential 恒为 1）
         public var components: Int = 1
-        /// 质量筛选没通过、不用的会话（名字 + 原因）
+        /// 质量筛选没通过、不用的会话（名字 + 原因；只有 production 做质量筛选）
         public var rejected: [(name: String, reason: String)] = []
         /// 质量合格但和主体连不上、磁场图没用的会话（只有 .production 会排除）
         public var magExcluded: [String] = []
@@ -100,7 +103,8 @@ public enum SessionEvaluator {
                 signs.append(SignSample.load(u))
             }
             guard let pb = MultiSessionFusion(map: map).buildProduction(loaded, ble: bles, signs: signs, tagPositions: tagPositions,
-                                                                     mainComponentOnly: mode == .production) else {
+                                                                     options: mode == .production ? MultiSessionFusion.ProductionOptions.cloud
+                                                                         : MultiSessionFusion.ProductionOptions(qualityGate: false, mainComponentOnly: false)) else {
                 throw BuildError.noUsableSession
             }
             for (k, track) in pb.all.tracks.enumerated() where k < pb.keptBLE.count { _ = bb.add(samples: pb.keptBLE[k], track: track) }

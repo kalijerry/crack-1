@@ -71,9 +71,13 @@ public final class MultiSessionFusion {
                 for c in 0..<3 { diffs[c].append(a.means[k * 3 + c] - b.means[k * 3 + c]) }
             }
             guard !diffs[0].isEmpty else { return nil }
-            let med = diffs.map { x -> Double in let s = x.sorted(); return s[s.count / 2] }
-            let dev = diffs[0].map { abs($0 - med[0]) }.sorted()
-            return (med, diffs[0].count, dev[dev.count / 2])
+            // 偶数个取中间两个的平均：pair(i, j) = −pair(j, i)，结果才和会话顺序无关
+            func median(_ x: [Double]) -> Double {
+                let s = x.sorted(), h = s.count / 2
+                return s.count % 2 == 1 ? s[h] : (s[h - 1] + s[h]) / 2
+            }
+            let med = diffs.map(median)
+            return (med, diffs[0].count, median(diffs[0].map { abs($0 - med[0]) }))
         }
         var edges: [(i: Int, j: Int, d: [Double], w: Double, common: Int)] = []
         for i in 0..<n {
@@ -84,16 +88,12 @@ public final class MultiSessionFusion {
         }
         // 重叠不够的：放宽（每格 ≥ 2 个样本、≥ weakMinCommonCells 格）也连上，权重低。
         // 不对齐的话两个会话整体差 10～16 µT，比粗一点的偏移估计差得多。
-        func linked(_ i: Int, _ j: Int) -> Bool {
-            var seen: Set<Int> = [i], stack = [i]
-            while let x = stack.popLast() {
-                if x == j { return true }
-                for e in edges where e.i == x || e.j == x { let y = e.i == x ? e.j : e.i; if seen.insert(y).inserted { stack.append(y) } }
-            }
-            return false
-        }
+        // 只看正常边连不连通（不看已经加的放宽边），哪些放宽边加进来就和会话顺序无关
+        var strongRoot = Array(0..<n)
+        func root(_ x: Int) -> Int { var x = x; while strongRoot[x] != x { x = strongRoot[x] }; return x }
+        for e in edges { let a = root(e.i), b = root(e.j); if a != b { strongRoot[max(a, b)] = min(a, b) } }
         for i in 0..<n {
-            for j in (i + 1)..<max(n, i + 1) where j < n && !linked(i, j) {
+            for j in (i + 1)..<max(n, i + 1) where j < n && root(i) != root(j) {
                 // 格子少时要求各格的差很一致（中位绝对偏差 ≤ weakMaxMadUT），不一致说明位置没真对上
                 guard let p = pair(i, j, minCount: 2), p.common >= weakMinCommonCells, p.mad <= weakMaxMadUT else { continue }
                 edges.append((i, j, p.d, Double(p.common).squareRoot() * 0.5, p.common))

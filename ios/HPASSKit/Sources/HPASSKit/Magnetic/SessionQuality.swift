@@ -4,9 +4,9 @@ import Foundation
 ///
 /// 每个建图会话按时间切成 10 秒一段，每段用两种独立的证据检查「轨迹位置对不对」：
 ///
-/// 1. **价签**：强信号（≥ −78 dBm）的价签基本就在人旁边。把这段里所有强读数对应的价签位置（价签位置表里的货架）
+/// 1. **标签**：强信号（≥ −78 dBm）的标签基本就在人旁边。把这段里所有强读数对应的标签位置（标签位置表里的货架）
 ///    和当时轨迹上的人位置比，距离中位数 > bleMaxMedianCm 说明轨迹偏了（实测偏航的一段：12～18 m；正常：约 2 m）。
-///    价签表个别不准不影响（取中位）。
+///    标签表个别不准不影响（取中位）。
 /// 2. **磁场**：和别的会话（已减掉各自整体偏移）在同一格的磁场比，这段的中位残差 > magMaxResidualUT 说明
 ///    位置对不上或者这段磁场有问题。没有重叠的段不判断。
 ///
@@ -26,7 +26,7 @@ public final class SessionQualityGate {
         public var bad: Int
         /// 丢掉的段（含前后扩展），相对会话开始的秒数
         public var droppedSpans: [[Int]]
-        /// 各段价签距离中位数的中位（m）、最差一段（m）
+        /// 各段标签距离中位数的中位（m）、最差一段（m）
         public var bleMedianM: Double?
         public var bleWorstM: Double?
         /// 磁场残差：各段中位的中位（µT）、最差一段
@@ -46,7 +46,7 @@ public final class SessionQualityGate {
     public var minPathCm = 2000.0
     public var minGoodSamples = 300
 
-    /// 价签 → 位置（价签位置表对上的货架中心）
+    /// 标签 → 位置（标签位置表对上的货架中心）
     public let tagPositions: [String: Point2]
 
     public init(tagPositions: [String: Point2]) { self.tagPositions = tagPositions }
@@ -76,7 +76,7 @@ public final class SessionQualityGate {
         let nw = Int((t1 - t0) / wms) + 1
         func win(_ t: Int64) -> Int? { t < t0 || t > t1 ? nil : Int((t - t0) / wms) }
 
-        // 1. 价签
+        // 1. 标签
         let times = track.map(\.tMs)
         func posAt(_ t: Int64) -> Point2? {
             var lo = 0, hi = times.count - 1
@@ -146,7 +146,7 @@ public final class SessionQualityGate {
         var reason: String?
         if path < minPathCm { reason = String(format: "太短（路程 %.0f m）", path / 100) }
         else if judged > 0 && Double(nBad) / Double(judged) > maxBadFraction {
-            reason = "轨迹不可信：能判断的 \(judged) 段里 \(nBad) 段位置对不上（价签 / 磁场）"
+            reason = "轨迹不可信：能判断的 \(judged) 段里 \(nBad) 段位置对不上（标签 / 磁场）"
         } else if goodSamples < minGoodSamples { reason = "合格样本太少（\(goodSamples) 个）" }
         let rep = Report(name: name, kept: reason == nil, reason: reason, windows: nw, judged: judged, bad: nBad,
                          droppedSpans: spans,

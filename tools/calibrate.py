@@ -2,7 +2,7 @@
 """
 跨机型 RSSI 标定：用两台手机并排同时打点的数据，拟合
     rssi_参考机 ≈ a * rssi_目标机 + b
-其中参考机是采集指纹库用的设备（如 S25+），目标机是要部署的设备（如 iPhone 16 Pro）。
+其中参考机是采集指纹库用的设备，目标机是要部署的设备。
 
 用法：
     python calibrate.py <参考机会话目录或zip> <目标机会话目录或zip> [--out 输出目录] [--min-n 5] [--plot]
@@ -121,12 +121,12 @@ def imu_summary(path: Path):
 
 def print_session_summary(s: Session):
     print(f"\n== {s.name}\n   设备：{s.label}")
-    print(f"   价签读数 {len(s.ble)} 条，唯一价签 {len({b[1] for b in s.ble})} 个，打点 {len(s.marks)} 次")
+    print(f"   标签读数 {len(s.ble)} 条，唯一标签 {len({b[1] for b in s.ble})} 个，打点 {len(s.marks)} 次")
     if s.ble:
         t0, t1 = s.ble[0][0], s.ble[-1][0]
         counts, uniq = per_second_counts(s.ble, t0, t1)
         sparse = sum(1 for c in counts if c <= SPARSE_SECOND_LIMIT) / len(counts)
-        print(f"   读数/秒 中位数 {statistics.median(counts):.0f}，唯一价签/秒 中位数 {statistics.median(uniq):.0f}，"
+        print(f"   读数/秒 中位数 {statistics.median(counts):.0f}，唯一标签/秒 中位数 {statistics.median(uniq):.0f}，"
               f"读数≤{SPARSE_SECOND_LIMIT} 的秒占 {sparse:.0%}")
         rssis = [b[2] for b in s.ble]
         print(f"   RSSI 中位数 {statistics.median(rssis):.0f} dBm，范围 [{min(rssis)}, {max(rssis)}]")
@@ -190,7 +190,7 @@ def calibrate(ref: Session, tgt: Session, min_n: int, out_dir: Path, plot: bool)
                              sum(c <= SPARSE_SECOND_LIMIT for c in ct) / len(ct)))
 
     if len(pairs) < 5:
-        sys.exit(f"错误：有效配对只有 {len(pairs)} 个（每台每价签至少 {min_n} 条读数），请延长打点时长或降低 --min-n。")
+        sys.exit(f"错误：有效配对只有 {len(pairs)} 个（每台每标签至少 {min_n} 条读数），请延长打点时长或降低 --min-n。")
 
     xs = [q[3] for q in pairs]  # 目标机
     ys = [q[2] for q in pairs]  # 参考机
@@ -218,7 +218,7 @@ def calibrate(ref: Session, tgt: Session, min_n: int, out_dir: Path, plot: bool)
     print("\n================ 标定结果 ================")
     print(f"参考机（指纹采集）：{ref.label}")
     print(f"目标机（部署）：    {tgt.label}")
-    print(f"配对点位 {len(common)} 个，(点位, 价签) 配对 {len(pairs)} 组")
+    print(f"配对点位 {len(common)} 个，(点位, 标签) 配对 {len(pairs)} 组")
     print(f"\n差值 参考-目标：中位数 {b_off:+.1f} dB，均值 {statistics.mean(diffs):+.1f}，标准差 {statistics.pstdev(diffs):.1f}")
     print(f"仅偏移模型  rssi_ref = rssi_tgt {b_off:+.1f}        MAE {mae(res_off):.2f} dB")
     print(f"线性模型    rssi_ref = {a_lin:.3f}·rssi_tgt {b_lin:+.1f}   MAE {mae(res_lin):.2f} dB")
@@ -228,7 +228,7 @@ def calibrate(ref: Session, tgt: Session, min_n: int, out_dir: Path, plot: bool)
     print(f"\n{BIN_WIDTH_DB:.0f} dB 分档一致率：不校正 {agree_raw:.0%} → 仅偏移 {agree_off:.0%} → 线性 {agree_lin:.0%}")
 
     print("\n覆盖率（每个点位）：")
-    print("  点位    参考机价签 目标机价签 重合率  参考读数/秒 目标读数/秒  参考稀疏秒 目标稀疏秒")
+    print("  点位    参考机标签 目标机标签 重合率  参考读数/秒 目标读数/秒  参考稀疏秒 目标稀疏秒")
     for c in coverage:
         print(f"  {c[0]:<7} {c[1]:>9} {c[2]:>10} {c[3]:>6.0%} {c[4]:>11.1f} {c[5]:>11.1f} {c[6]:>10.0%} {c[7]:>10.0%}")
     avg_ratio = statistics.mean(c[5] for c in coverage) / max(1e-9, statistics.mean(c[4] for c in coverage))
@@ -286,10 +286,10 @@ def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("reference", type=Path, help="参考机（指纹采集设备，如 S25+）会话目录或 zip")
-    ap.add_argument("target", type=Path, nargs="?", help="目标机（如 iPhone 16 Pro）会话目录或 zip")
+    ap.add_argument("reference", type=Path, help="参考机（指纹采集设备）会话目录或 zip")
+    ap.add_argument("target", type=Path, nargs="?", help="目标机（要部署的设备）会话目录或 zip")
     ap.add_argument("--out", type=Path, default=Path("calibration_out"), help="输出目录")
-    ap.add_argument("--min-n", type=int, default=5, help="每个点位每个价签每台手机至少多少条读数才参与拟合")
+    ap.add_argument("--min-n", type=int, default=5, help="每个点位每个标签每台手机至少多少条读数才参与拟合")
     ap.add_argument("--plot", action="store_true", help="输出散点图（需要 matplotlib）")
     args = ap.parse_args()
 

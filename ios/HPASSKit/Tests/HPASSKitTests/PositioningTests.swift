@@ -24,7 +24,7 @@ struct FPLCG {
     }
 }
 
-// MARK: - 合成门店
+// MARK: - 合成场地
 
 /// 一条走廊 + 10 个货架。货架布置故意不对称（左端有一个很近的端架 C1_1），
 /// 这样「全局 RSSI 偏移」无法被任何位置模仿，offset 失配一定会把估计拉偏。
@@ -59,8 +59,8 @@ struct FPTestStore {
     static func pointId(_ i: Int) -> String { "p\(i)" }
     static func pointPosition(_ i: Int) -> Point2 { Point2(Double(i) * spacing, 0) }
 
-    /// 每个货架 2 个价签，用来验证「同货架多价签」的聚合
-    static let eslToShelf: [String: String] = {
+    /// 每个货架 2 个标签，用来验证「同货架多标签」的聚合
+    static let tagToShelf: [String: String] = {
         var m: [String: String] = [:]
         for s in FPTestStore.shelves {
             m["\(s.code)-T0"] = s.code
@@ -122,7 +122,7 @@ final class PositioningTests: XCTestCase {
         var cfg = PositioningConfig()
         mutate(&cfg)
         return FingerprintPositioner(points: FPTestStore.fingerprints(),
-                                     eslToShelf: FPTestStore.eslToShelf,
+                                     tagToShelf: FPTestStore.tagToShelf,
                                      config: cfg)
     }
 
@@ -267,10 +267,10 @@ final class PositioningTests: XCTestCase {
         XCTAssertNil(pos.estimate(nowMs: 1000), "没有读数时必须返回 nil")
         XCTAssertTrue(pos.scores(nowMs: 1000).isEmpty)
 
-        // 全是未知价签
+        // 全是未知标签
         pos.add([BLEReading(tagId: "UNKNOWN-1", rssi: -50, type: 1, tMs: 900),
                  BLEReading(tagId: "UNKNOWN-2", rssi: -55, type: 1, tMs: 950)])
-        XCTAssertNil(pos.estimate(nowMs: 1000), "未知价签应被忽略")
+        XCTAssertNil(pos.estimate(nowMs: 1000), "未知标签应被忽略")
 
         // 读数太弱
         pos.reset()
@@ -278,7 +278,7 @@ final class PositioningTests: XCTestCase {
         XCTAssertNil(pos.estimate(nowMs: 1000), "低于 minRSSI 的读数应被丢弃")
 
         // 空指纹库
-        let empty = FingerprintPositioner(points: [], eslToShelf: FPTestStore.eslToShelf)
+        let empty = FingerprintPositioner(points: [], tagToShelf: FPTestStore.tagToShelf)
         empty.add([BLEReading(tagId: "A1_1-T0", rssi: -50, type: 1, tMs: 900)])
         XCTAssertNil(empty.estimate(nowMs: 1000))
         XCTAssertFalse(empty.validate().isEmpty)
@@ -370,7 +370,7 @@ final class PositioningTests: XCTestCase {
         }
         let cal = RSSICalibrator.fit(readingsByPoint: byPoint,
                                     points: FPTestStore.fingerprints(),
-                                    eslToShelf: FPTestStore.eslToShelf)
+                                    tagToShelf: FPTestStore.tagToShelf)
         XCTAssertGreaterThan(cal.samples, 10)
         XCTAssertEqual(cal.scale, 1.0, accuracy: 1e-9, "fitScale=false 时 scale 必须保持 1")
         XCTAssertEqual(cal.offset, -8.0, accuracy: 2.0, "没能恢复注入的 8 dB 偏移：\(cal.offset)")
@@ -392,7 +392,7 @@ final class PositioningTests: XCTestCase {
         }
         let cal = RSSICalibrator.fit(readingsByPoint: byPoint,
                                      points: FPTestStore.fingerprints(),
-                                     eslToShelf: FPTestStore.eslToShelf,
+                                     tagToShelf: FPTestStore.tagToShelf,
                                      fitScale: true)
         // 注入的是纯平移，斜率应该接近 1
         XCTAssertEqual(cal.scale, 1.0, accuracy: 0.08, "纯平移却拟合出明显斜率：\(cal.scale)")
@@ -410,7 +410,7 @@ final class PositioningTests: XCTestCase {
         }
         let cal = RSSICalibrator.fitBlind(readings: all,
                                          points: FPTestStore.fingerprints(),
-                                         eslToShelf: FPTestStore.eslToShelf)
+                                         tagToShelf: FPTestStore.tagToShelf)
         XCTAssertGreaterThan(cal.samples, 5)
         XCTAssertEqual(cal.offset, -8.0, accuracy: 3.0, "盲标定没能恢复偏移：\(cal.offset)")
         XCTAssertGreaterThan(cal.score, cal.scoreBefore)
@@ -418,13 +418,13 @@ final class PositioningTests: XCTestCase {
 
     func testCalibratorHandlesEmptyInput() {
         let cal = RSSICalibrator.fit(readingsByPoint: [:], points: FPTestStore.fingerprints(),
-                                     eslToShelf: FPTestStore.eslToShelf)
+                                     tagToShelf: FPTestStore.tagToShelf)
         XCTAssertEqual(cal.samples, 0)
         XCTAssertEqual(cal.offset, 0.0, accuracy: 1e-9)
         XCTAssertTrue(cal.curve.isEmpty)
 
         let blind = RSSICalibrator.fitBlind(readings: [], points: FPTestStore.fingerprints(),
-                                            eslToShelf: FPTestStore.eslToShelf)
+                                            tagToShelf: FPTestStore.tagToShelf)
         XCTAssertEqual(blind.samples, 0)
     }
 
@@ -456,10 +456,10 @@ final class PositioningTests: XCTestCase {
         pts.append(FingerprintPoint(id: "bad_dup_xy", x: FPTestStore.pointPosition(2).x, y: 0,
                                     ranges: pts[2].ranges, neighbours: ["p2"]))
 
-        var esl = FPTestStore.eslToShelf
-        esl["ORPHAN-TAG"] = "UNUSED_SHELF_1"     // e) 映射里有、指纹库里没有的货架
+        var mapping = FPTestStore.tagToShelf
+        mapping["ORPHAN-TAG"] = "UNUSED_SHELF_1"     // e) 映射里有、指纹库里没有的货架
 
-        let pos = FingerprintPositioner(points: pts, eslToShelf: esl)
+        let pos = FingerprintPositioner(points: pts, tagToShelf: mapping)
         let msgs = pos.validate()
 
         func has(_ needle: String) -> Bool { msgs.contains { $0.contains(needle) } }
@@ -473,7 +473,7 @@ final class PositioningTests: XCTestCase {
         XCTAssertTrue(has("区间过宽"), "没报出过宽区间：\(msgs)")
         XCTAssertTrue(has("shelfCode 为空"), "没报出空货架编码：\(msgs)")
         XCTAssertTrue(has("坐标重合"), "没报出坐标重合：\(msgs)")
-        XCTAssertTrue(has("在价签映射中不存在"), "没报出 GHOST_1 覆盖问题：\(msgs)")
+        XCTAssertTrue(has("在标签映射中不存在"), "没报出 GHOST_1 覆盖问题：\(msgs)")
         XCTAssertTrue(has("在指纹库里没有区间"), "没报出 UNUSED_SHELF_1：\(msgs)")
         XCTAssertTrue(has("不对称"), "没报出不对称邻居：\(msgs)")
 
@@ -482,8 +482,8 @@ final class PositioningTests: XCTestCase {
     }
 
     func testEmptyMappingIsReported() {
-        let pos = FingerprintPositioner(points: FPTestStore.fingerprints(), eslToShelf: [:])
-        XCTAssertTrue(pos.validate().contains { $0.contains("价签→货架映射为空") })
+        let pos = FingerprintPositioner(points: FPTestStore.fingerprints(), tagToShelf: [:])
+        XCTAssertTrue(pos.validate().contains { $0.contains("标签→货架映射为空") })
     }
 
     // MARK: 10. 数据异常下仍能工作
@@ -493,7 +493,7 @@ final class PositioningTests: XCTestCase {
         var pts = FPTestStore.fingerprints()
         pts.append(FingerprintPoint(id: "ghost", x: 9000, y: 9000, ranges: [], neighbours: ["nope"]))
         pts.append(FingerprintPoint(id: "p0", x: 0, y: 0, ranges: [], neighbours: []))   // 重复 id
-        let pos = FingerprintPositioner(points: pts, eslToShelf: FPTestStore.eslToShelf)
+        let pos = FingerprintPositioner(points: pts, tagToShelf: FPTestStore.tagToShelf)
 
         for f in 0..<4 {
             let t = Int64(f + 1) * 1000
@@ -518,7 +518,7 @@ final class PositioningTests: XCTestCase {
             pts.append(FingerprintPoint(id: p.id, x: p.x, y: p.y, ranges: ranges, neighbours: p.neighbours))
         }
         var rng = FPLCG(seed: 13579)
-        let pos = FingerprintPositioner(points: pts, eslToShelf: FPTestStore.eslToShelf)
+        let pos = FingerprintPositioner(points: pts, tagToShelf: FPTestStore.tagToShelf)
         pos.add(FPTestStore.readings(at: FPTestStore.pointPosition(6), tMs: 600, rng: &rng))
         guard let e = pos.estimate(nowMs: 1000) else { return XCTFail("type 回退失败，没有估计") }
         XCTAssertEqual(e.position.x, FPTestStore.pointPosition(6).x, accuracy: 300.0)

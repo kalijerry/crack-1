@@ -1,4 +1,4 @@
-package com.example.eslcollector
+package com.example.hpasscollector
 
 import java.io.BufferedWriter
 import java.io.File

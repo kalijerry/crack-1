@@ -84,14 +84,14 @@ public enum SessionEvaluator {
                                 configure: ((inout MagneticConfig) -> Void)? = nil, seed: UInt64 = 1,
                                 refTagPositions: [String: Point2]? = nil, oracleStart: Bool = false) throws -> EvalReport {
         let s = try SurveySessionLoader.load(dir)
-        // 参考轨迹：这个会话自己的对齐结果（只用它的锚点和贴通道，不用磁场）；给了价签位置时再用价签锚定修正一遍
+        // 参考轨迹：这个会话自己的对齐结果（只用它的锚点和贴通道，不用磁场）；给了标签位置时再用标签锚定修正一遍
         // （采集轨迹中途偏航时，不修正的参考本身就是错的）
         let refB = SurveyMapBuilder(widthCm: map.width, heightCm: map.height, crosses: map.crosses)
         // 公开数据集基准：会话里有 truth.csv（t_ms,x_cm,y_cm）就直接当参考轨迹（位姿是合成的，不能再对齐）
         let truth = Self.loadTruth(dir)
         var ref = truth ?? refB.add(s).track
         if truth == nil, let tp = refTagPositions, !map.crosses.isEmpty,
-           let (fn, _) = EslTrajectoryCorrector(tagPositions: tp).solve(track: ref, ble: SurveySessionLoader.loadBLE(dir)) {
+           let (fn, _) = TagTrajectoryCorrector(tagPositions: tp).solve(track: ref, ble: SurveySessionLoader.loadBLE(dir)) {
             let b2 = SurveyMapBuilder(widthCm: map.width, heightCm: map.height, crosses: map.crosses)
             b2.correction = fn
             ref = b2.prepare(s).0.track

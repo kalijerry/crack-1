@@ -7,9 +7,9 @@ import Foundation
 ///
 /// 1. 定位自己有把握：置信度 ≥ minConfidence、不确定度 ≤ maxUncertaintyCm（一段里 ≥ minRowShare 的行都满足）；
 /// 2. 位置没有突然跳（相邻行跳 > jumpCm 说明中途重定位过，前面那段位置也不可信，连同前后各一段丢掉）；
-/// 3. 和价签位置表一致：每 3 秒一片，最强几片价签的范围圆（TagRangeFix.agreement）要罩住轨迹位置；
+/// 3. 和标签位置表一致：每 3 秒一片，最强几片标签的范围圆（TagRangeFix.agreement）要罩住轨迹位置；
 ///    和货架标签（摄像头读到的）一致：读到标签时人离那段货架前不超过 signMaxCm；
-/// 4. 只有「有把握」没有价签 / 标签佐证的段，只在紧挨着已被佐证的好段时（bridgeWindows 段内）才用；
+/// 4. 只有「有把握」没有蓝牙标签 / 货架标签佐证的段，只在紧挨着已被佐证的好段时（bridgeWindows 段内）才用；
 /// 5. 磁力计样本的位置用可信的定位点插值；两点间隔大的地方用 ARKit 的相对位移（路程占比）插值，不用直线匀速。
 ///
 /// 不合格的段连同前后各一段丢掉；能判断的段里坏的太多，整个记录不用。
@@ -21,7 +21,7 @@ public struct LiveTrustConfig {
     public var windowMs: Int64 = 10_000
     public var jumpCm = 400.0
     public var jumpMaxDtMs: Int64 = 1500
-    /// 价签：分片长度、最少几片价签才算一次判断、范围圆罩住的比例下限
+    /// 标签：分片长度、最少几片标签才算一次判断、范围圆罩住的比例下限
     public var tagSliceMs: Int64 = 3000
     public var tagMinTags = 3
     public var tagMinRssi = -85.0
@@ -58,7 +58,7 @@ public struct LiveTrustReport: Codable {
     public var trustedWindows: Int
     /// 各原因丢了多少段
     public var rejectedWindows: [String: Int]
-    /// 被价签 / 标签佐证的段数
+    /// 被蓝牙标签 / 货架标签佐证的段数
     public var verifiedWindows: Int
     public var pathM: Double
     public var trustedPathM: Double
@@ -140,8 +140,8 @@ public enum LiveRunLoader {
                 jump[w] = true
             }
         }
-        // 3. 价签：每 3 秒一片，最强几片罩住位置的比例
-        var slices: [Int: [[String: [Double]]]] = [:]       // 窗 → 各片 → 价签 → 读数
+        // 3. 标签：每 3 秒一片，最强几片罩住位置的比例
+        var slices: [Int: [[String: [Double]]]] = [:]       // 窗 → 各片 → 标签 → 读数
         let per = Int(c.windowMs / c.tagSliceMs) + 1
         for b in ble where b.rssi >= c.tagMinRssi && tagPositions[b.id] != nil {
             guard let w = win(b.tMs) else { continue }
@@ -177,7 +177,7 @@ public enum LiveRunLoader {
             var v: Verdict = .unknown
             if !tagAgree[w].isEmpty {
                 verified[w] = true; judged += 1
-                if tagAgree[w].reduce(0, +) / Double(tagAgree[w].count) < c.tagMinAgreement { v = .bad("和价签对不上") } else { v = .good }
+                if tagAgree[w].reduce(0, +) / Double(tagAgree[w].count) < c.tagMinAgreement { v = .bad("和标签对不上") } else { v = .good }
             }
             if !signD[w].isEmpty {
                 if !verified[w] { judged += 1 }
@@ -194,7 +194,7 @@ public enum LiveRunLoader {
         for w in 0..<nw {
             if case .bad(let why) = verdicts[w] {
                 bad += 1; rejected[why, default: 0] += 1
-                // 没把握 / 没定位点的段本身就不用；价签 / 跳变 / 标签说明位置错了，前后也可能错
+                // 没把握 / 没定位点的段本身就不用；蓝牙标签 / 跳变 / 货架标签说明位置错了，前后也可能错
                 if why != "定位没把握" && why != "没有定位点" {
                     for k in [w - 1, w + 1] where k >= 0 && k < nw { drop[k] = true }
                 }
@@ -208,7 +208,7 @@ public enum LiveRunLoader {
                 let near = (max(0, w - c.bridgeWindows)...min(nw - 1, w + c.bridgeWindows))
                 if near.contains(where: { verdicts[$0] == .good && !drop[$0] }) && !near.contains(where: { drop[$0] }) {
                     trusted[w] = true
-                } else { rejected["没有价签 / 标签佐证", default: 0] += 1 }
+                } else { rejected["没有蓝牙标签 / 货架标签佐证", default: 0] += 1 }
             case .bad: break
             }
         }

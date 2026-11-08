@@ -11,10 +11,10 @@ final class MapPackageTests: XCTestCase {
         let field = b.build()
         let ble = BLEFingerprintMap(cellCm: 200, cells: [], tags: ["88-A7-20-91": .init(x: 123.5, y: 456.25, maxRssi: -61, samples: 12)])
         let mapJSON = Data(#"{"width":2000,"height":500,"mapElementList":[]}"#.utf8)
-        let meta = MapPackage.Meta(id: "store_x", name: "BQ 门店", kind: "store", version: 1791361225163, source: "2 个会话")
+        let meta = MapPackage.Meta(id: "store_x", name: "测试场地", kind: "store", version: 1791361225163, source: "2 个会话")
         let pkg = try MapPackage.encode(meta: meta, mapJSON: mapJSON, field: field, ble: ble, worldMap: Data([1, 2, 3]))
         let c = try MapPackage.decode(pkg)
-        XCTAssertEqual(c.meta.name, "BQ 门店")
+        XCTAssertEqual(c.meta.name, "测试场地")
         XCTAssertEqual(c.meta.version, 1791361225163)
         XCTAssertEqual(c.meta.fieldCells, field.coveredCells)
         XCTAssertEqual(c.mapJSON, mapJSON)
@@ -33,10 +33,10 @@ final class MapPackageTests: XCTestCase {
         let a = CoveragePaint(crosses: [cross], widthCm: 1000, heightCm: 400)
         for x in stride(from: 100.0, through: 500, by: 20) { a.paint(at: Point2(x, 100)) }
         let meta = MapPackage.Meta(id: "m", name: "M", kind: "store", version: 1)
-        let pkg = try MapPackage.encode(meta: meta, mapJSON: Data("{}".utf8), field: nil, ble: nil, worldMap: nil, paint: a.serialized(), eslCSV: Data("ESL_ID,Aisle\nA,1".utf8))
+        let pkg = try MapPackage.encode(meta: meta, mapJSON: Data("{}".utf8), field: nil, ble: nil, worldMap: nil, paint: a.serialized(), tagCSV: Data("ESL_ID,Aisle\nA,1".utf8))
         let c = try MapPackage.decode(pkg)
         XCTAssertEqual(c.paint, a.serialized())
-        XCTAssertEqual(c.eslCSV.map { String(decoding: $0, as: UTF8.self) }, "ESL_ID,Aisle\nA,1")
+        XCTAssertEqual(c.tagCSV.map { String(decoding: $0, as: UTF8.self) }, "ESL_ID,Aisle\nA,1")
         // 本机另一段 + 云端这段 → 合并后两段都在
         let b = CoveragePaint(crosses: [cross], widthCm: 1000, heightCm: 400)
         for x in stride(from: 600.0, through: 900, by: 20) { b.paint(at: Point2(x, 100)) }
@@ -46,11 +46,11 @@ final class MapPackageTests: XCTestCase {
         let m = CoveragePaint(crosses: [cross], widthCm: 1000, heightCm: 400)
         XCTAssertTrue(m.load(CoveragePaint.mergeSerialized(a.serialized(), b.serialized())))
         XCTAssertEqual(m.paintedCells, b.paintedCells)
-        // 旧包（5 段，没有涂色和价签表）还能读
+        // 旧包（5 段，没有涂色和标签表）还能读
         let old = try MapPackage.encode(meta: meta, mapJSON: Data("{}".utf8), field: nil, ble: nil, worldMap: nil)
         let raw = try (old as NSData).decompressed(using: .zlib) as Data
         let trimmed = try (raw.dropLast(12) as NSData).compressed(using: .zlib) as Data
         let oc = try MapPackage.decode(trimmed)
-        XCTAssertNil(oc.paint); XCTAssertNil(oc.eslCSV)
+        XCTAssertNil(oc.paint); XCTAssertNil(oc.tagCSV)
     }
 }

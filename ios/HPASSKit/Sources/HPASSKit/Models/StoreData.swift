@@ -11,7 +11,7 @@ public struct ShelfRect: Hashable {
     public var height: Double
     public var rotation: Double
     public var subsection: Int
-    /// 实物高度（cm）。门店地图里没有（nil，3D 用统一的货架高度）；房间扫描出来的家具有。
+    /// 实物高度（cm）。场地地图里没有（nil，3D 用统一的货架高度）；房间扫描出来的家具有。
     public var heightCm: Double?
 
     public init(code: String, x: Double, y: Double, width: Double, height: Double, rotation: Double, subsection: Int = 1,
@@ -42,7 +42,7 @@ public struct CrossSegment: Hashable {
     }
 }
 
-/// 解析后的门店楼层地图。
+/// 解析后的场地楼层地图。
 public struct StoreMap {
     public var mapId: Int?
     public var floorId: Int?
@@ -53,7 +53,7 @@ public struct StoreMap {
     public var crosses: [CrossSegment]
     /// 其他元素（MapPillar 等）仅用于绘制：shapeType + 外接矩形
     public var others: [(shapeType: String, x: Double, y: Double, width: Double, height: Double, rotation: Double)]
-    /// 能走的地面（多边形，cm）。房间扫描的地图没有通道，用它当可走区域；门店地图为空。
+    /// 能走的地面（多边形，cm）。房间扫描的地图没有通道，用它当可走区域；场地地图为空。
     public var floor: [[Point2]] = []
     /// 房间扫描的地图：ARKit 世界坐标（扫描时的、也是视觉特征地图的）→ 地图坐标。视觉重定位后直接用它算位置。
     public var arAlign: MapARTransform?
@@ -79,7 +79,7 @@ public struct ShelfRange: Hashable {
     public var shelfCode: String
     public var minRSSI: Int
     public var maxRSSI: Int
-    /// 0 = ESL/AP 侧上报，1 = 手机蓝牙扫描
+    /// 0 = 标签 / AP 侧上报，1 = 手机蓝牙扫描
     public var type: Int
 
     public init(shelfCode: String, minRSSI: Int, maxRSSI: Int, type: Int) {
@@ -109,10 +109,10 @@ public struct FingerprintPoint: Hashable {
     public var position: Point2 { Point2(x, y) }
 }
 
-// MARK: - 价签 / 商品
+// MARK: - 标签 / 商品
 
-/// 价签。shelfCode 已按 Handy+ 规则规范化（见 StoreDataLoader.normalizeShelfCode）。
-public struct EslItem: Hashable {
+/// 标签。shelfCode 已规范化（见 StoreDataLoader.normalizeShelfCode）。
+public struct TagItem: Hashable {
     public var id: String
     public var shelfCode: String
     public var rawShelfCode: String?
@@ -135,14 +135,14 @@ public struct EslItem: Hashable {
     }
 }
 
-/// 商品及其所有价签位置（导航目标）。
+/// 商品及其所有标签位置（导航目标）。
 public struct GoodsItem: Hashable {
     public var sku: String
     public var itemName: String?
     public var ean: String?
-    public var positions: [EslItem]
+    public var positions: [TagItem]
 
-    public init(sku: String, itemName: String? = nil, ean: String? = nil, positions: [EslItem]) {
+    public init(sku: String, itemName: String? = nil, ean: String? = nil, positions: [TagItem]) {
         self.sku = sku
         self.itemName = itemName
         self.ean = ean
@@ -164,13 +164,13 @@ public enum StoreDataError: Error, CustomStringConvertible {
     }
 }
 
-/// 门店数据文件解析。兼容 Handy+ / MapServer 的几种格式：
+/// 场地数据文件解析。兼容几种格式：
 /// - 地图：{ width, height, mapElementList: [...] }，元素按 shapeType 区分
 /// - 指纹：[FingerprintPoint] 或 [{floorId, fingerprintList: [FingerprintPoint]}]，整体可能被再包一层 JSON 字符串
-/// - 价签：[EslItem]（getAllEslPositionByStoreCode 风格）或 [{sku, itemName, ean, eslPositionList: [...]}]（商品位置风格）
+/// - 标签：[TagItem]（扁平列表）或 [{sku, itemName, ean, eslPositionList: [...]}]（商品位置风格）
 public enum StoreDataLoader {
 
-    /// Handy+ HsLocationImpl.getShelfEslMapping：含 "#" 时替换为 "_"，否则追加 "_1"。
+    /// 货架编码规范化：含 "#" 时替换为 "_"，否则追加 "_1"。
     public static func normalizeShelfCode(_ code: String) -> String {
         code.contains("#") ? code.replacingOccurrences(of: "#", with: "_") : code + "_1"
     }
@@ -179,7 +179,7 @@ public enum StoreDataLoader {
 
     /// 矩形元素的 (x, y) 指的是哪个点。
     ///
-    /// 这家服务端的地图是 Konva 风格：货架 / 桌台 / 方块的 (x, y) 是**矩形左上角**，
+    /// 地图数据是 Konva 风格：货架 / 桌台 / 方块的 (x, y) 是**矩形左上角**，
     /// `rotation`（度，顺时针，y 向下）是**绕这个左上角**转；圆形和路点才是中心。
     /// 用「中心」去解释它们，货架整体会偏出去、压到通道上（实测 67 m 通道被压住；
     /// 按左上角解释，压住的长度是 0）。
@@ -254,7 +254,7 @@ public enum StoreDataLoader {
 
     // MARK: 指纹
 
-    /// - Parameter floorId: 多楼层文件时只取该楼层；nil 表示全部合并（与 Handy+ 一致）。
+    /// - Parameter floorId: 多楼层文件时只取该楼层；nil 表示全部合并。
     public static func loadFingerprints(_ data: Data, floorId: Int? = nil) throws -> [FingerprintPoint] {
         guard let list = try unwrap(data) as? [[String: Any]] else {
             throw StoreDataError.unsupportedFormat("指纹根节点不是数组")
@@ -281,17 +281,17 @@ public enum StoreDataLoader {
         }
     }
 
-    // MARK: 价签 / 商品
+    // MARK: 标签 / 商品
 
-    /// 读取价签列表（两种格式都返回扁平的价签列表）。
-    public static func loadEslItems(_ data: Data) throws -> [EslItem] {
+    /// 读取标签列表（两种格式都返回扁平的标签列表）。
+    public static func loadTagItems(_ data: Data) throws -> [TagItem] {
         try loadGoods(data).flatMap(\.positions)
     }
 
-    /// 读取商品列表。扁平价签格式会按 sku 聚合（无 sku 的价签归入 sku = ""）。
+    /// 读取商品列表。扁平标签格式会按 sku 聚合（无 sku 的标签归入 sku = ""）。
     public static func loadGoods(_ data: Data) throws -> [GoodsItem] {
         guard let list = try unwrap(data) as? [[String: Any]] else {
-            throw StoreDataError.unsupportedFormat("价签/商品根节点不是数组")
+            throw StoreDataError.unsupportedFormat("标签/商品根节点不是数组")
         }
         var goods: [GoodsItem] = []
         var flat: [String: GoodsItem] = [:]
@@ -301,9 +301,9 @@ public enum StoreDataLoader {
                 let sku = str(item["sku"] ?? "")
                 let name = item["itemName"] as? String
                 let ean = item["ean"] as? String
-                let esls = positions.compactMap { esl($0, sku: sku, name: name, ean: ean) }
-                goods.append(GoodsItem(sku: sku, itemName: name, ean: ean, positions: esls))
-            } else if let e = esl(item, sku: nil, name: nil, ean: nil) {
+                let tags = positions.compactMap { tag($0, sku: sku, name: name, ean: ean) }
+                goods.append(GoodsItem(sku: sku, itemName: name, ean: ean, positions: tags))
+            } else if let e = tag(item, sku: nil, name: nil, ean: nil) {
                 let key = e.sku ?? ""
                 if flat[key] == nil {
                     flat[key] = GoodsItem(sku: key, itemName: e.itemName, ean: e.ean, positions: [])
@@ -315,8 +315,8 @@ public enum StoreDataLoader {
         return goods + flatOrder.compactMap { flat[$0] }
     }
 
-    /// 价签 ID → 规范化货架编码。
-    public static func eslToShelf(_ items: [EslItem]) -> [String: String] {
+    /// 标签 ID → 规范化货架编码。
+    public static func tagToShelf(_ items: [TagItem]) -> [String: String] {
         var m: [String: String] = [:]
         for e in items where !e.id.isEmpty { m[e.id] = e.shelfCode }
         return m
@@ -324,10 +324,10 @@ public enum StoreDataLoader {
 
     // MARK: 内部
 
-    private static func esl(_ d: [String: Any], sku: String?, name: String?, ean: String?) -> EslItem? {
+    private static func tag(_ d: [String: Any], sku: String?, name: String?, ean: String?) -> TagItem? {
         guard let id = d["id"].map(str), !id.isEmpty else { return nil }
         let raw = d["shelfCode"] as? String
-        return EslItem(id: id,
+        return TagItem(id: id,
                        shelfCode: normalizeShelfCode(raw ?? "null"),
                        rawShelfCode: raw,
                        x: num(d["x"]) ?? num(d["transX"]),

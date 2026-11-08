@@ -14,7 +14,7 @@
 
     <application
         android:allowBackup="false"
-        android:label="ESL采集"
+        android:label="标签采集"
         android:theme="@android:style/Theme.DeviceDefault.Light">
         <activity
             android:name=".MainActivity"

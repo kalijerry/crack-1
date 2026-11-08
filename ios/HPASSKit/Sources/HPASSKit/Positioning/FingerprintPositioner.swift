@@ -29,16 +29,16 @@ public final class FingerprintPositioner {
             _config = newValue
             if needRebuild {
                 // strongShelves 依赖该阈值，改了就重建索引
-                index = FPPointIndex(points: index.rawPoints, eslToShelf: index.eslToShelf,
+                index = FPPointIndex(points: index.rawPoints, tagToShelf: index.tagToShelf,
                                      missExpectThreshold: newValue.missExpectThresholdDb)
                 delta = nil
             }
         }
     }
 
-    public init(points: [FingerprintPoint], eslToShelf: [String: String], config: PositioningConfig = .init()) {
+    public init(points: [FingerprintPoint], tagToShelf: [String: String], config: PositioningConfig = .init()) {
         self._config = config
-        self.index = FPPointIndex(points: points, eslToShelf: eslToShelf,
+        self.index = FPPointIndex(points: points, tagToShelf: tagToShelf,
                                   missExpectThreshold: config.missExpectThresholdDb)
     }
 
@@ -162,8 +162,8 @@ public final class FingerprintPositioner {
         for id in index.duplicateIds {
             msgs.append("重复的指纹点 id：\(id)（只保留了第一条）")
         }
-        if index.eslToShelf.isEmpty {
-            msgs.append("价签→货架映射为空，所有读数都会被当成未知价签丢弃")
+        if index.tagToShelf.isEmpty {
+            msgs.append("标签→货架映射为空，所有读数都会被当成未知标签丢弃")
         }
 
         // 区间本身的问题（用原始数据，才能看到被 merge 掉的异常）
@@ -212,16 +212,16 @@ public final class FingerprintPositioner {
         }
 
         // 覆盖率
-        let mappedShelves = Set(index.eslToShelf.values)
+        let mappedShelves = Set(index.tagToShelf.values)
         let unmapped = dbShelves.subtracting(mappedShelves).sorted()
         if !unmapped.isEmpty {
             let shown = unmapped.prefix(8).joined(separator: ", ")
-            msgs.append("指纹库中的 \(unmapped.count) 个货架在价签映射中不存在（永远扫不到）：\(shown)")
+            msgs.append("指纹库中的 \(unmapped.count) 个货架在标签映射中不存在（永远扫不到）：\(shown)")
         }
         let unused = mappedShelves.subtracting(dbShelves).sorted()
         if !unused.isEmpty {
             let shown = unused.prefix(8).joined(separator: ", ")
-            msgs.append("价签映射中的 \(unused.count) 个货架在指纹库里没有区间（读数会被当成意外货架）：\(shown)")
+            msgs.append("标签映射中的 \(unused.count) 个货架在指纹库里没有区间（读数会被当成意外货架）：\(shown)")
         }
         return msgs
     }

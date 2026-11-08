@@ -87,7 +87,7 @@ public final class SurveyMapBuilder {
     public var lockLateralGain = 0.3
     /// 只用这些时刻的样本（云端质量筛选用；nil = 都用）
     public var sampleFilter: ((Int64) -> Bool)?
-    /// 价签锚定的轨迹修正（时间 → 平移，见 EslTrajectoryCorrector）：贴完通道后加上，再贴一次通道
+    /// 标签锚定的轨迹修正（时间 → 平移，见 TagTrajectoryCorrector）：贴完通道后加上，再贴一次通道
     public var correction: ((Int64) -> Point2)?
 
     public init(widthCm: Double, heightCm: Double, crosses: [CrossSegment], cellCm: Double = 50) {

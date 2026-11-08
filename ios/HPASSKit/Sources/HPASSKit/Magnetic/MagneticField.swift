@@ -15,7 +15,7 @@ public struct MarkPoint: Hashable {
     public var position: Point2 { Point2(x, y) }
 }
 
-/// 网格化的地磁场地图：每格存三个特征的均值和标准差。坐标系与门店地图一致（cm，y 向下）。
+/// 网格化的地磁场地图：每格存三个特征的均值和标准差。坐标系与场地地图一致（cm，y 向下）。
 ///
 /// JSON 里挂在地图根节点的 `magField` 下，由 `tools/magmap.py` 生成：
 /// `{ "cellCm": 50, "cols": 20, "rows": 20, "cells": [[|B|,Bz,Bh] | null, …], "sigma": [[…] | null, …] }`

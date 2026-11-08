@@ -175,9 +175,12 @@ public struct MagneticConfig {
     /// 用 `MagneticLocalizer.setOdometry` 换成对应那一套参数。
     public var trackingOdometry: OdometrySource?
     public var trackingHeadingKnown = true
-    /// 已知起点开始的跟踪里，蓝牙（BLEAssist）只做软约束：学过本场地标签范围时用有上限的软范围约束（见下），
-    /// 否则位置先验放宽（σ ≥ `bleSoftPriorSigmaCm`、权重 `bleSoftPriorWeight`）；不挡收敛；蓝牙持续对不上时只触发局部找回（`declareLost(local: true)`），不全图找。
-    /// false = 原有行为（标签范围硬约束、对不上 / 不在采集区域就判丢全图找、挡收敛）。冷启动不受影响。
+    /// 已知起点开始的跟踪里，蓝牙（BLEAssist）只做软约束，而且只在蓝牙底图学过本场地标签范围时
+    /// （`BLEAssist.supportsSoftTracking`；人工打点的标签位置表合成的底图没有，照旧用硬约束）：
+    /// 有上限的软范围约束（见下；`bleSoftRangeWeight = 0` 时改用宽位置先验 σ ≥ `bleSoftPriorSigmaCm`、权重 `bleSoftPriorWeight`）；
+    /// 不挡收敛；蓝牙持续对不上时先只触发局部找回（`declareLost(local: true)`），找回后蓝牙还是不认就升级成全图找
+    /// （`BLEAssist.softEscalateAfter`）。
+    /// false = 原有行为（标签范围硬约束、对不上 / 不在采集区域就判丢全图找、挡收敛）。冷启动不受影响（学到的范围只在软约束里用）。
     public var bleSoftTracking = false
     public var bleSoftPriorSigmaCm: Double = 700
     public var bleSoftPriorWeight: Double = 0.2

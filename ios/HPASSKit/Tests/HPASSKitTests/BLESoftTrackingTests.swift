@@ -72,15 +72,22 @@ final class BLESoftTrackingTests: XCTestCase {
 
     func testAssistRangeUsesLearnedButNeverTighterThanFixed() {
         let plain = BLEAssist(map: bleMap())
-        XCTAssertEqual(plain.rangeCm(-70), BLEAssist.rangeCm(-70))
+        XCTAssertEqual(plain.rangeCm(-70, learned: true), BLEAssist.rangeCm(-70))
+        XCTAssertFalse(plain.supportsSoftTracking)
         let learned = BLEAssist(map: bleMap(learned: [.init(minRssi: -70, rangeCm: 900, samples: 500),
                                                        .init(minRssi: -90, rangeCm: 200, samples: 500)]))
-        XCTAssertEqual(learned.rangeCm(-65), 900)
-        XCTAssertEqual(learned.rangeCm(-88), BLEAssist.rangeCm(-88))   // 学到的比固定表小：用固定表
-        XCTAssertEqual(learned.rangeCm(-95), BLEAssist.rangeCm(-95))   // 比学过的都弱：固定表
+        XCTAssertTrue(learned.supportsSoftTracking)
+        XCTAssertEqual(learned.rangeCm(-65, learned: true), 900)
+        XCTAssertEqual(learned.rangeCm(-65, learned: false), BLEAssist.rangeCm(-65))   // 硬约束 / 冷启动：固定表
+        XCTAssertEqual(learned.rangeCm(-88, learned: true), BLEAssist.rangeCm(-88))   // 学到的比固定表小：用固定表
+        XCTAssertEqual(learned.rangeCm(-95, learned: true), BLEAssist.rangeCm(-95))   // 比学过的都弱：固定表
         learned.useLearnedRanges = false
-        XCTAssertEqual(learned.rangeCm(-65), BLEAssist.rangeCm(-65))
+        XCTAssertEqual(learned.rangeCm(-65, learned: true), BLEAssist.rangeCm(-65))
+        XCTAssertFalse(learned.supportsSoftTracking)
     }
+
+    private let learnedBins: [BLEFingerprintMap.RangeBin] = [.init(minRssi: -70, rangeCm: 700, samples: 500),
+                                                            .init(minRssi: -90, rangeCm: 1100, samples: 500)]
 
     /// 听到的是 40 m 外的标签（和地磁的位置完全对不上）
     private let farObs: [String: Double] = ["T9": -62, "T10": -64, "T8": -70]
@@ -95,7 +102,7 @@ final class BLESoftTrackingTests: XCTestCase {
         let loc = MagneticLocalizer(field: f, config: cfg, seed: 3)
         let start = Point2(500, 200)
         loc.reset(start: start, spreadCm: TrackingProfile.startSpreadCm)
-        let assist = BLEAssist(map: bleMap())
+        let assist = BLEAssist(map: bleMap(learned: learnedBins))
         for _ in 0..<12 {
             assist.tick(obs: farObs, localizer: loc, current: loc.isConverged ? start : nil, candidate: start)
             XCTAssertFalse(loc.convergenceBlocked)
@@ -158,16 +165,100 @@ final class BLESoftTrackingTests: XCTestCase {
     }
 
     func testColdStartUnaffected() {
+        for learned in [nil, learnedBins] {
+            var cfg = MagneticConfig.tracking(odometry: .pdr)
+            cfg.particleCount = 400
+            cfg.coldStartParticleCount = 800
+            let loc = MagneticLocalizer(field: field(), config: cfg, seed: 3)
+            loc.reset(start: nil)
+            XCTAssertFalse(loc.startedFromPrior)
+            let assist = BLEAssist(map: bleMap(learned: learned))
+            assist.tick(obs: farObs, localizer: loc, current: nil, candidate: Point2(500, 200))
+            // 冷启动：候选位置对不上 → 照旧挡住收敛
+            XCTAssertTrue(loc.convergenceBlocked)
+        }
+    }
+
+    /// 冷启动的硬约束（对证门、挡收敛）用固定表，不用学到的范围：离两片 −62/−64 dBm 的标签 5 m 的候选位置，
+    /// 按固定表（3.5 m）对不上、要挡；按学到的 7 m 就对上了。底图带不带学到的范围，冷启动的结果都一样。
+    func testColdStartUsesFixedRangesEvenWithLearnedMap() {
+        let obs: [String: Double] = ["T4": -62, "T5": -64, "T6": -66]       // 标签在 x = 22.5、27.5、32.5 m
+        let candidate = Point2(2250 - 500, 200)
+        for learned in [nil, learnedBins] {
+            var cfg = MagneticConfig()
+            cfg.particleCount = 200
+            cfg.coldStartParticleCount = 400
+            let loc = MagneticLocalizer(field: field(), config: cfg, seed: 4)
+            loc.reset(start: nil)
+            let assist = BLEAssist(map: bleMap(learned: learned))
+            assist.tick(obs: obs, localizer: loc, current: nil, candidate: candidate)
+            XCTAssertEqual(assist.lastAgreement ?? -1, 0, accuracy: 1e-9)
+            XCTAssertTrue(loc.convergenceBlocked)
+        }
+        let a = BLEAssist(map: bleMap(learned: learnedBins))
+        XCTAssertEqual(a.agreement(obs, at: candidate, learned: true) ?? -1, 1.0 / 3, accuracy: 1e-9)
+    }
+
+    /// 人工打点的标签位置表合成的底图（没有学到的范围）：跟踪时照旧用硬约束（判丢全图找、挡收敛）
+    func testTrackingWithoutLearnedRangesKeepsHardBehaviour() {
         var cfg = MagneticConfig.tracking(odometry: .pdr)
+        XCTAssertTrue(cfg.bleSoftTracking)
         cfg.particleCount = 400
-        cfg.coldStartParticleCount = 800
         let loc = MagneticLocalizer(field: field(), config: cfg, seed: 3)
-        loc.reset(start: nil)
-        XCTAssertFalse(loc.startedFromPrior)
+        let start = Point2(500, 200)
+        loc.reset(start: start, spreadCm: TrackingProfile.startSpreadCm)
         let assist = BLEAssist(map: bleMap())
-        assist.tick(obs: farObs, localizer: loc, current: nil, candidate: Point2(500, 200))
-        // 冷启动：候选位置对不上 → 照旧挡住收敛
+        for _ in 0..<4 { assist.tick(obs: farObs, localizer: loc, current: loc.isConverged ? start : nil, candidate: start) }
+        XCTAssertFalse(loc.isConverged)
+        XCTAssertNil(loc.localRecoveryCenter)
         XCTAssertTrue(loc.convergenceBlocked)
+    }
+
+    /// 起点给错 15 m、蓝牙一直听到真实位置旁边的标签：第一次对不上只在错的位置附近找回，找回之后蓝牙还是不认，
+    /// 就升级成全图找（挡收敛直到蓝牙对上），最后跟回真实位置。
+    func testWrongStartWithDisagreeingBLEEscalatesAndRecovers() {
+        let f = field()
+        // 每 2.5 m 一片标签（够密，任何位置 6 m 内都有至少 3 片能用来对证）
+        var tags: [String: BLEFingerprintMap.Tag] = [:]
+        for k in 0..<24 { tags["D\(k)"] = .init(x: 125 + Double(k) * 250, y: 200, maxRssi: -60, samples: 50) }
+        var map = BLEFingerprintMap(cellCm: 200, cells: [], tags: tags)
+        map.learnedRanges = learnedBins
+        // 信号和固定表一致（真实位置落在每片标签的固定范围里）
+        func rssi(_ d: Double) -> Double? { d <= 350 ? -65 : d <= 420 ? -78 : d <= 600 ? -83 : nil }
+        func run(escalateAfter: Int) -> (error: Double, escalated: Bool) {
+            var cfg = MagneticConfig.tracking(odometry: .pdr)
+            cfg.particleCount = 600
+            cfg.coldStartParticleCount = 3000
+            let loc = MagneticLocalizer(field: f, config: cfg, seed: 7)
+            var truth = Point2(1000, 200)
+            loc.reset(start: Point2(2500, 200), spreadCm: TrackingProfile.startSpreadCm)
+            let assist = BLEAssist(map: map)
+            assist.softEscalateAfter = escalateAfter
+            var escalated = false
+            let step = Point2(50, 0)
+            var k = 0
+            while truth.x < 4500 {
+                truth = truth + step
+                k += 1
+                loc.step(delta: step, feature: f.sample(at: truth)?.mean)
+                if k % 2 == 0 {
+                    var obs: [String: Double] = [:]
+                    for (id, t) in tags { if let r = rssi(abs(t.x - truth.x)) { obs[id] = r } }
+                    let e = loc.estimate()
+                    assist.tick(obs: obs, localizer: loc, current: loc.isConverged ? e.position : nil, candidate: e.position)
+                    escalated = escalated || assist.softEscalated
+                }
+            }
+            let e = loc.estimate()
+            return (loc.isConverged ? e.position.distance(to: truth) : .infinity, escalated)
+        }
+        let r = run(escalateAfter: 1)
+        XCTAssertTrue(r.escalated)
+        XCTAssertLessThan(r.error, 300, "起点错 15 m、蓝牙一直不认：应当找回真实位置")
+        // 对照：只有局部找回（不升级）时一直被拉回错的地方附近，走完 35 m 还差得更远
+        let localOnly = run(escalateAfter: 1000)
+        XCTAssertFalse(localOnly.escalated)
+        XCTAssertGreaterThan(localOnly.error, r.error + 100)
     }
 
     func testDeclareLostLocalFallsBackToGlobalOutsideTracking() {

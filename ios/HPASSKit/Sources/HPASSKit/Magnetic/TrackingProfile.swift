@@ -26,8 +26,8 @@ public enum OdometrySource: String, CaseIterable {
 ///   （`coverageGatedMagWeight`）：一段没采过的路上完全靠推算；
 /// - 地磁似然按实测残差标定（`TrackingProfile.observationSigmaFloorUT` / `magneticCorrelationCm`），
 ///   整体偏移不用单次读数估，攒够一段再取中位数（`offsetWarmupUpdates`）；
-/// - 蓝牙只做软约束（`bleSoftTracking`）：底图学过本场地标签范围时用有上限的软范围约束，没学过用宽的位置先验；
-///   不挡收敛，持续对不上只触发局部找回，不全图找。
+/// - 蓝牙只做软约束（`bleSoftTracking`，底图学过本场地标签范围时；人工打点的标签表底图照旧硬约束）：
+///   有上限的软范围约束，不挡收敛；持续对不上先局部找回，找回后蓝牙还是不认再升级成全图找。
 ///
 /// 数值在公开数据集的 Python 移植上挑的（见 PR 描述），不按单条测试轨迹调。
 public enum TrackingProfile {

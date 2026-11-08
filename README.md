@@ -14,7 +14,14 @@
 
 ---
 
-## 地磁定位（新）
+## 通用场景方向（2026-11）
+
+价签门店是特殊场景。面向商场、写字楼、医院、车库等通用场景、对标 Oriient「只用手机、不装硬件」的技术调研和开发路线见 [docs/generic-positioning-roadmap.md](docs/generic-positioning-roadmap.md)。已落地的地基：
+
+- `tools/venue/imdf_convert.py`：IMDF（Apple 室内地图格式）场馆 → 每层一个 `map.json`（可走区、障碍、门、电梯 / 扶梯 / 楼梯、店名地标）+ 跨楼层连接体
+- `HPASSKit` 的 `FloorDetector`：气压计楼层切换检测，区分电梯 / 扶梯 / 楼梯，不受天气漂移影响
+
+## 地磁定位
 
 「地磁定位」标签页：采集（ARKit + 全部传感器，可选 LiDAR 网格）→ 手机上一键生成磁场图（自动贴通道、原始磁力计减偏置）→ 定位（视觉里程计 + 地磁粒子滤波，冷启动、丢失冻结）→ 按货架编号沿通道导航；另有 2D / 3D / AR 校对视图。
 操作流程见 [docs/survey-and-localization-guide.md](docs/survey-and-localization-guide.md)，规划与进度见 [docs/oriient-benchmark-plan.md](docs/oriient-benchmark-plan.md)，离线工具：`tools/magmap.py`（建图质检）、`tools/meshcheck.py`（LiDAR 货架高度与偏移）、`swift run hpass-replay`（离线回放）。

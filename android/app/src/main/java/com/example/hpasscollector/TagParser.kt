@@ -1,21 +1,21 @@
-package com.example.eslcollector
+package com.example.hpasscollector
 
 import android.bluetooth.le.ScanRecord
 
-object EslParser {
-    /** 价签广播使用的公司 ID，与 Handy+ NativeBluetoothManager 一致。 */
+object TagParser {
+    /** 目标标签广播的厂商 ID。 */
     const val COMPANY_ID = 13
 
     /**
-     * 与 Handy+ shortPackageParse 相同：getManufacturerSpecificData(13) 长度 4..7，
+     * getManufacturerSpecificData(13) 长度 4..7 时，
      * 取前 4 字节转大写十六进制，用 "-" 连接。
      */
-    fun eslId(record: ScanRecord?): String? {
+    fun tagId(record: ScanRecord?): String? {
         val data = record?.getManufacturerSpecificData(COMPANY_ID) ?: return null
-        return eslIdFromPayload(data)
+        return tagIdFromPayload(data)
     }
 
-    fun eslIdFromPayload(payload: ByteArray): String? {
+    fun tagIdFromPayload(payload: ByteArray): String? {
         if (payload.size < 4 || payload.size >= 8) return null
         return payload.take(4).joinToString("-") { "%02X".format(it.toInt() and 0xFF) }
     }

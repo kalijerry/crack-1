@@ -7,7 +7,7 @@
                      [--points 已有点位的地图.json] [--cell 50] [--report 报告.json]
 
 输出的 magmap.json 可以直接导入 App「地磁定位」页：含 width、height、markPoints、magField。
-App 里的「门店数据」页仍然导入原来的 map.json（货架和通道）。
+App 里的「场地数据」页仍然导入原来的 map.json（货架和通道）。
 
 做了什么：
   1. 用锚点（App 里长按地图记下的已知位置）把 ARKit 轨迹分段对齐到地图坐标：
@@ -537,7 +537,7 @@ def print_report(rep):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--map", required=True, help="门店地图 JSON（货架和通道，可带信封）")
+    ap.add_argument("--map", required=True, help="场地地图 JSON（货架和通道，可带信封）")
     ap.add_argument("--sessions", nargs="+", required=True, help="建图采集的会话目录或 zip")
     ap.add_argument("--out", required=True, type=Path, help="输出的 magmap.json")
     ap.add_argument("--points", help="带 markPoints 的地图 JSON，点位会写进输出")

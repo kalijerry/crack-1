@@ -7,7 +7,7 @@
 1. 把代码推到 GitHub（`kalijerry/crack-1`）。推送到任意分支或开 PR 都会触发 CI。
 2. 打开仓库的 **Actions** 页，点最新一次 **CI**，等 `iOS app` 任务变绿（约 5～10 分钟）。
    - 变红说明编译失败或缺权限说明，点进去看日志，把报错发给我。
-3. 在这次运行页面底部的 **Artifacts** 下载 `eslcollector-unsigned-ipa`，解压得到 `ESLCollector-unsigned.ipa`（需要登录 GitHub）。
+3. 在这次运行页面底部的 **Artifacts** 下载未签名 ipa 构件，解压得到 `*-unsigned.ipa`（需要登录 GitHub）。
 
 也可以用命令行（先 `gh auth login`）：
 
@@ -24,9 +24,9 @@ gh run download --repo kalijerry/crack-1 -n eslcollector-unsigned-ipa -D ~/Downl
 
 1. 从 Sideloadly 官网下载安装 Mac 版（本文步骤凭使用经验写成，界面可能随版本变化）。
 2. 打开 Sideloadly，选中已连接的 iPhone。
-3. 把 `ESLCollector-unsigned.ipa` 拖进窗口，填 Apple ID，点 **Start**，按提示输入密码。
+3. 把解压得到的 `*-unsigned.ipa` 拖进窗口，填 Apple ID，点 **Start**，按提示输入密码。
    - 建议用一个**专门的 Apple ID**，不要用主账号。
-   - Bundle ID 默认的 `com.example.eslcollector` 若被占用，Sideloadly 的 Advanced Options 里可以改，例如 `com.你的名字.eslcollector`。
+   - 默认的 Bundle ID 若被占用，Sideloadly 的 Advanced Options 里可以改，例如 `com.你的名字.hpasscollector`。
 4. 安装完成后，在手机上 **设置 → 通用 → VPN 与设备管理**，信任这个 Apple ID 的开发者证书。
 5. 打开 App，允许蓝牙、运动与健身、定位（仅使用期间）三个权限。定位只用来读罗盘航向，不读位置。
 
@@ -43,6 +43,6 @@ Sideloadly 有「自动重新签名」选项，需要 Mac 开着、手机与 Mac
 |---|---|
 | Sideloadly 报 `Guru Meditation` 或 provisioning 错误 | 换一个 Bundle ID 重试；确认 Apple ID 已开启双重认证并使用应用专用密码 |
 | 提示 App ID 数量达到上限 | 免费账号每 7 天只能新建约 10 个 App ID，等一周或删旧的 |
-| 打开 App 立即闪退 | 手机 **设置 → 隐私与安全性 → 分析与改进 → 分析数据** 找 ESLCollector 的崩溃日志发给我 |
+| 打开 App 立即闪退 | 手机 **设置 → 隐私与安全性 → 分析与改进 → 分析数据** 找本 App 的崩溃日志发给我 |
 | 磁力计频率远低于 100 Hz | 关闭低电量模式，关掉其他占用传感器的 App |
 | 一周后打不开 | 签名过期，重新用 Sideloadly 安装即可 |

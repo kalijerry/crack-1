@@ -17,7 +17,7 @@ npx wrangler deploy                      # 输出 https://hpass-telemetry.<你�
 
 ## App 里
 
-「门店数据 → 云端后台」：填上面的地址（不带 https:// 也行）和口令，打开「连接后台」。
+「场地数据 → 云端后台」：填上面的地址（不带 https:// 也行）和口令，打开「连接后台」。
 - 日志、定位 / 采集状态实时上去（每秒最多 2 次状态；断网时攒着，连上补发）；
 - 「采集结束自动上传会话」默认开，也可以在「导出给电脑建图」里手动上传；
 - 连上时自动上传当前地图（看板画地图用），切换地图会重新上传。
@@ -57,7 +57,7 @@ npx wrangler dev        # http://localhost:8787
 | PUT/GET | `/api/maps/<地图编号>` | 地图 JSON |
 | PUT/GET | `/api/reports/<名字>.json`、GET `/api/reports` | 评估报告 |
 | GET | `/api/logs?day=YYYY-MM-DD`、`/api/logs/<key>` | 日志分块（NDJSON，每 200 条或 30 秒一块） |
-| GET | `/api/packages` | 云端地图包列表（名字、类型、版本、大小、磁场格数、蓝牙价签数） |
+| GET | `/api/packages` | 云端地图包列表（名字、类型、版本、大小、磁场格数、蓝牙标签数） |
 | PUT/GET | `/api/packages/<地图编号>` | 地图包（App 打包：地图 + 磁场 + 蓝牙 + 视觉特征地图，zlib 压缩）；上传头 `X-Map-Name`（URL 编码）、`X-Map-Kind`、`X-Map-Version`（毫秒），比云端旧的版本返回 409 |
 
 所有接口都要口令：`Authorization: Bearer <TOKEN>`，WebSocket 用 `?token=`。没配 TOKEN 时全部拒绝。

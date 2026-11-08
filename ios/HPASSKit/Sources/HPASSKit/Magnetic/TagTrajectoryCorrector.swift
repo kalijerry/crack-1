@@ -1,23 +1,23 @@
 import Foundation
 
-/// 价签锚定的轨迹修正（我们自己的融合算法核心）：全店 2 万片价签，位置都在价签位置表里，相当于 2 万个免费的
-/// 绝对位置锚点。别家（Oriient 等）只能靠磁场回环和众包轨迹互相对齐，我们每走几步就能听到几十个已知位置的价签。
+/// 标签锚定的轨迹修正（我们自己的融合算法核心）：场地里成千上万个标签，位置都在标签位置表里，相当于同样多的免费
+/// 绝对位置锚点。纯磁场方案只能靠磁场回环和众包轨迹互相对齐，我们每走几步就能听到几十个已知位置的标签。
 ///
 /// 做法（因子图 / 平滑器，按坐标轴分开解）：
 /// - 未知量：每 knotMs 一个结点的平移修正 Dₖ = (dx, dy)，结点之间线性插值，修正后位置 = 轨迹位置 + D(t)；
-/// - 价签因子：每条强读数（≥ minRssi）要求「修正后的人位置 ≈ 价签所在货架」，σ 随信号变弱变大
+/// - 标签因子：每条强读数（≥ minRssi）要求「修正后的人位置 ≈ 标签所在货架」，σ 随信号变弱变大
 ///   （−60 dBm 约 1.5 m，−85 dBm 约 5 m）；货架中心和人站的位置差 1～2 m，两边货架的读数会互相抵消；
 /// - 平滑因子：相邻结点差 σ = smoothCm（ARKit 漂移是慢的；贴错通道这种跳变也能一段段拉回来）；
 /// - 先验：D ≈ 0，σ = priorCm（很弱，只防没读数的地方乱跑）；
-/// - Cauchy 鲁棒权重迭代重加权（IRLS）：表里位置不对的价签、反射读数自动降权。
+/// - Cauchy 鲁棒权重迭代重加权（IRLS）：表里位置不对的标签、反射读数自动降权。
 /// 每个坐标轴是三对角线性方程，几千个结点也是毫秒级。修正完再贴一次通道（SurveyMapBuilder 里做）。
-public final class EslTrajectoryCorrector {
+public final class TagTrajectoryCorrector {
     public struct Stats: Codable {
         public var readings: Int
         /// 用上的货架标签观测
         public var signs: Int?
         public var knots: Int
-        /// 修正前 / 后：强读数「人 − 价签」距离中位数（m）
+        /// 修正前 / 后：强读数「人 − 标签」距离中位数（m）
         public var beforeMedianM: Double
         public var afterMedianM: Double
         /// 最大修正量（m）
@@ -47,7 +47,7 @@ public final class EslTrajectoryCorrector {
     public var signSigmaCm = 60.0
 
     /// 返回修正函数（时间 → 平移量）和统计；强读数太少返回 nil（不修正）。
-    /// signs：货架标签（摄像头读到的），比价签确定得多，一条顶几十条价签读数。
+    /// signs：货架标签（摄像头读到的），比蓝牙标签确定得多，一条顶几十条蓝牙读数。
     public func solve(track: [(tMs: Int64, p: Point2)], ble: [BLESample],
                       signs: [SignObservation] = []) -> (correction: (Int64) -> Point2, stats: Stats)? {
         guard track.count >= 2, let t0 = track.first?.tMs, let t1 = track.last?.tMs, t1 > t0 else { return nil }
@@ -62,7 +62,7 @@ public final class EslTrajectoryCorrector {
             return Point2(a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f)
         }
         let K = Int((t1 - t0) / knotMs) + 2
-        // 观测：结点下标 k、插值权重 w（属于 k 的部分）、轨迹位置、价签位置、σ
+        // 观测：结点下标 k、插值权重 w（属于 k 的部分）、轨迹位置、标签位置、σ
         var obs: [(k: Int, w: Double, p: Point2, g: Point2, s: Double)] = []
         var regions: [Int: (Point2) -> Point2] = [:]          // 标签观测：每轮按修正后的位置重新取区域里最近的点
         for b in ble where b.rssi >= minRssi {

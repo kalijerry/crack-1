@@ -44,7 +44,7 @@ public final class RoutePlanner {
     var graphEdgeCount: Int { baseGraph.edgeCount }
 
     private var mergeTolerance: Double { max(config.junctionToleranceCm, 1.0) }
-    /// 判定“点在货架上”时的外扩量：价签坐标常落在货架外沿
+    /// 判定“点在货架上”时的外扩量：标签坐标常落在货架外沿
     private var shelfMargin: Double { max(config.junctionToleranceCm, 1.0) }
 
     // MARK: - 货架几何

@@ -1,7 +1,7 @@
 import XCTest
 @testable import HPASSKit
 
-/// 一个缩小版的「大卖场」：7 条平行纵向长通道（长度相同、间距 3.6 m），上下各一条横向通道。
+/// 一个缩小版的大型场地：7 条平行纵向长通道（长度相同、间距 3.6 m），上下各一条横向通道。
 /// 重点测：冷启动能不能找对通道、能不能一直跟住、通道约束有没有帮上忙。
 final class GraphLocalizationTests: XCTestCase {
 

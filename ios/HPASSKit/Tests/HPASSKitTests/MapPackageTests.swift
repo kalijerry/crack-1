@@ -4,6 +4,7 @@ import XCTest
 
 final class MapPackageTests: XCTestCase {
     func testRoundTrip() throws {
+        try XCTSkipUnless(MapPackage.compressionAvailable, "地图包压缩只在苹果平台可用")
         let b = MagneticFieldBuilder(widthCm: 2000, heightCm: 500, cellCm: 50)
         for x in stride(from: 0.0, to: 2000, by: 10) {
             for _ in 0..<6 { _ = b.add(position: Point2(x, 250), feature: MagneticFeature(total: 50 + sin(x / 100), vertical: -38.25, horizontal: 31)) }
@@ -29,6 +30,7 @@ final class MapPackageTests: XCTestCase {
     }
 
     func testPaintSectionAndMerge() throws {
+        try XCTSkipUnless(MapPackage.compressionAvailable, "地图包压缩只在苹果平台可用")
         let cross = CrossSegment(code: "C1", a: Point2(100, 100), b: Point2(900, 100), lineWidth: 200)
         let a = CoveragePaint(crosses: [cross], widthCm: 1000, heightCm: 400)
         for x in stride(from: 100.0, through: 500, by: 20) { a.paint(at: Point2(x, 100)) }
@@ -47,10 +49,12 @@ final class MapPackageTests: XCTestCase {
         XCTAssertTrue(m.load(CoveragePaint.mergeSerialized(a.serialized(), b.serialized())))
         XCTAssertEqual(m.paintedCells, b.paintedCells)
         // 旧包（5 段，没有涂色和标签表）还能读
+        #if canImport(Darwin)
         let old = try MapPackage.encode(meta: meta, mapJSON: Data("{}".utf8), field: nil, ble: nil, worldMap: nil)
         let raw = try (old as NSData).decompressed(using: .zlib) as Data
         let trimmed = try (raw.dropLast(12) as NSData).compressed(using: .zlib) as Data
         let oc = try MapPackage.decode(trimmed)
         XCTAssertNil(oc.paint); XCTAssertNil(oc.tagCSV)
+        #endif
     }
 }

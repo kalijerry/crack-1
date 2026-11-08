@@ -193,6 +193,21 @@ class EndToEndTests(unittest.TestCase):
             wp.write_text(json.dumps(worse), encoding="utf-8")
             self.assertEqual(lab.main(["report", "--results", str(wp), "--baseline", str(bp), "--fail-on-regression"]), 1)
 
+    def test_parallel_jobs_keep_order(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            fake = td / "fake_eval.py"
+            fake.write_text(FAKE_EVAL, encoding="utf-8")
+            for ds in SUITE["datasets"]:
+                d = td / "work" / "public" / ds
+                (d / "build").mkdir(parents=True)
+                (d / "test").mkdir()
+                (d / "map.json").write_text("{}")
+            serial = lab.run_suite(SUITE, "nightly", td / "work", [sys.executable, str(fake)])
+            par = lab.run_suite(SUITE, "nightly", td / "work", [sys.executable, str(fake)], jobs=4)
+            self.assertEqual([r["id"] for r in par["results"]], [r["id"] for r in serial["results"]])
+            self.assertEqual([r["metrics"] for r in par["results"]], [r["metrics"] for r in serial["results"]])
+
     def test_eval_failure_is_reported(self):
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)

@@ -256,7 +256,8 @@ def run_eval(eval_cmd: list[str], cwd: Path, build: str, test: str, runs: int, f
         out = Path(td) / "r.json"
         cmd = eval_cmd + ["--map", "map.json", "--build", build, "--test", test, "--runs", str(runs),
                           *flags, "--json", str(out)]
-        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout_s)
+        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=timeout_s)
         if p.returncode != 0 or not out.exists():
             tail = (p.stdout or "")[-1500:] + (p.stderr or "")[-1500:]
             raise RuntimeError(f"hpass-eval 失败（退出码 {p.returncode}）：{tail}")
@@ -267,13 +268,18 @@ def run_eval(eval_cmd: list[str], cwd: Path, build: str, test: str, runs: int, f
         return json.loads(out.read_text(encoding="utf-8"))
 
 
-def run_suite(suite: dict, tier: str, work: Path, eval_cmd: list[str], only: str | None = None) -> dict:
+def run_suite(suite: dict, tier: str, work: Path, eval_cmd: list[str], only: str | None = None,
+              jobs: int = 1) -> dict:
+    """jobs > 1 时各场景并行回放（本地多核用；CI 默认 1）。结果顺序和场景顺序一致。"""
     runs = suite["runs"][tier]
-    results = []
+    tasks = []
 
     def record(sid, title, gate, fn, extra=None):
         if only and only not in sid:
             return
+        tasks.append((sid, title, gate, fn, extra))
+
+    def execute(sid, title, gate, fn, extra):
         t0 = time.time()
         entry = {"id": sid, "title": title, "gate": gate}
         try:
@@ -285,7 +291,7 @@ def run_suite(suite: dict, tier: str, work: Path, eval_cmd: list[str], only: str
         if extra:
             entry.update(extra)
         print(f"[lab] {sid}：{entry.get('metrics') or entry.get('error')}（{entry['seconds']} s）", flush=True)
-        results.append(entry)
+        return entry
 
     for s in public_scenarios(suite, tier):
         d = work / "public" / s["dataset"]
@@ -315,6 +321,12 @@ def run_suite(suite: dict, tier: str, work: Path, eval_cmd: list[str], only: str
                            lambda d=d, site=site, pcfg=pcfg: run_eval(
                                eval_cmd, d, ",".join("build/" + b for b in site["build"]),
                                ",".join("test/" + t for t in site["test"]), runs, pcfg["flags"]))
+    if jobs > 1 and len(tasks) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=jobs) as ex:
+            results = list(ex.map(lambda t: execute(*t), tasks))
+    else:
+        results = [execute(*t) for t in tasks]
     return {"kind": "lab", "tier": tier, "runs": runs, "commit": os.environ.get("GITHUB_SHA", ""),
             "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "results": results}
 
@@ -406,6 +418,7 @@ def main(argv=None):
     p.add_argument("--eval", required=True, help="hpass-eval 可执行文件")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--only", help="只跑 id 含这个字符串的场景")
+    p.add_argument("--jobs", type=int, default=1, help="并行回放的场景数（本地多核用）")
     p = sub.add_parser("report")
     p.add_argument("--results", type=Path, required=True)
     p.add_argument("--baseline", type=Path)
@@ -424,7 +437,7 @@ def main(argv=None):
     elif a.cmd == "prepare-private":
         prepare_private(a.work)
     elif a.cmd == "run":
-        res = run_suite(suite, a.tier, a.work, [str(Path(a.eval).resolve())], a.only)
+        res = run_suite(suite, a.tier, a.work, [str(Path(a.eval).resolve())], a.only, a.jobs)
         a.out.write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
     elif a.cmd == "report":
         res = json.loads(a.results.read_text(encoding="utf-8"))

@@ -58,6 +58,7 @@ final class WorldMapTests: XCTestCase {
     }
 
     func testPackageCarriesWorldMap() throws {
+        try XCTSkipUnless(MapPackage.compressionAvailable, "地图包压缩只在苹果平台可用")
         let wm = Data((0..<5000).map { UInt8(truncatingIfNeeded: $0 &* 31) })
         let meta = MapPackage.Meta(id: "room_x", name: "办公室", kind: "room", version: 1)
         let pkg = try MapPackage.encode(meta: meta, mapJSON: Data("{}".utf8), field: nil, ble: nil, worldMap: wm,

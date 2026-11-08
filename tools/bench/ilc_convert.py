@@ -75,7 +75,7 @@ def write_sensors(dst, d, t0, t1):
     os.makedirs(dst, exist_ok=True)
     gt = [x[0] for x in d["gyr"]]
     mt = [x[0] for x in d["mag"]]
-    with open(os.path.join(dst, "imu.csv"), "w") as f:
+    with open(os.path.join(dst, "imu.csv"), "w", newline="\n") as f:
         f.write("t_ms,ax,ay,az,gx,gy,gz,mx,my,mz,mag_acc,qw,qx,qy,qz,heading_deg\n")
         for t, ax, ay, az in d["acc"]:
             if t < t0 or t > t1 or not d["gyr"] or not d["mag"]:
@@ -83,21 +83,21 @@ def write_sensors(dst, d, t0, t1):
             _, gx, gy, gz = hold(d["gyr"], t, gt)
             _, mx, my, mz = hold(d["mag"], t, mt)
             f.write(f"{t},{ax:.4f},{ay:.4f},{az:.4f},{gx:.5f},{gy:.5f},{gz:.5f},{mx:.3f},{my:.3f},{mz:.3f},3,0,0,0,0,-1\n")
-    with open(os.path.join(dst, "mag_raw.csv"), "w") as f:
+    with open(os.path.join(dst, "mag_raw.csv"), "w", newline="\n") as f:
         f.write("t_ms,mx,my,mz\n")
         for t, x, y, z in d["raw"]:
             if t0 <= t <= t1:
                 f.write(f"{t},{x:.3f},{y:.3f},{z:.3f}\n")
-    with open(os.path.join(dst, "ble.csv"), "w") as f:
+    with open(os.path.join(dst, "ble.csv"), "w", newline="\n") as f:
         f.write("t_ms,point_id,esl_id,rssi,src,mfg_hex\n")
         for t, mac, rssi in d["ble"]:
             if t0 <= t <= t1:
                 f.write(f"{t},,{mac},{rssi:.0f},{mac},\n")
-    json.dump({"format_version": 3, "survey": True, "source": "ILC2.0"}, open(os.path.join(dst, "meta.json"), "w"))
+    json.dump({"format_version": 3, "survey": True, "source": "ILC2.0"}, open(os.path.join(dst, "meta.json"), "w", newline="\n"))
 
 
 def write_poses(dst, poses):
-    with open(os.path.join(dst, "arkit_pose.csv"), "w") as f:
+    with open(os.path.join(dst, "arkit_pose.csv"), "w", newline="\n") as f:
         f.write("t_ms,x_m,y_m,z_m,qx,qy,qz,qw,tracking,limited_reason\n")
         for t, x, y in poses:
             f.write(f"{t},{x / 100:.4f},0,{y / 100:.4f},0,0,0,1,2,0\n")
@@ -196,7 +196,7 @@ def main():
         t0, t1 = d["wp"][0][0], d["wp"][-1][0]
         write_sensors(dst, d, t0, t1)
         write_poses(dst, tr)           # 建图会话：位姿直接是真值（地图坐标），锚点 = 全部 waypoint
-        with open(os.path.join(dst, "anchors.csv"), "w") as f:
+        with open(os.path.join(dst, "anchors.csv"), "w", newline="\n") as f:
             f.write("t_ms,kind,map_x_cm,map_y_cm,ar_x_cm,ar_z_cm,heading_rad,note\n")
             f.write(f"{t0},align,0,0,0,0,0,\n")
             for i, (t, x, y) in enumerate(d["wp"]):
@@ -208,17 +208,17 @@ def main():
         t0, t1 = d["wp"][0][0], d["wp"][-1][0]
         write_sensors(dst, d, t0, t1)
         write_poses(dst, drift_poses(tr, rng, sc, hd))
-        open(os.path.join(dst, "anchors.csv"), "w").write("t_ms,kind,map_x_cm,map_y_cm,ar_x_cm,ar_z_cm,heading_rad,note\n")
-        with open(os.path.join(dst, "truth.csv"), "w") as f:
+        open(os.path.join(dst, "anchors.csv"), "w", newline="\n").write("t_ms,kind,map_x_cm,map_y_cm,ar_x_cm,ar_z_cm,heading_rad,note\n")
+        with open(os.path.join(dst, "truth.csv"), "w", newline="\n") as f:
             f.write("t_ms,x_cm,y_cm\n")
             for t, x, y in tr:
                 f.write(f"{t},{x:.1f},{y:.1f}\n")
 
     polys = floor_polygons(pts, w_cm, h_cm, a.dilate)
     json.dump({"width": w_cm, "height": h_cm, "mapElementList": [], "floorPolygons": polys, "floorName": "ILC"},
-              open(os.path.join(a.out, "map.json"), "w"))
+              open(os.path.join(a.out, "map.json"), "w", newline="\n"))
     json.dump({"build": build_ids, "test": test_ids, "drift": a.drift, "durations_s": {k: round(dur[k], 1) for k in test_ids}},
-              open(os.path.join(a.out, "manifest.json"), "w"), indent=1)
+              open(os.path.join(a.out, "manifest.json"), "w", newline="\n"), indent=1)
     print(f"建图 {len(build_ids)} 条，测试 {len(test_ids)} 条，可走矩形 {len(polys)} 个 -> {a.out}")
 
 

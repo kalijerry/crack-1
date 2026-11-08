@@ -38,8 +38,10 @@ public final class ShadowLocalizer {
     public var crossCheckResets: Int { assist?.resets ?? 0 }
     public var outsideSurveyed: Bool { assist?.outsideSurveyed ?? false }
 
+    /// - Parameter coldStartGate: 打开冷启动收敛门（`MagneticConfig.applyColdStartGate`）：只在还没用过外部位置先验
+    ///   （蓝牙粗定位 / 标签范围）时起作用，走够路、峰够突出才宣布定到，宁可不报也不报错的。默认关（原有行为）。
     public init(field: MagneticFieldMap, walkable: WalkableMap?, useRawMag: Bool,
-                configure: ((inout MagneticConfig) -> Void)? = nil, seed: UInt64 = 1) {
+                configure: ((inout MagneticConfig) -> Void)? = nil, seed: UInt64 = 1, coldStartGate: Bool = false) {
         var cfg = MagneticConfig()
         cfg.initialHeadingBiasSigmaDeg = 30
         // 和实时定位页视觉里程计模式一致
@@ -47,6 +49,10 @@ public final class ShadowLocalizer {
         cfg.jumpConfirmUpdates = 15
         cfg.convergedPositionNoiseFraction = 0.03
         cfg.hybridOffset = true          // 实测同会话 P90 258→131 cm、首次定位 7→4 m（见 docs/roadmap.md）
+        if coldStartGate {
+            cfg.applyColdStartGate()
+            cfg.uniformHeadingForInjection = true   // 冷启动不知道朝向：注入的新粒子朝向也全方向
+        }
         configure?(&cfg)
         localizer = MagneticLocalizer(field: field, walkable: walkable, config: cfg, seed: seed)
         localizer.reset(start: nil, headingUnknown: true)

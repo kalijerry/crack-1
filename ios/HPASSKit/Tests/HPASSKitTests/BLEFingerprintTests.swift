@@ -42,4 +42,40 @@ final class BLEFingerprintTests: XCTestCase {
         let e = loc.step(delta: .zero, feature: MagneticFeature(total: 50, vertical: 40, horizontal: 30))
         XCTAssertLessThan(e.position.distance(to: Point2(4000, 500)), 800)
     }
+
+    /// 冷启动收敛门：默认关；打开后只在冷启动、还没用过外部位置先验时起作用。
+    func testColdStartGateTurnsOffOnceARadioPriorIsApplied() {
+        var d = MagneticConfig()
+        XCTAssertFalse(d.coldStartGateEnabled)
+        d.applyColdStartGate()
+        XCTAssertTrue(d.coldStartGateEnabled)
+        XCTAssertEqual(d.coldMinStreak, ColdStartGate.minStreak)
+        d.clearColdStartGate()
+        XCTAssertFalse(d.coldStartGateEnabled)
+
+        let cross = CrossSegment(code: "C", a: Point2(100, 500), b: Point2(5900, 500), lineWidth: 200)
+        var cells = [MagneticFeature?](), sig = [MagneticFeature?]()
+        for _ in 0..<(120 * 20) { cells.append(MagneticFeature(total: 50, vertical: 40, horizontal: 30)); sig.append(MagneticFeature(total: 1, vertical: 1, horizontal: 1)) }
+        let f = MagneticFieldMap(widthCm: 6000, heightCm: 1000, cellCm: 50, cells: cells, sigmas: sig)
+        let walk = WalkableMap(crosses: [cross], widthCm: 6000, heightCm: 1000)
+
+        // ShadowLocalizer 默认不开（原有行为，自动起点 / 自采场景不变）
+        let plain = ShadowLocalizer(field: f, walkable: walk, useRawMag: true)
+        XCTAssertFalse(plain.localizer.config.coldStartGateEnabled)
+        XCTAssertFalse(plain.localizer.coldStartGateActive)
+
+        let gated = ShadowLocalizer(field: f, walkable: walk, useRawMag: true, coldStartGate: true)
+        XCTAssertTrue(gated.localizer.config.coldStartGateEnabled)
+        XCTAssertTrue(gated.localizer.config.uniformHeadingForInjection)
+        XCTAssertTrue(gated.localizer.coldStartGateActive)
+        gated.localizer.applyPositionPrior(Point2(4000, 500), sigmaCm: 300, weight: 1)
+        XCTAssertTrue(gated.localizer.externalPriorApplied)
+        XCTAssertFalse(gated.localizer.coldStartGateActive)
+        // reset 之后重新算
+        gated.localizer.reset(start: nil, headingUnknown: true)
+        XCTAssertTrue(gated.localizer.coldStartGateActive)
+        // 已知起点从不起作用
+        gated.localizer.reset(start: Point2(1000, 500), spreadCm: 50)
+        XCTAssertFalse(gated.localizer.coldStartGateActive)
+    }
 }

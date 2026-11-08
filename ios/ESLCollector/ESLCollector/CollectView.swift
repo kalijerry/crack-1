@@ -28,7 +28,7 @@ struct CollectView: View {
             if rec.isRecording {
                 row("录制时长", Self.duration(rec.elapsed))
                 row("读数 / 秒", "\(rec.blePerSec)")
-                row("唯一价签 / 秒", "\(rec.uniqueTagsPerSec)")
+                row("唯一信标 / 秒", "\(rec.uniqueTagsPerSec)")
                 row("IMU 频率", "\(rec.imuHz) Hz")
                 row("磁场精度", Self.magText(rec.magAccuracy))
                 row("原始磁力计", "\(rec.magRawHz) Hz · \(rec.magRawRows) 行")
@@ -49,9 +49,9 @@ struct CollectView: View {
             TextField("备注：保护壳/MagSafe/姿态", text: $rec.setupNote)
                 .autocorrectionDisabled()
                 .disabled(rec.isRecording)
-            Toggle("仅记录价签广播（公司ID 13）", isOn: $rec.onlyESL)
+            Toggle("仅记录信标广播（公司ID 13）", isOn: $rec.onlyESL)
                 .disabled(rec.isRecording)
-                .onChange(of: rec.onlyESL) { v in AppLog.tap("仅记录价签广播", v ? "开" : "关") }
+                .onChange(of: rec.onlyESL) { v in AppLog.tap("仅记录信标广播", v ? "开" : "关") }
             LoggedButton(name: rec.isRecording ? "停止录制" : "开始录制",
                          detail: rec.isRecording ? "" : "标签 \(rec.deviceLabel)") {
                 rec.isRecording ? rec.stopRecording() : rec.startRecording()
@@ -113,7 +113,7 @@ struct CollectView: View {
     }
 
     private var topTagsSection: some View {
-        Section("最强价签（近 2 秒）") {
+        Section("最强信标（近 2 秒）") {
             if rec.topTags.isEmpty {
                 Text(rec.isRecording ? "暂无读数" : "未录制").foregroundStyle(.secondary)
             }

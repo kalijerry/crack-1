@@ -119,7 +119,7 @@ private final class InsecureTLSDelegate: NSObject, URLSessionDelegate {
             completionHandler(.performDefaultHandling, nil)
             return
         }
-        AppLog.w("门店下载", "已跳过 TLS 证书校验（用户已开启自签名证书选项）")
+        AppLog.w("场地下载", "已跳过 TLS 证书校验（用户已开启自签名证书选项）")
         completionHandler(.useCredential, URLCredential(trust: trust))
     }
 }
@@ -159,7 +159,7 @@ final class StoreDataClient: @unchecked Sendable {
         let template = config.path(for: kind)
         let request = try buildRequest(kind, config: config, credential: credential, username: username)
         let shape = Self.pathShape(template, config: config)
-        AppLog.i("门店下载", "开始请求 \(Self.label(kind)) GET \(shape)" +
+        AppLog.i("场地下载", "开始请求 \(Self.label(kind)) GET \(shape)" +
                  (credential.isEmpty ? "（无凭据）" : "（已设置凭据）"))
 
         let session = config.allowInsecureTLS ? insecureSession : URLSession.shared
@@ -168,30 +168,30 @@ final class StoreDataClient: @unchecked Sendable {
         do {
             received = try await session.data(for: request)
         } catch let error as URLError where error.code == .cancelled {
-            AppLog.w("门店下载", "\(Self.label(kind)) 请求已取消")
+            AppLog.w("场地下载", "\(Self.label(kind)) 请求已取消")
             throw StoreDataClientError.cancelled
         } catch is CancellationError {
-            AppLog.w("门店下载", "\(Self.label(kind)) 请求已取消")
+            AppLog.w("场地下载", "\(Self.label(kind)) 请求已取消")
             throw StoreDataClientError.cancelled
         } catch {
-            AppLog.e("门店下载", "\(Self.label(kind)) 网络失败：\(error.localizedDescription)")
+            AppLog.e("场地下载", "\(Self.label(kind)) 网络失败：\(error.localizedDescription)")
             throw StoreDataClientError.network(error.localizedDescription)
         }
         let ms = Int(Date().timeIntervalSince(started) * 1000)
         let data = received.0
         let status = (received.1 as? HTTPURLResponse)?.statusCode ?? 0
-        AppLog.i("门店下载", "\(Self.label(kind)) HTTP \(status)，" +
+        AppLog.i("场地下载", "\(Self.label(kind)) HTTP \(status)，" +
                  "\(ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file))，\(ms) ms")
 
         guard (200...299).contains(status) else {
             let excerpt = Self.excerpt(data)
-            AppLog.e("门店下载", "\(Self.label(kind)) 状态码异常 HTTP \(status)：\(excerpt)")
+            AppLog.e("场地下载", "\(Self.label(kind)) 状态码异常 HTTP \(status)：\(excerpt)")
             throw StoreDataClientError.httpStatus(status, excerpt)
         }
         do {
             try Self.sanityCheck(data, kind: kind)
         } catch {
-            AppLog.e("门店下载", "\(Self.label(kind)) 内容校验失败：\(error.localizedDescription)")
+            AppLog.e("场地下载", "\(Self.label(kind)) 内容校验失败：\(error.localizedDescription)")
             throw error
         }
         return data
@@ -358,7 +358,7 @@ final class StoreDataClient: @unchecked Sendable {
                 continue
             }
             if p.contains("{store}") && config.storeCode.trimmingCharacters(in: .whitespaces).isEmpty {
-                out.append("\(label(kind)) 路径含 {store}，但门店编码为空")
+                out.append("\(label(kind)) 路径含 {store}，但场地编号为空")
             }
             if p.contains("{floor}") && config.floorId.trimmingCharacters(in: .whitespaces).isEmpty {
                 out.append("\(label(kind)) 路径含 {floor}，但楼层 ID 为空")
@@ -376,7 +376,7 @@ final class StoreDataClient: @unchecked Sendable {
         switch kind {
         case .map: return "地图"
         case .fingerprint: return "指纹库"
-        case .esl: return "价签/商品"
+        case .esl: return "信标/物品"
         }
     }
 

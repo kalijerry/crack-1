@@ -226,7 +226,7 @@ final class Recorder: ObservableObject {
                 AppLog.e("采集", "设备运动传感器不可用")
             }
             AppLog.shared.startMirroring(to: dir)
-            AppLog.i("采集", "开始录制：\(dir.lastPathComponent)，仅价签 \(onlyESL ? "是" : "否")")
+            AppLog.i("采集", "开始录制：\(dir.lastPathComponent)，仅信标 \(onlyESL ? "是" : "否")")
 
             UIApplication.shared.isIdleTimerDisabled = true
             isRecording = true

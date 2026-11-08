@@ -183,7 +183,7 @@ final class RoomScanModel: ObservableObject {
                 let e = try lib.importAndActivate(data: d, name: n, kind: "room", extraFiles: extra)
                 try? Data(e.id.utf8).write(to: it.dir.appendingPathComponent("library_id.txt"))
             }
-            libraryMessage = "已加入地图库并切换到这个房间。到「地磁定位」页建图采集、定位。"
+            libraryMessage = "已加入地图库并切换到这个房间。到「建图」页采集、到「导航」页定位。"
         } catch {
             libraryMessage = "加入地图库失败：\(error.localizedDescription)"
         }
@@ -297,7 +297,7 @@ struct RoomScanView: View {
                 .disabled(!RoomScanModel.isSupported)
                 if case .failed(let e) = model.phase { Text(e).font(.footnote).foregroundStyle(.red) }
             } footer: {
-                Text("用激光雷达扫出墙、门、窗和家具，自动生成 2D 平面图和 3D 模型。设为当前地图之后，到「地磁定位」页就能在这个房间里建图采集（涂色范围 = 地面 − 家具）和定位。")
+                Text("用激光雷达扫出墙、门、窗和家具，自动生成 2D 平面图和 3D 模型。设为当前地图之后，到「建图」页就能在这个房间里采集（覆盖范围 = 地面 − 家具），到「导航」页定位。")
             }
 
             if let m = model.result, let it = model.resultItem {

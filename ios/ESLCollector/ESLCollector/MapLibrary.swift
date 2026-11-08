@@ -97,7 +97,7 @@ final class MapLibrary: ObservableObject {
         let cur = StoreDataStore.shared.url(for: .map)
         guard let data = try? Data(contentsOf: cur), let m = try? StoreDataLoader.loadMap(data) else { return }
         let isRoom = m.crosses.isEmpty && !m.floor.isEmpty
-        if let e = try? add(data: data, name: m.floorName ?? (isRoom ? "房间" : "门店地图"), kind: isRoom ? "room" : "store") {
+        if let e = try? add(data: data, name: m.floorName ?? (isRoom ? "房间" : "场地地图"), kind: isRoom ? "room" : "store") {
             setActive(e.id)
             AppLog.i("地图库", "已把当前地图收进地图库：\(e.name)")
         }
@@ -119,7 +119,7 @@ final class MapLibrary: ObservableObject {
         for f in extraFiles { try? FileManager.default.copyItem(at: f, to: dir(id).appendingPathComponent(f.lastPathComponent)) }
         try writeMeta(e)
         entries.append(e)
-        AppLog.i("地图库", "加入地图：\(name)（\(kind == "room" ? "房间" : "门店")）")
+        AppLog.i("地图库", "加入地图：\(name)（\(kind == "room" ? "房间" : "场地")）")
         return e
     }
 
@@ -287,7 +287,7 @@ final class MapLibrary: ObservableObject {
         }
         // 价签位置表（价签 → 绑定的货架、商品）：包里带了就用包里的（比单独拉的新）
         if let e = c.eslCSV, m.kind == "store" {
-            do { try StoreDataStore.shared.installEslLocations(e) } catch { AppLog.w("地图库", "价签位置表：\(error)") }
+            do { try StoreDataStore.shared.installEslLocations(e) } catch { AppLog.w("地图库", "信标位置表：\(error)") }
         }
         // 增量统计和变化检测是针对旧图的，清掉
         for f in ["build-state.json", "live-monitor.json"] { try? fm.removeItem(at: ws.appendingPathComponent(f)) }
@@ -306,7 +306,7 @@ final class MapLibrary: ObservableObject {
             try Data(src.utf8).write(to: ws.appendingPathComponent("field-source.txt"))
         }
         if !AppMode.shared.developer && active?.isCloudFused != true && m.origin == "cloud" { try? activate(m.id) }
-        AppLog.i("地图库", "装上云端地图：\(m.name)（磁场 \(m.fieldCells ?? 0) 格，蓝牙 \(m.bleTags ?? 0) 个价签）")
+        AppLog.i("地图库", "装上云端地图：\(m.name)（磁场 \(m.fieldCells ?? 0) 格，蓝牙 \(m.bleTags ?? 0) 个信标）")
     }
 
     private func writeMeta(_ e: Entry) throws {
@@ -364,7 +364,7 @@ struct MapLibrarySection: View {
     var body: some View {
         Section {
             if lib.visibleEntries.isEmpty {
-                Text(AppMode.shared.developer ? "地图库是空的：导入门店地图，或者到「房间扫描」扫一个房间。"
+                Text(AppMode.shared.developer ? "地图库是空的：导入场地地图，或者到「房间扫描」扫一个房间。"
                      : "还没有云端地图：在下面「云端地图」里下载。").font(.footnote).foregroundStyle(.secondary)
             }
             ForEach(lib.visibleEntries) { e in
@@ -372,7 +372,7 @@ struct MapLibrarySection: View {
                     Image(systemName: e.isRoom ? "cube.transparent" : "building.2").foregroundStyle(.secondary)
                     VStack(alignment: .leading) {
                         Text(e.name)
-                        Text((e.isRoom ? "房间" : "门店") + " · " + Self.versionText(e) + (e.bleEnabled ? "" : " · 不用蓝牙"))
+                        Text((e.isRoom ? "房间" : "场地") + " · " + Self.versionText(e) + (e.bleEnabled ? "" : " · 不用蓝牙"))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -498,7 +498,7 @@ struct CloudMapsSection: View {
     var body: some View {
         Section {
             if !tel.enabled {
-                Text("先在「门店数据 → 云端后台」填地址和口令并打开连接。").font(.footnote).foregroundStyle(.secondary)
+                Text("先在「设置 → 云端连接」填地址和口令并打开连接。").font(.footnote).foregroundStyle(.secondary)
             } else {
                 if AppMode.shared.developer {
                     Button { Task { await cloud.uploadActive() } } label: {
@@ -530,7 +530,7 @@ struct CloudMapsSection: View {
                 if let m = cloud.message { Text(m).font(.footnote).foregroundStyle(.secondary) }
             }
         } header: { Text("云端地图") } footer: {
-            Text("正式版本由云端融合：手机把会话上传到后台（采集结束自动传，旧会话在「采集」页一键上传），云端把所有手机、所有分片的会话融合成一张图（各会话的磁场偏移一起解），这里下载；本机已有的地图云端更新了会自动更新。手动上传的是本机生成的版本，会被下一次云端融合替换。全店一张图压缩后约 0.5～1 MB。")
+            Text("正式版本由云端融合：手机把会话上传到后台（采集结束自动传，旧会话在「采集」页一键上传），云端把所有手机、所有分片的会话融合成一张图（各会话的磁场偏移一起解），这里下载；本机已有的地图云端更新了会自动更新。手动上传的是本机生成的版本，会被下一次云端融合替换。全场一张图压缩后约 0.5～1 MB。")
         }
         // 不用 .task：List 里的分段滚出屏幕就会取消它，请求被取消；放到独立任务里跑完
         .onAppear { Task { await cloud.refresh() } }

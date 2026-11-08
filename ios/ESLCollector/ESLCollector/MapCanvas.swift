@@ -90,6 +90,25 @@ struct MapCanvas: View {
     var onDoubleTap: (() -> Void)?
     var onHeadingPoint: ((Point2) -> Void)?
 
+    // 新界面（导航 / 建图）用到的外观和行为；旧调试页面都用默认值，画法不变
+    /// 产品外观：浅色地面、白色走廊、灰色障碍物，不画通道中心线
+    var productStyle = false
+    /// 跟随模式：以蓝点为中心
+    var follow = false
+    /// 跟随时蓝点在画布里的位置（0～1），底部有卡片时往上放一点
+    var followAnchor = CGPoint(x: 0.5, y: 0.5)
+    /// 用户拖动 / 缩放了地图（用来退出跟随）
+    var onUserInteract: (() -> Void)?
+    /// 位置和朝向平滑动画
+    var smooth = false
+    /// 右上角「回到全图」按钮
+    var showsResetButton = true
+    /// VoiceOver 读出的地图摘要
+    var accessibilitySummary: String?
+    /// 外部改变它就回到全图（导航页的「全图」按钮用）
+    var resetToken = 0
+
+    @StateObject private var animator = PoseAnimator()
     @State private var zoom: CGFloat = 1
     @State private var pinch: CGFloat = 1
     @State private var pan: CGSize = .zero
@@ -109,11 +128,14 @@ struct MapCanvas: View {
         GeometryReader { geo in
             let extent = Self.extent(map: map, fingerprints: fingerprints)
             ZStack(alignment: .topTrailing) {
-                Canvas { ctx, size in
-                    let t = transform(extent: extent, size: size)
-                    draw(ctx: ctx, t: t)
+                TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !animating)) { timeline in
+                    Canvas { ctx, size in
+                        let pose = displayedPose(now: timeline.date)
+                        let t = transform(extent: extent, size: size, center: pose.position)
+                        draw(ctx: ctx, t: t, pose: pose, now: timeline.date)
+                    }
                 }
-                .background(Color(.secondarySystemBackground))
+                .background(productStyle ? DS.Palette.mapFloor : Color(.secondarySystemBackground))
                 .contentShape(Rectangle())
                 .gesture(dragGesture(extent: extent, size: geo.size))
                 .simultaneousGesture(
@@ -124,29 +146,57 @@ struct MapCanvas: View {
                             pinch = 1
                         }
                 )
+                .accessibilityElement()
+                .accessibilityLabel("地图")
+                .accessibilityValue(accessibilitySummary ?? (position == nil ? "未显示位置" : "已显示你的位置"))
+                .accessibilityAddTraits(.allowsDirectInteraction)
 
                 if map == nil {
-                    Text("未导入地图")
+                    Text("还没有地图")
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .allowsHitTesting(false)
                 }
 
-                if !isIdentity {
-                    LoggedButton("回到全图") {
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            zoom = 1
-                            pinch = 1
-                            pan = .zero
-                            dragOffset = .zero
-                        }
+                if showsResetButton && !isIdentity && !follow {
+                    LoggedButton(name: "回到全图") {
+                        withAnimation(.easeOut(duration: 0.2)) { resetView() }
+                    } label: {
+                        Image(systemName: "arrow.down.right.and.arrow.up.left")
+                            .font(.footnote.weight(.semibold))
+                            .frame(width: 36, height: 36)
+                            .background(.regularMaterial, in: Circle())
                     }
-                    .buttonStyle(.bordered)
-                    .font(.caption)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("回到全图")
                     .padding(8)
                 }
             }
+            .onChange(of: follow) { on in
+                if on {
+                    // 进入跟随：放大到能看清附近通道
+                    if zoom < 2 { zoom = 3 }
+                    pan = .zero
+                    dragOffset = .zero
+                }
+            }
+            .onChange(of: resetToken) { _ in resetView() }
         }
+    }
+
+    private func resetView() {
+        zoom = 1
+        pinch = 1
+        pan = .zero
+        dragOffset = .zero
+    }
+
+    private var animating: Bool { smooth && position != nil }
+
+    /// 当前要画的位置 / 朝向：开了平滑就插值，没开就直接用
+    private func displayedPose(now: Date) -> (position: Point2?, heading: Double) {
+        guard animating, let p = position else { return (position, headingRad) }
+        return animator.step(target: p, heading: headingRad, now: now)
     }
 
     private var isIdentity: Bool {
@@ -162,10 +212,17 @@ struct MapCanvas: View {
             .onChanged { v in
                 if touchStart == nil { touchStart = Date() }
                 if headingEditing, let onHeadingPoint {
-                    onHeadingPoint(transform(extent: extent, size: size).toMap(v.location))
+                    onHeadingPoint(transform(extent: extent, size: size, center: gestureCenter).toMap(v.location))
                     return
                 }
-                if abs(v.translation.width) > 10 || abs(v.translation.height) > 10 { dragMoved = true }
+                if abs(v.translation.width) > 10 || abs(v.translation.height) > 10 {
+                    if !dragMoved && follow, let onUserInteract {
+                        // 跟随中拖动：先把当前画面定住（缩放 / 平移对上），再交给父视图退出跟随
+                        freezeFollow(extent: extent, size: size)
+                        onUserInteract()
+                    }
+                    dragMoved = true
+                }
                 if dragMoved { dragOffset = v.translation }
             }
             .onEnded { v in
@@ -192,7 +249,7 @@ struct MapCanvas: View {
                     pan.width += v.translation.width
                     pan.height += v.translation.height
                 } else {
-                    let t = transform(extent: extent, size: size)
+                    let t = transform(extent: extent, size: size, center: gestureCenter)
                     let now = Date()
                     if held >= 0.5, let onLongPress {
                         // 长按：按住不动 0.5 s 以上，松手时生效
@@ -258,7 +315,18 @@ struct MapCanvas: View {
         return CGRect(x: minX, y: minY, width: w, height: h)
     }
 
-    private func transform(extent: CGRect, size: CGSize) -> MapTransform {
+    /// 手势换算坐标用的中心：跟随时是画面上的蓝点
+    private var gestureCenter: Point2? { follow ? (animator.last ?? position) : nil }
+
+    /// 跟随 → 自由：算出和当前跟随画面一样的平移量，退出跟随时画面不跳
+    private func freezeFollow(extent: CGRect, size: CGSize) {
+        guard let c = gestureCenter else { return }
+        let ft = transform(extent: extent, size: size, center: c)
+        let free = transform(extent: extent, size: size, center: nil, ignoringFollow: true)
+        pan = CGSize(width: pan.width + ft.origin.x - free.origin.x, height: pan.height + ft.origin.y - free.origin.y)
+    }
+
+    private func transform(extent: CGRect, size: CGSize, center: Point2? = nil, ignoringFollow: Bool = false) -> MapTransform {
         let availW = Swift.max(Double(size.width) - Double(padding) * 2, 1)
         let availH = Swift.max(Double(size.height) - Double(padding) * 2, 1)
         let ew = Swift.max(Double(extent.width), 1)
@@ -266,6 +334,13 @@ struct MapCanvas: View {
         let base = Swift.min(availW / ew, availH / eh)
         let z = Swift.max(Double(zoom * pinch), 0.01)
         let scale = Swift.max(base * z, 1e-6)
+
+        if follow && !ignoringFollow, let c = center ?? position {
+            // 跟随：蓝点固定在 followAnchor
+            let ax = Double(size.width) * Double(followAnchor.x)
+            let ay = Double(size.height) * Double(followAnchor.y)
+            return MapTransform(scale: scale, origin: CGPoint(x: ax - c.x * scale, y: ay - c.y * scale))
+        }
 
         // 先按 aspect fit 居中，再叠加用户平移
         let cx = Double(size.width) * 0.5 - (Double(extent.midX) * scale)
@@ -277,8 +352,10 @@ struct MapCanvas: View {
 
     // MARK: 绘制
 
-    private func draw(ctx: GraphicsContext, t: MapTransform) {
+    private func draw(ctx: GraphicsContext, t: MapTransform, pose: (position: Point2?, heading: Double), now: Date) {
         guard let m = map else { return }
+        let position = pose.position
+        let headingRad = pose.heading
 
         if let g = gridCm, g > 0, m.width > 0, m.height > 0 {
             var grid = Path()
@@ -333,6 +410,12 @@ struct MapCanvas: View {
             p.move(to: t.toScreen(c.a))
             p.addLine(to: t.toScreen(c.b))
             let w = Swift.max(t.len(c.lineWidth), 1.5)
+            if productStyle {
+                // 产品外观：白色走廊，不画中心线；有覆盖图层时只画淡淡的底
+                ctx.stroke(p, with: .color(paintLayer == nil ? DS.Palette.mapCorridor : DS.Palette.mapCorridor.opacity(0.5)),
+                           style: StrokeStyle(lineWidth: w, lineCap: .round))
+                continue
+            }
             if paintLayer == nil {          // 有涂色时通道宽度已经由涂色图层表示
                 ctx.stroke(p, with: .color(Color.blue.opacity(0.14)),
                            style: StrokeStyle(lineWidth: w, lineCap: .round))
@@ -346,10 +429,17 @@ struct MapCanvas: View {
         var mc = ctx
         mc.concatenate(CGAffineTransform(a: CGFloat(t.scale), b: 0, c: 0, d: CGFloat(t.scale), tx: t.origin.x, ty: t.origin.y))
         let px = 1 / CGFloat(Swift.max(t.scale, 1e-6))          // 1 屏幕点对应的地图长度
-        mc.fill(cached.others, with: .color(.gray.opacity(0.18)))
-        mc.fill(cached.standard, with: .color(.gray.opacity(0.35)))
-        mc.stroke(cached.standard, with: .color(.gray.opacity(0.7)), lineWidth: 0.6 * px)
-        mc.stroke(cached.nonStandard, with: .color(.gray.opacity(0.25)), lineWidth: 0.4 * px)
+        if productStyle {
+            mc.fill(cached.others, with: .color(DS.Palette.mapObstacle.opacity(0.5)))
+            mc.fill(cached.standard, with: .color(DS.Palette.mapObstacle))
+            mc.stroke(cached.standard, with: .color(DS.Palette.mapObstacleStroke), lineWidth: 0.8 * px)
+            mc.fill(cached.nonStandard, with: .color(DS.Palette.mapObstacle.opacity(0.6)))
+        } else {
+            mc.fill(cached.others, with: .color(.gray.opacity(0.18)))
+            mc.fill(cached.standard, with: .color(.gray.opacity(0.35)))
+            mc.stroke(cached.standard, with: .color(.gray.opacity(0.7)), lineWidth: 0.6 * px)
+            mc.stroke(cached.nonStandard, with: .color(.gray.opacity(0.25)), lineWidth: 0.4 * px)
+        }
 
         // 房间扫描的墙 / 门 / 窗：墙深色、门棕色、窗浅蓝（门店地图没有这些类型）
         for o in m.others {
@@ -384,18 +474,25 @@ struct MapCanvas: View {
             }
         }
 
-        // 规划路线
+        // 规划路线：白色描边 + 渐变粗线 + 终点旗标
         if let route, route.nodes.count >= 2 {
             var p = Path()
             p.move(to: t.toScreen(route.nodes[0].point))
             for n in route.nodes.dropFirst() { p.addLine(to: t.toScreen(n.point)) }
-            ctx.stroke(p, with: .color(.green),
-                       style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+            let a = t.toScreen(route.nodes[0].point)
+            let b = t.toScreen(route.nodes[route.nodes.count - 1].point)
+            ctx.stroke(p, with: .color(.white.opacity(0.9)),
+                       style: StrokeStyle(lineWidth: 9, lineCap: .round, lineJoin: .round))
+            ctx.stroke(p, with: .linearGradient(Gradient(colors: [DS.Palette.routeStart, DS.Palette.routeEnd]),
+                                                 startPoint: a, endPoint: b),
+                       style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
             for n in route.nodes where n.isTarget {
                 let c = t.toScreen(n.point)
-                let rect = CGRect(x: c.x - 6, y: c.y - 6, width: 12, height: 12)
-                ctx.fill(Path(rect), with: .color(.green))
-                ctx.stroke(Path(rect), with: .color(.white), lineWidth: 1)
+                let rect = CGRect(x: c.x - 11, y: c.y - 11, width: 22, height: 22)
+                ctx.fill(Path(ellipseIn: rect), with: .color(DS.Palette.danger))
+                ctx.stroke(Path(ellipseIn: rect), with: .color(.white), lineWidth: 2.5)
+                ctx.draw(Text(Image(systemName: "flag.fill")).font(.system(size: 10, weight: .bold)).foregroundColor(.white),
+                         at: c, anchor: .center)
             }
         }
 
@@ -404,8 +501,13 @@ struct MapCanvas: View {
             var p = Path()
             p.move(to: t.toScreen(trail[0]))
             for q in trail.dropFirst() { p.addLine(to: t.toScreen(q)) }
-            ctx.stroke(p, with: .color(.purple.opacity(0.6)),
-                       style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+            if productStyle {
+                ctx.stroke(p, with: .color(DS.Palette.accent.opacity(0.35)),
+                           style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round, dash: [1, 6]))
+            } else {
+                ctx.stroke(p, with: .color(.purple.opacity(0.6)),
+                           style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+            }
         }
 
         // 手动定的点位
@@ -500,9 +602,10 @@ struct MapCanvas: View {
             ctx.stroke(Path(ellipseIn: rect), with: .color(.orange), lineWidth: 2.5)
         }
 
-        // 当前位置：不确定度圆 + 实心点 + 航向箭头
+        // 当前位置：不确定度圈 + 朝向锥 + 蓝点（呼吸光晕）
         if let pos = position {
             let c = t.toScreen(pos)
+            let dotColor: Color = positionStale ? DS.Palette.neutral : DS.Palette.accent
             if let pr = paintRadiusCm {
                 // 涂色圆圈：走过的地方按这个圈涂
                 let r = Swift.max(t.len(pr), 3)
@@ -513,35 +616,55 @@ struct MapCanvas: View {
             if uncertaintyCm > 0 {
                 let r = Swift.max(t.len(uncertaintyCm), 4)
                 let rect = CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)
-                ctx.fill(Path(ellipseIn: rect), with: .color(.accentColor.opacity(0.15)))
-                ctx.stroke(Path(ellipseIn: rect), with: .color(.accentColor.opacity(0.4)), lineWidth: 0.8)
+                ctx.fill(Path(ellipseIn: rect), with: .color(dotColor.opacity(0.12)))
+                ctx.stroke(Path(ellipseIn: rect), with: .color(dotColor.opacity(0.35)), lineWidth: 1)
             }
-            // 航向：dx = L·sinθ，dy = L·cosθ（地图系，y 向下）
             if headingRad.isFinite && showHeading {
-                let L: CGFloat = headingEditing ? 70 : 26
-                let arrowColor: Color = headingEditing ? .orange : .accentColor
-                let tip = CGPoint(x: c.x + L * CGFloat(sin(headingRad)),
-                                  y: c.y + L * CGFloat(cos(headingRad)))
-                var arrow = Path()
-                arrow.move(to: c)
-                arrow.addLine(to: tip)
-                ctx.stroke(arrow, with: .color(arrowColor),
-                           style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                // 箭头两翼
-                let back = headingRad + .pi
-                for side in [0.45, -0.45] {
-                    let a = back + side
-                    var wing = Path()
-                    wing.move(to: tip)
-                    wing.addLine(to: CGPoint(x: tip.x + 8 * CGFloat(sin(a)),
-                                             y: tip.y + 8 * CGFloat(cos(a))))
-                    ctx.stroke(wing, with: .color(arrowColor),
-                               style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                if headingEditing {
+                    // 设朝向中：长橙色箭头，方便对准
+                    let L: CGFloat = 70
+                    let tip = CGPoint(x: c.x + L * CGFloat(sin(headingRad)), y: c.y + L * CGFloat(cos(headingRad)))
+                    var arrow = Path()
+                    arrow.move(to: c)
+                    arrow.addLine(to: tip)
+                    ctx.stroke(arrow, with: .color(.orange), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    let back = headingRad + .pi
+                    for side in [0.45, -0.45] {
+                        let a = back + side
+                        var wing = Path()
+                        wing.move(to: tip)
+                        wing.addLine(to: CGPoint(x: tip.x + 10 * CGFloat(sin(a)), y: tip.y + 10 * CGFloat(cos(a))))
+                        ctx.stroke(wing, with: .color(.orange), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    }
+                } else if !positionStale {
+                    // 朝向锥：±32° 的扇形，径向渐变（地图系 dx = sinθ, dy = cosθ）
+                    let R: CGFloat = 54
+                    let spread = 32.0 * Double.pi / 180
+                    var cone = Path()
+                    cone.move(to: c)
+                    let steps = 16
+                    for k in 0...steps {
+                        let a = headingRad - spread + 2 * spread * Double(k) / Double(steps)
+                        cone.addLine(to: CGPoint(x: c.x + R * CGFloat(sin(a)), y: c.y + R * CGFloat(cos(a))))
+                    }
+                    cone.closeSubpath()
+                    ctx.fill(cone, with: .radialGradient(Gradient(colors: [dotColor.opacity(0.55), dotColor.opacity(0)]),
+                                                         center: c, startRadius: 4, endRadius: R))
                 }
             }
-            let rect = CGRect(x: c.x - 6, y: c.y - 6, width: 12, height: 12)
-            ctx.fill(Path(ellipseIn: rect), with: .color(positionStale ? .gray : .accentColor))
-            ctx.stroke(Path(ellipseIn: rect), with: .color(.white), lineWidth: 1.5)
+            // 呼吸光晕（只在平滑动画开着时动）
+            if smooth && !positionStale {
+                let phase = (sin(now.timeIntervalSinceReferenceDate * 2.4) + 1) / 2
+                let hr: CGFloat = 13 + CGFloat(phase) * 5
+                ctx.fill(Path(ellipseIn: CGRect(x: c.x - hr, y: c.y - hr, width: hr * 2, height: hr * 2)),
+                         with: .color(dotColor.opacity(0.18 * (1 - phase) + 0.06)))
+            }
+            let r: CGFloat = 8
+            let ring = CGRect(x: c.x - r - 3, y: c.y - r - 3, width: (r + 3) * 2, height: (r + 3) * 2)
+            var shadowCtx = ctx
+            shadowCtx.addFilter(.shadow(color: .black.opacity(0.25), radius: 3, x: 0, y: 1))
+            shadowCtx.fill(Path(ellipseIn: ring), with: .color(DS.Palette.dotRing))
+            ctx.fill(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)), with: .color(dotColor))
         }
     }
 
@@ -629,5 +752,35 @@ final class ShelfPathCache {
         cached = (std, non, oth)
         key = k
         return cached
+    }
+}
+
+
+/// 蓝点平滑：位置和朝向按指数平滑追目标，跳得太远（> 8 m）直接跳过去。
+/// 只在画的时候读写，不发布变化（不会引起额外的视图刷新）。
+final class PoseAnimator: ObservableObject {
+    private(set) var last: Point2?
+    private var heading = 0.0
+    private var lastTime: Date?
+
+    func step(target: Point2, heading targetHeading: Double, now: Date) -> (position: Point2?, heading: Double) {
+        guard let p = last, let t0 = lastTime else {
+            last = target; heading = targetHeading; lastTime = now
+            return (target, targetHeading)
+        }
+        let dt = Swift.min(Swift.max(now.timeIntervalSince(t0), 0), 0.25)
+        lastTime = now
+        if p.distance(to: target) > 800 {
+            last = target; heading = targetHeading
+            return (target, targetHeading)
+        }
+        let k = 1 - exp(-dt * 8)          // 时间常数约 0.12 s
+        let np = Point2(p.x + (target.x - p.x) * k, p.y + (target.y - p.y) * k)
+        var dh = targetHeading - heading
+        while dh > .pi { dh -= 2 * .pi }
+        while dh < -.pi { dh += 2 * .pi }
+        heading += dh * (1 - exp(-dt * 10))
+        last = np
+        return (np, heading)
     }
 }

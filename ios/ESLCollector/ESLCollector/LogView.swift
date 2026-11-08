@@ -20,7 +20,7 @@ struct LogView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        Group {
             VStack(spacing: 0) {
                 controls
                 Divider()

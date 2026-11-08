@@ -274,7 +274,7 @@ final class Telemetry: ObservableObject {
         case notConfigured, http(Int, String)
         var description: String {
             switch self {
-            case .notConfigured: return "先在「云端后台」填地址和口令"
+            case .notConfigured: return "先在「设置 → 云端连接」填地址和口令"
             case .http(let c, let m): return "HTTP \(c)：\(m)"
             }
         }
@@ -286,7 +286,7 @@ final class Telemetry: ObservableObject {
         r.setValue("text/csv; charset=utf-8", forHTTPHeaderField: "Content-Type")
         let resp = try? await URLSession.shared.upload(for: r, from: data).1
         if (resp as? HTTPURLResponse)?.statusCode == 200 {
-            AppLog.i("后台", "价签位置表已上传")
+            AppLog.i("后台", "信标位置表已上传")
         }
     }
 

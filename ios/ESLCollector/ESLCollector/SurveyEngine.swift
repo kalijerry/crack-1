@@ -786,7 +786,7 @@ final class SurveyEngine: ObservableObject {
             lastFixPos = f.position
             guard bleStable >= 3 else { return }
             anchor(at: f.position)
-            AppLog.i("建图", "蓝牙定了起点（\(tags.count) 片价签，范围 ±\(Int(f.spreadCm / 100)) m）")
+            AppLog.i("建图", "蓝牙定了起点（\(tags.count) 片信标，范围 ±\(Int(f.spreadCm / 100)) m）")
             autoHeadingFromCompass()
         case .tracking:
             guard tags.count >= 3, let p = position else { disagreeTicks = 0; return }
@@ -831,7 +831,7 @@ final class SurveyEngine: ObservableObject {
         case .needPosition, .autoLocating:
             // 还没有起点：站在这段货架前
             anchor(at: ss.standPoint(sg))
-            AppLog.i("建图", "货架标签 \(text) 定了起点（\(sg.shelfCode)）")
+            AppLog.i("建图", "位置标识牌 \(text) 定了起点（\(sg.shelfCode)）")
             autoHeadingFromCompass()
         case .tracking:
             guard let p = position, ss.distance(sg, from: p) > Self.signFixCm, tMs - lastSignFixMs > 10_000 else { return }
@@ -839,7 +839,7 @@ final class SurveyEngine: ObservableObject {
             lastSignFixMs = tMs
             anchor(at: ss.nearestValid(sg, to: p))
             signFixes += 1
-            AppLog.i("建图", "货架标签 \(text)：轨迹偏了 \(Int(before / 100)) m，已自动纠正")
+            AppLog.i("建图", "位置标识牌 \(text)：轨迹偏了 \(Int(before / 100)) m，已自动纠正")
         default:
             return
         }

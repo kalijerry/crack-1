@@ -75,7 +75,7 @@ struct LiveLocationView: View {
                 Form {
                     if !store.isReady {
                         Section {
-                            Text("请先在门店数据页导入地图、指纹和价签")
+                            Text("请先在场地数据页导入地图、指纹和信标")
                                 .foregroundStyle(.orange)
                         }
                     }
@@ -111,7 +111,7 @@ struct LiveLocationView: View {
                 Text("置信 \(Fmt.f(engine.estimate?.confidence ?? 0, 2))")
                 Text("σ \(Int(uncertaintyCm.rounded()))cm")
                 Text("读数 \(engine.readingsPerSecond)/s")
-                Text("价签 \(engine.uniqueTagsPerSecond)/s")
+                Text("信标 \(engine.uniqueTagsPerSecond)/s")
                 Text("步 \(engine.stepCount)")
             }
             HStack(spacing: 10) {
@@ -210,7 +210,7 @@ struct LiveLocationView: View {
                     .font(.caption)
             }
 
-            NavigationLink("从商品选择目标") {
+            NavigationLink("从物品选择目标") {
                 GoodsPickerView(goods: store.goods) { item, p in
                     target = p
                     targetLabel = item.itemName ?? item.sku
@@ -422,7 +422,7 @@ private struct GoodsPickerView: View {
 
     var body: some View {
         List(rows) { row in
-            LoggedButton(name: "选择商品", detail: row.item.sku) {
+            LoggedButton(name: "选择物品", detail: row.item.sku) {
                 guard let p = row.position else { return }
                 onPick(row.item, p)
                 dismiss()
@@ -437,7 +437,7 @@ private struct GoodsPickerView: View {
             .disabled(row.position == nil)
         }
         .searchable(text: $query, prompt: "按 SKU 或名称搜索")
-        .navigationTitle("选择商品")
+        .navigationTitle("选择物品")
     }
 }
 

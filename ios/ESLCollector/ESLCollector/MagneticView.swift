@@ -22,9 +22,10 @@ struct MagneticView: View {
         static var main: [Step] { [.map, .survey, .live] }
     }
 
-    @StateObject private var engine = MagneticEngine()
-    @StateObject private var survey = SurveyEngine()
-    @StateObject private var mapService = SurveyMapService()
+    // 和「导航」「建图」共用一份引擎（AppEngines），避免两个页面同时开传感器
+    @ObservedObject private var engine = AppEngines.shared.magnetic
+    @ObservedObject private var survey = AppEngines.shared.survey
+    @ObservedObject private var mapService = AppEngines.shared.mapService
     @ObservedObject private var store = MagMapStore.shared
     @ObservedObject private var storeData = StoreDataStore.shared
 
@@ -70,7 +71,7 @@ struct MagneticView: View {
     @State private var exportError: String?
 
     var body: some View {
-        NavigationStack {
+        Group {
             VStack(spacing: 0) {
                 HStack {
                     Text("地图").font(.footnote).foregroundStyle(.secondary)
@@ -115,7 +116,8 @@ struct MagneticView: View {
                     }
                 }
             }
-            .navigationTitle("地磁定位")
+            .navigationTitle("高级控制台")
+            .navigationBarTitleDisplayMode(.inline)
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json],
                           allowsMultipleSelection: false) { result in
                 handleImport(result)
@@ -127,8 +129,7 @@ struct MagneticView: View {
             if startId.isEmpty { startId = store.points.first?.id ?? "" }
         }
         .onChange(of: storeData.mapSignature) { _ in
-            Telemetry.shared.mapChanged()
-            survey.coverage.invalidate()
+            // Telemetry.mapChanged 和覆盖网格失效由 ContentView 统一处理
             store.adopt(map: storeData.map)
             mapService.refresh()
             engine.loadMonitor()
@@ -272,7 +273,7 @@ struct MagneticView: View {
                     .tint(.orange)
                 }
                 if show3D && storeData.map != nil {
-                    LoggedButton(name: "3D·校准货架", detail: calibrateShelves ? "关" : "开") {
+                    LoggedButton(name: "3D·校准障碍物", detail: calibrateShelves ? "关" : "开") {
                         calibrateShelves.toggle()
                         // 按地图方向挪，俯视时屏幕方向和地图方向一致，最好对
                         if calibrateShelves { camera3D = .top } else { storeData.logShelfOffset() }
@@ -352,7 +353,7 @@ struct MagneticView: View {
         }
         return HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("货架整体偏移").font(.footnote.bold())
+                Text("障碍物整体偏移").font(.footnote.bold())
                 Text("x \(Fmt.f(d.x, 0)) cm  y \(Fmt.f(d.y, 0)) cm").font(.footnote.monospacedDigit())
                 Picker("步长", selection: $shelfStepCm) {
                     Text("5").tag(5.0); Text("10").tag(10.0); Text("50").tag(50.0)
@@ -405,7 +406,7 @@ struct MagneticView: View {
     @ViewBuilder private var arSection: some View {
         if showAR {
             Section {
-                Text("橙色线框是地图里的货架，青色线是通道中心线，蓝色杆是点位。拖下面的滑块，让线框和真实货架对齐，然后点「记录偏移」。偏移量就是地图在这里错了多少。")
+                Text("橙色线框是地图里的障碍物，青色线是通道中心线，蓝色杆是点位。拖下面的滑块，让线框和真实障碍物对齐，然后点「记录偏移」。偏移量就是地图在这里错了多少。")
                     .font(.footnote).foregroundStyle(.secondary)
                 VStack(alignment: .leading) {
                     Text("旋转 \(Fmt.f(arAngle, 1))°（逆时针为正）")
@@ -419,9 +420,9 @@ struct MagneticView: View {
                     Text("上下平移（地图 y）\(Int(arDY)) cm")
                     Slider(value: $arDY, in: -200...200, step: 5)
                 }
-                Stepper("货架高度 \(Fmt.f(shelfHeight3D, 1)) m", value: $shelfHeight3D, in: 0.8...3.0, step: 0.2)
+                Stepper("障碍物高度 \(Fmt.f(shelfHeight3D, 1)) m", value: $shelfHeight3D, in: 0.8...3.0, step: 0.2)
                     .onChange(of: shelfHeight3D) { _ in syncAR(force: true) }
-                TextField("备注（例如：第 3 排货架）", text: $arNote)
+                TextField("备注（例如：第 3 排障碍物）", text: $arNote)
                 HStack {
                     Button("归零") { arAngle = 0; arDX = 0; arDY = 0 }
                         .buttonStyle(.bordered)
@@ -506,7 +507,7 @@ struct MagneticView: View {
             }
             if store.field != nil {
                 row("格子数", "\(store.validCells)")
-                row("蓝牙指纹", store.bleMap.map { "\($0.tags.count) 个价签" } ?? "没有（采集时录到的价签太少，或旧版本生成的）")
+                row("蓝牙指纹", store.bleMap.map { "\($0.tags.count) 个信标" } ?? "没有（采集时录到的信标太少，或旧版本生成的）")
                 Text(store.fieldSource ?? "来源未记录（旧版本生成或导入的）").font(.caption).foregroundStyle(.secondary)
                 if mode.developer {
                     Button(role: .destructive) { confirmDeleteField = true } label: {
@@ -520,7 +521,7 @@ struct MagneticView: View {
                 }
             } else {
                 Text(mode.developer ? "现在没有磁场图。到「采集」步骤选会话生成一张。"
-                     : "现在没有磁场图：到「门店数据 → 云端地图」下载云端融合的地图。").font(.footnote).foregroundStyle(.secondary)
+                     : "现在没有磁场图：到「地图库 → 云端地图」下载云端融合的地图。").font(.footnote).foregroundStyle(.secondary)
             }
         } header: { Text("磁场图") } footer: {
             if store.field != nil && (engine.phase != .idle || survey.isRunning) {
@@ -533,17 +534,17 @@ struct MagneticView: View {
         Section {
             if let m = storeData.map {
                 row("地图尺寸", "\(Fmt.f(m.width / 100, 1)) × \(Fmt.f(m.height / 100, 1)) m")
-                row("货架 / 通道", "\(m.shelves.count) / \(m.crosses.count)")
+                row("障碍物 / 通道", "\(m.shelves.count) / \(m.crosses.count)")
                 if storeData.shelfOffset != Point2(0, 0) {
                     HStack {
-                        row("货架偏移（3D 里校准）", "x \(Fmt.f(storeData.shelfOffset.x, 0))  y \(Fmt.f(storeData.shelfOffset.y, 0)) cm")
+                        row("障碍物偏移（3D 里校准）", "x \(Fmt.f(storeData.shelfOffset.x, 0))  y \(Fmt.f(storeData.shelfOffset.y, 0)) cm")
                         Button("归零") { storeData.setShelfOffset(Point2(0, 0)); storeData.logShelfOffset() }
                             .buttonStyle(.borderless)
                     }
                 }
             } else {
-                row("地图尺寸", "\(Fmt.f(store.widthCm / 100, 1)) × \(Fmt.f(store.heightCm / 100, 1)) m（没有货架数据）")
-                Text("还没有货架和通道。在这里导入完整的门店地图 JSON，或到「门店数据」页导入。").font(.footnote).foregroundStyle(.orange)
+                row("地图尺寸", "\(Fmt.f(store.widthCm / 100, 1)) × \(Fmt.f(store.heightCm / 100, 1)) m（没有障碍物数据）")
+                Text("还没有障碍物和通道。在这里导入完整的场地地图 JSON，或到「设置 → 开发者 → 场地数据与导入」导入。").font(.footnote).foregroundStyle(.orange)
             }
             HStack {
                 Text("地图朝向（上方指向）")
@@ -584,13 +585,13 @@ struct MagneticView: View {
                     Label("实验功能：按点位建图 / 只用计步定位", systemImage: "flask")
                 }
             }
-            Stepper("3D 货架高度 \(Fmt.f(shelfHeight3D, 1)) m", value: $shelfHeight3D, in: 0.8...3.0, step: 0.2)
+            Stepper("3D 障碍物高度 \(Fmt.f(shelfHeight3D, 1)) m", value: $shelfHeight3D, in: 0.8...3.0, step: 0.2)
                 .onChange(of: shelfHeight3D) { _ in sync3D(full: false) }
             Text("右上角的「3D」按钮切换立体视图：单指转、双指缩放和平移。立体视图里不能定点，回到 2D 操作。")
                 .font(.footnote).foregroundStyle(.secondary)
             Text(store.usesStoreMap
-                 ? "地图来自「门店数据」页。长按地图空白处放点（按住不动约半秒再松手），点位用作起点、目标和路线建图的锚点。双指可缩放、单指拖动平移。"
-                 : "还没有门店地图，现在是 10×10 m 测试区。长按方格图空白处放点，点位按编号连线。")
+                 ? "地图来自「场地数据与导入」。长按地图空白处放点（按住不动约半秒再松手），点位用作起点、目标和路线建图的锚点。双指可缩放、单指拖动平移。"
+                 : "还没有场地地图，现在是 10×10 m 测试区。长按方格图空白处放点，点位按编号连线。")
                 .font(.footnote).foregroundStyle(.secondary)
             if mode.developer {
                 LoggedButton(name: "导入地图", detail: "JSON") { showImporter = true } label: {
@@ -662,7 +663,7 @@ struct MagneticView: View {
                     }
                 }
             }
-            Text("全店 \(cov.zoneStatus.count) 个区域（每块约 25 分钟），已采好 \(done.count) 个。地图颜色：深 / 浅绿 = 云端确认已采好，不用再采；蓝 = 本机刚采、等云端融合确认；灰 = 还没采；紫 = 本次区域，紫色圈 = 进区入口。")
+            Text("全场 \(cov.zoneStatus.count) 个区域（每块约 25 分钟），已采好 \(done.count) 个。地图颜色：深 / 浅绿 = 云端确认已采好，不用再采；蓝 = 本机刚采、等云端融合确认；灰 = 还没采；紫 = 本次区域，紫色圈 = 进区入口。")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -673,12 +674,12 @@ struct MagneticView: View {
         Section {
             if !survey.isRunning {
                 if !store.usesStoreMap {
-                    Text("建图采集需要门店地图：先到「门店数据」页导入地图。").foregroundStyle(.orange)
+                    Text("建图采集需要场地地图：先到「设置 → 开发者 → 场地数据与导入」导入地图。").foregroundStyle(.orange)
                 }
-                TextField("备注：保护壳 / 手持姿态 / 营业状态", text: $surveyNote)
+                TextField("备注：保护壳 / 手持姿态 / 场地状态", text: $surveyNote)
                     .autocorrectionDisabled()
-                Toggle("蓝牙打底（价签自动定起点、罗盘定朝向、发现走偏自动拉回）", isOn: $survey.bleBase)
-                Toggle("识别货架黄色标签（摄像头，自动定起点、自动纠偏）", isOn: $survey.readSigns)
+                Toggle("蓝牙打底（信标自动定起点、罗盘定朝向、发现走偏自动拉回）", isOn: $survey.bleBase)
+                Toggle("识别位置标识牌（摄像头，自动定起点、自动纠偏）", isOn: $survey.readSigns)
                 Toggle("LiDAR 实景扫描（结束时导出网格，文件较大）", isOn: $survey.scanMesh)
                     .disabled(!ARKitLogger.supportsMesh)
                 if store.field != nil {
@@ -747,15 +748,15 @@ struct MagneticView: View {
                 }
                 Toggle("自动贴通道（实时）", isOn: $survey.corridorLock)
                 if survey.bleBase {
-                    let fixText = survey.bleFix.map { "\(survey.bleTagCount) 片价签 · 范围 ±\(Int($0.spreadCm / 100)) m（黄圈）" } ?? "等价签信号…"
+                    let fixText = survey.bleFix.map { "\(survey.bleTagCount) 片信标 · 范围 ±\(Int($0.spreadCm / 100)) m（黄圈）" } ?? "等信标信号…"
                     row("蓝牙打底", fixText + (survey.bleBaseFixes > 0 ? " · 走偏拉回 \(survey.bleBaseFixes) 次" : "")).font(.footnote)
                 }
                 if survey.readSigns {
                     if let s = survey.lastSign {
-                        row("货架标签", "\(s.text)\(s.shelf == nil ? "（地图里没有）" : "") · \(Int(Date().timeIntervalSince(s.at))) 秒前 · 共 \(survey.signCount) 次 · 自动纠偏 \(survey.signFixes) 次")
+                        row("位置标识牌", "\(s.text)\(s.shelf == nil ? "（地图里没有）" : "") · \(Int(Date().timeIntervalSince(s.at))) 秒前 · 共 \(survey.signCount) 次 · 自动纠偏 \(survey.signFixes) 次")
                             .font(.footnote)
                     } else {
-                        Text("路过货架时让摄像头扫到立柱上的黄色标签（如 082-20），读到会自动纠正位置。").font(.caption).foregroundStyle(.secondary)
+                        Text("路过障碍物时让摄像头扫到立柱上的位置标识牌（如 082-20），读到会自动纠正位置。").font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 if paintMode, let c = survey.coverage.currentCorridorPaint {
@@ -796,7 +797,7 @@ struct MagneticView: View {
 
         if !survey.isRunning && !mode.developer {
             Section {
-                Text("采集结束会自动上传到后台（「门店数据 → 云端后台」要连着）。地图由云端融合，融合好后在「门店数据 → 云端地图」更新。")
+                Text("采集结束会自动上传到后台（「设置 → 云端连接」要连着）。地图由云端融合，融合好后在「地图库 → 云端地图」更新。")
                     .font(.footnote).foregroundStyle(.secondary)
                 if let u = Telemetry.shared.lastUpload { Text(u).font(.caption).foregroundStyle(.secondary) }
             } header: { Text("上传") }
@@ -879,7 +880,7 @@ struct MagneticView: View {
                     paintLegend(Color(white: 0.6).opacity(0.35), "淡灰：通道里还没涂到的地方")
                     paintLegend(Color.green.opacity(0.5), "浅绿：走过一趟")
                     paintLegend(Color(red: 0.1, green: 0.55, blue: 0.22), "深绿：走过两趟以上")
-                    Text("采集时以你为圆心画一个 40 cm 的圈，走过的地方涂上颜色。通道宽于 1 m 时，去程贴一边、回程贴另一边（地图上有绿色虚线），把整条通道涂满：靠近货架的磁场横向差别很大，只走中间，顾客贴边走时就对不上。走太快、采样率低时不涂。")
+                    Text("采集时以你为圆心画一个 40 cm 的圈，走过的地方涂上颜色。通道宽于 1 m 时，去程贴一边、回程贴另一边（地图上有绿色虚线），把整条通道涂满：靠近障碍物的磁场横向差别很大，只走中间，用户贴边走时就对不上。走太快、采样率低时不涂。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .font(.footnote)
@@ -932,7 +933,7 @@ struct MagneticView: View {
 
     private var surveyInstruction: String {
         switch survey.stage {
-        case .needPosition: return "站着别动几秒：价签自动定起点、罗盘定朝向，然后直接往前走。也可以把摄像头对准货架立柱上的黄色标签（如 082-20），读到就自动定好起点；也可以长按地图：我现在在这里。已经有磁场图的区域也可以点「自动定位起点」直接走。"
+        case .needPosition: return "站着别动几秒：信标自动定起点、罗盘定朝向，然后直接往前走。也可以把摄像头对准立柱上的位置标识牌（如 082-20），读到就自动定好起点；也可以长按地图：我现在在这里。已经有磁场图的区域也可以点「自动定位起点」直接走。"
         case .autoLocating: return "沿采集过的通道正常往前走，地磁定位成功后会自动设好起点和方向（震动提示）。想手动也可以随时长按地图。"
         case .needHeading: return "点「设朝向」（或双击地图），在地图上点或拖动，让橙色箭头指向你要走的方向，再点「确定朝向」（或再双击）。"
         case .aligning: return "朝箭头方向直线走 1.5 m，App 会自动对齐 ARKit 轨迹。"
@@ -955,7 +956,7 @@ struct MagneticView: View {
                     Toggle("视觉里程计（摄像头 + ARKit，取代计步）", isOn: $engine.useVisualOdometry)
                     Toggle("地磁纠偏（需要已有磁场数据）", isOn: $engine.useMagCorrection)
                         .disabled(store.field == nil)
-                    Picker("激光雷达测货架距离", selection: $engine.depthMode) {
+                    Picker("激光雷达测障碍物距离", selection: $engine.depthMode) {
                         ForEach(DepthMode.allCases) { Text($0.title).tag($0) }
                     }
                     .disabled(!ARKitLogger.supportsLiDAR)
@@ -971,7 +972,7 @@ struct MagneticView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             } header: { Text("实时定位") } footer: {
-                Text("视觉里程计要手机竖着拿、摄像头朝前，耗电发热，丢跟踪时自动退回计步。激光雷达「只记录」不影响定位，只把测到的左右货架距离存进文件，用来和地图核对；核对没问题再选「参与定位」。罗盘在钢货架旁常偏几十度，默认关闭。")
+                Text("视觉里程计要手机竖着拿、摄像头朝前，耗电发热，丢跟踪时自动退回计步。激光雷达「只记录」不影响定位，只把测到的左右障碍物距离存进文件，用来和地图核对；核对没问题再选「参与定位」。罗盘在钢障碍物旁常偏几十度，默认关闭。")
             }
         } else {
             Section {
@@ -1010,7 +1011,7 @@ struct MagneticView: View {
                             .font(.footnote).foregroundStyle(.orange)
                     }
                 }
-                if !engine.lateralText.isEmpty { row("货架距离（激光雷达）", engine.lateralText) }
+                if !engine.lateralText.isEmpty { row("障碍物距离（激光雷达）", engine.lateralText) }
                 if let r = engine.pedometerRatio { row("计步器 / 惯导距离", Fmt.f(r, 2)) }
                 if !engine.activityText.isEmpty { row("运动类型", engine.activityText) }
                 if engine.cartSuspected {
@@ -1028,7 +1029,7 @@ struct MagneticView: View {
                               name: "实时·自动定位") { engine.startColdSearch() }
                 }
                 if engine.phase == .live && store.bleMap != nil {
-                    row("蓝牙粗定位", engine.bleEstimate == nil ? "等价签信号…" : "听到 \(engine.bleTagsHeard) 个价签（橙色圈）").font(.footnote)
+                    row("蓝牙粗定位", engine.bleEstimate == nil ? "等信标信号…" : "听到 \(engine.bleTagsHeard) 个信标（橙色圈）").font(.footnote)
                 }
                 if engine.monitorSamples > 0 || !engine.changedSpots.isEmpty {
                     VStack(alignment: .leading, spacing: 2) {
@@ -1041,7 +1042,7 @@ struct MagneticView: View {
                     row("抓定位", "\(a.text) · \(Int(Date().timeIntervalSince(a.at))) 秒前" + (engine.anchorFixes > 0 ? " · 拉回 \(engine.anchorFixes) 次" : ""))
                         .font(.footnote)
                 }
-                Text("位置不对或定不上：让摄像头扫到货架立柱上的黄色标签（如 082-20），或把手机贴近任意一片价签 2 秒。地磁位置和价签对不上时会先显示「定位中」，不会乱给位置。")
+                Text("位置不对或定不上：让摄像头扫到立柱上的位置标识牌（如 082-20），或把手机贴近任意一片信标 2 秒。地磁位置和信标对不上时会先显示「定位中」，不会乱给位置。")
                     .font(.caption).foregroundStyle(.secondary)
                 if engine.visualFixes > 0 || engine.visualTimeouts > 0 {
                     row("视觉定位", "认出 \(engine.visualFixes) 次" + (engine.visualTimeouts > 0 ? "，超时没认出 \(engine.visualTimeouts) 次" : "")).font(.footnote)
@@ -1129,13 +1130,13 @@ struct MagneticView: View {
         let locs = storeData.eslLocations
         Section {
             if locs.isEmpty {
-                Text("先在「门店数据 → 蓝牙」导入价签位置表（esl_locations_*.csv）。").font(.footnote).foregroundStyle(.secondary)
+                Text("先在「场地数据与导入 → 蓝牙」导入信标位置表（esl_locations_*.csv）。").font(.footnote).foregroundStyle(.secondary)
             } else if let t = engine.findTarget {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(t.id).font(.headline.monospaced())
                     Text("\(t.label) · \(t.plano)").font(.footnote)
-                    if !t.productCode.isEmpty { Text("条码 \(t.productCode)").font(.caption).foregroundStyle(.secondary) }
-                    Text(t.shelfCode.map { "货架 \($0)（地图上红框）" } ?? "地图上没有对应货架（表里位置缺失或不对），只能靠信号找").font(.caption)
+                    if !t.productCode.isEmpty { Text("编码 \(t.productCode)").font(.caption).foregroundStyle(.secondary) }
+                    Text(t.shelfCode.map { "障碍物 \($0)（地图上红框）" } ?? "地图上没有对应障碍物（表里位置缺失或不对），只能靠信号找").font(.caption)
                         .foregroundStyle(t.shelfCode == nil ? .orange : .secondary)
                 }
                 navBanner
@@ -1151,11 +1152,11 @@ struct MagneticView: View {
                     ProgressView(value: min(max((r + 95) / 45, 0), 1)).tint(prox >= 2 ? .green : .orange)
                     Text("信号 \(Int(r)) dBm · \(engine.findTrend > 0 ? "越来越近" : (engine.findTrend < 0 ? "走远了" : "差不多"))").font(.caption).foregroundStyle(.secondary)
                 } else {
-                    Text(engine.phase == .live ? "还没听到这个价签：先走到红框货架附近" : "点上面「打开传感器」才能听价签信号").font(.footnote).foregroundStyle(.secondary)
+                    Text(engine.phase == .live ? "还没听到这个信标：先走到红框区域附近" : "点上面「打开传感器」才能听信标信号").font(.footnote).foregroundStyle(.secondary)
                 }
                 HStack {
                     if let p = t.position {
-                        Button("导航到货架") {
+                        Button("导航到目标") {
                             if let code = t.shelfCode { engine.navigateToShelf(code: code, fromFind: true) }
                             else { engine.navigate(to: p, label: t.id) }
                         }.buttonStyle(.bordered)
@@ -1164,7 +1165,7 @@ struct MagneticView: View {
                     Button("不找了", role: .cancel) { engine.setFindTarget(nil) }.buttonStyle(.bordered)
                 }
             } else {
-                TextField("价签编号 / 商品条码 / 货架图名", text: $findQuery)
+                TextField("信标编号 / 物品编码 / 分组名", text: $findQuery)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                 let q = findQuery.trimmingCharacters(in: .whitespaces).uppercased()
                 if q.count >= 2 {
@@ -1182,15 +1183,15 @@ struct MagneticView: View {
                     }
                 }
             }
-        } header: { Text("找价签") } footer: {
-            Text("价签位置表里大约 5% 的位置不准：到了红框没找到，就看信号强弱——越来越近会震动，「就在旁边」时在 1 m 以内。")
+        } header: { Text("找信标") } footer: {
+            Text("信标位置表里大约 5% 的位置不准：到了红框没找到，就看信号强弱——越来越近会震动，「就在旁边」时在 1 m 以内。")
         }
     }
 
     @ViewBuilder private var navSection: some View {
         Section {
             // 搜货架编号，沿通道导航
-            TextField("货架编号，例如 Shelf-012", text: $shelfQuery)
+            TextField("区域编号，例如 Shelf-012", text: $shelfQuery)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
             ForEach(shelfMatches, id: \.code) { s in
@@ -1226,7 +1227,7 @@ struct MagneticView: View {
                 }
             }
         } header: { Text("导航") } footer: {
-            Text("搜货架编号会沿通道规划路线（地图上绿线），按转弯提示走；到点位是直线方向，只用来测试。")
+            Text("搜区域编号会沿通道规划路线（地图上绿线），按转弯提示走；到点位是直线方向，只用来测试。")
         }
     }
 
@@ -1433,7 +1434,7 @@ struct MagneticView: View {
                 if let m = try? StoreDataLoader.loadMap(data), !(m.shelves.isEmpty && m.crosses.isEmpty) {
                     try storeData.save(data, as: .map)
                     store.adopt(map: storeData.map)
-                    withShelves = "，货架 \(m.shelves.count)、通道 \(m.crosses.count)"
+                    withShelves = "，障碍物 \(m.shelves.count)、通道 \(m.crosses.count)"
                 }
                 startId = store.points.first?.id ?? ""
                 importMessage = "已导入 \(store.points.count) 个点位" + withShelves + (store.field == nil ? "" : "，含磁场数据")

@@ -166,7 +166,7 @@ final class LiveLocationEngine: ObservableObject {
         guard !isRunning else { return }
         let store = StoreDataStore.shared
         guard store.isReady, let map = store.map else {
-            lastError = "请先在门店数据页导入地图、指纹和价签"
+            lastError = "请先在场地数据页导入地图、指纹和信标"
             return
         }
         lastError = nil
@@ -242,7 +242,7 @@ final class LiveLocationEngine: ObservableObject {
 
         isRunning = true
         SensorArbiter.shared.claim("蓝牙定位") { [weak self] in self?.stop() }
-        AppLog.i("实时定位", "开始：\(fpCount) 个指纹点，\(eslCount) 个价签，"
+        AppLog.i("实时定位", "开始：\(fpCount) 个指纹点，\(eslCount) 个信标，"
                  + "offset \(Fmt.f(rssiOffset, 1)) / scale \(Fmt.f(rssiScale, 2))，"
                  + "IMU \(useIMU ? "开" : "关")，平滑 \(useGraphSmoothing ? "开" : "关")")
     }

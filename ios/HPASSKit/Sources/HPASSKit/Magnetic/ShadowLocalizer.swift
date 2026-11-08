@@ -46,6 +46,9 @@ public final class ShadowLocalizer {
     public private(set) var wifiSeeded = false
     /// 用上的 Wi-Fi 定位次数
     public private(set) var wifiFixes = 0
+    /// 重新撒粒子的次数（连续几次 Wi-Fi 定位都离粒子很远，见 WiFiColdStartProfile.reseedDistanceCm）
+    public private(set) var wifiReseeds = 0
+    private var wifiFarFixes: [Point2] = []
 
     /// - Parameter coldStartGate: 打开冷启动收敛门（`MagneticConfig.applyColdStartGate`）：只在还没用过外部位置先验
     ///   （蓝牙粗定位 / 标签范围）时起作用，走够路、峰够突出才宣布定到，宁可不报也不报错的。默认关（原有行为）。
@@ -90,6 +93,9 @@ public final class ShadowLocalizer {
     }
 
     private func bleTick(_ t: Int64) {
+        // Wi-Fi 冷启动不用蓝牙：BLEAssist 的判丢会让滤波器回到没定到的状态（地磁满权重 + 全图注入），
+        // 而报的位置还是 Wi-Fi 门控的加权平均，悄悄变成另一套算法
+        guard wifiMap == nil else { return }
         guard let m = bleMap, t - lastBle >= 1000 else { return }
         lastBle = t
         bleWindow.removeAll { $0.t < t - 2500 || $0.t > t }
@@ -108,6 +114,7 @@ public final class ShadowLocalizer {
         localizer.config = cfg
         wifiMap = map
         wifiSeeded = false
+        wifiFarFixes = []
     }
 
     /// 一次 Wi-Fi 扫描（打开了 Wi-Fi 冷启动才有用）。第一次定到就按它撒粒子，之后每次给一个重尾的位置观测。
@@ -117,9 +124,24 @@ public final class ShadowLocalizer {
         if !wifiSeeded {
             localizer.reset(start: fix.position, spreadCm: WiFiColdStartProfile.seedSpreadCm, headingUnknown: true, walkableTries: 30)
             wifiSeeded = true
-        } else {
-            localizer.applyRobustPositionPrior(fix.position, sigmaCm: WiFiColdStartProfile.priorSigmaCm, nu: WiFiColdStartProfile.priorNu)
+            return
         }
+        // 跟踪档不判丢、定到后不注入新粒子，粒子只会在第一次定位附近：第一次就是离群的定位时永远拉不回来。
+        // 离粒子很远（3σ 外）的定位先不用（单次离群），连续几次都这样就按这几次的平均重新撒
+        if fix.position.distance(to: localizer.weightedSpread().mean) > WiFiColdStartProfile.reseedDistanceCm {
+            wifiFarFixes.append(fix.position)
+            if wifiFarFixes.count >= WiFiColdStartProfile.reseedAfterFixes {
+                let c = Point2(wifiFarFixes.map(\.x).reduce(0, +) / Double(wifiFarFixes.count),
+                               wifiFarFixes.map(\.y).reduce(0, +) / Double(wifiFarFixes.count))
+                localizer.reset(start: c, spreadCm: WiFiColdStartProfile.seedSpreadCm, headingUnknown: true, walkableTries: 30)
+                wifiFarFixes = []
+                wifiReseeds += 1
+            }
+            return
+        } else {
+            wifiFarFixes = []
+        }
+        localizer.applyRobustPositionPrior(fix.position, sigmaCm: WiFiColdStartProfile.priorSigmaCm, nu: WiFiColdStartProfile.priorNu)
     }
 
     /// ARKit 位姿。送进滤波器时返回新的估计。`tMs` 给了才会用蓝牙。

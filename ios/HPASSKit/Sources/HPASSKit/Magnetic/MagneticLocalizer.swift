@@ -175,6 +175,8 @@ public struct MagneticConfig {
     /// 用 `MagneticLocalizer.setOdometry` 换成对应那一套参数。
     public var trackingOdometry: OdometrySource?
     public var trackingHeadingKnown = true
+    /// 配置档钉死的定到后地磁权重：`setOdometry` 换运动来源时不覆盖（Wi-Fi 冷启动档钉成 0）。nil = 按运动来源给
+    public var pinnedConvergedMagWeight: Double?
     /// 已知起点开始的跟踪里，蓝牙（BLEAssist）只做软约束，而且只在蓝牙底图学过本场地标签范围时
     /// （`BLEAssist.supportsSoftTracking`；人工打点的标签位置表合成的底图没有，照旧用硬约束）：
     /// 有上限的软范围约束（见下；`bleSoftRangeWeight = 0` 时改用宽位置先验 σ ≥ `bleSoftPriorSigmaCm`、权重 `bleSoftPriorWeight`）；

@@ -156,6 +156,47 @@ final class WiFiFingerprintTests: XCTestCase {
         XCTAssertLessThan(last!.position.distance(to: lastTruth), 300)
     }
 
+    /// 第一次 Wi-Fi 定位是离群值（离真值 34 m，起点撒开的 4σ 外）：之后连续几次定位都离粒子很远 → 重新撒粒子，最后报的位置回到真值附近。
+    /// 另外：Wi-Fi 冷启动不用蓝牙；换运动来源也不把钉死的地磁权重改回去。
+    func testOutlierFirstFixIsReseededAndBLEIgnored() {
+        let m = builtMap()
+        let sh = ShadowLocalizer(field: flatField(), walkable: nil, useRawMag: false)
+        sh.enableWiFi(m, odometry: .pdr)
+        // 蓝牙底图：一片标签在 x = 35 m（离走的路很远），一直「听到」它；Wi-Fi 模式下不该有任何蓝牙判丢
+        sh.bleMap = BLEFingerprintMap(cellCm: 200, cells: [], tags: ["far": .init(x: 3500, y: 500, maxRssi: -60, samples: 50),
+                                                                      "far2": .init(x: 3600, y: 500, maxRssi: -60, samples: 50)])
+        var t: Int64 = 0
+        var last: MagneticEstimate?
+        var lastTruth = Point2.zero
+        var nextScan: Int64 = 1000
+        var first = true
+        // 来回走两趟 y = 500
+        var path: [Point2] = []
+        for i in 0...170 { path.append(Point2(300 + Double(i) * 20, 500)) }
+        for i in 0...170 { path.append(Point2(3700 - Double(i) * 20, 500)) }
+        for p in path {
+            t += 170
+            sh.bleReading(tMs: t, id: "far", rssi: -60)
+            sh.bleReading(tMs: t, id: "far2", rssi: -62)
+            if t >= nextScan {
+                sh.wifiScan(scan(at: first ? Point2(3700, 500) : p, t: t))     // 第一次：离真值 34 m
+                first = false
+                nextScan += 2000
+            }
+            if let e = sh.pose(a: p, normal: true, tMs: t) { last = e; lastTruth = p }
+        }
+        XCTAssertGreaterThanOrEqual(sh.wifiReseeds, 1)
+        XCTAssertEqual(sh.crossCheckResets, 0)
+        XCTAssertTrue(last?.converged == true)
+        XCTAssertLessThan(last!.position.distance(to: lastTruth), 300)
+        sh.localizer.setOdometry(.vio)
+        XCTAssertEqual(sh.localizer.config.convergedMagWeight, WiFiColdStartProfile.magneticWeight)
+        // 没钉死的跟踪档：换来源照常换权重
+        let tr = MagneticLocalizer(field: flatField(), config: .tracking(odometry: .pdr), seed: 1)
+        tr.setOdometry(.vio)
+        XCTAssertEqual(tr.config.convergedMagWeight, 0.1)
+    }
+
     private func flatField() -> MagneticFieldMap {
         let w = 4000.0, h = 1000.0, cell = 50.0
         let n = Int(w / cell) * Int(h / cell)

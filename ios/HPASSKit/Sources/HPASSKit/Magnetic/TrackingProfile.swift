@@ -109,7 +109,7 @@ public extension MagneticConfig {
             initialScaleSigma = 0.03
             scaleWalkPerM = 0.003
             // 推算本身已经很准（公开数据集：中位 0.3 m），地磁只做很小的修正
-            convergedMagWeight = 0.1
+            convergedMagWeight = pinnedConvergedMagWeight ?? 0.1
         case .pdr:
             // 起始朝向来自「面朝下一个点位」/ 在屏幕上指，比视觉里程计粗：8～10°
             initialHeadingBiasSigmaDeg = trackingHeadingKnown ? 10 : 30
@@ -117,7 +117,7 @@ public extension MagneticConfig {
             positionNoiseFraction = d.positionNoiseFraction
             initialScaleSigma = d.initialScaleSigma
             scaleWalkPerM = d.scaleWalkPerM
-            convergedMagWeight = 0.2
+            convergedMagWeight = pinnedConvergedMagWeight ?? 0.2
         }
     }
 }
@@ -146,6 +146,10 @@ public enum WiFiColdStartProfile {
     public static let holdSpreadCm: Double = 350
     /// 定到之后地磁的权重（MagneticConfig.convergedMagWeight）。0 = 不用地磁，原因见上
     public static let magneticWeight: Double = 0
+    /// 连续 `reseedAfterFixes` 次 Wi-Fi 定位都离粒子加权平均超过这么远（cm，3σ），就按这几次的平均重新撒粒子
+    /// （第一次定位是离群值时，跟踪档自己不判丢、不注入，拉不回来）
+    public static let reseedDistanceCm: Double = 1500
+    public static let reseedAfterFixes = 3
 }
 
 public extension MagneticConfig {
@@ -159,6 +163,7 @@ public extension MagneticConfig {
         c.localRecovery = false
         c.uniformHeadingForInjection = true
         c.convergedMagWeight = WiFiColdStartProfile.magneticWeight
+        c.pinnedConvergedMagWeight = WiFiColdStartProfile.magneticWeight
         return c
     }
 }

@@ -861,7 +861,8 @@ public final class MagneticLocalizer {
         // 冷启动收敛门起作用时（只靠地磁找位置）可以用更高的温度：相邻几次读数高度相关，按独立算会过度自信，
         // 峰的权重比就量不准。再按残差相关长度折算（跟踪档；0 = 原有行为）
         let baseTemp = coldStartGateActive && config.coldSearchTemperature > 0 ? config.coldSearchTemperature : config.likelihoodTemperature
-        let temp = baseTemp * max(config.magneticCorrelationCm / max(config.updateDistanceCm, 1), 1)
+        let corrFactor = max(config.magneticCorrelationCm / max(config.updateDistanceCm, 1), 1)
+        let temp = baseTemp * corrFactor
         for i in 0..<xs.count {
             guard let m = field.sample(at: Point2(xs[i], ys[i])) else { continue }
             let v0 = m.sigma.total * m.sigma.total + floor2
@@ -905,7 +906,9 @@ public final class MagneticLocalizer {
             neutral *= gate
         }
         // 局部找回时没有数据的粒子也不罚（和已收敛时一样给平均值）：找回范围本来就只在附近
-        let missing = (hasConverged || recoveringLocally) ? neutral : (missingDataPenaltyOverride ?? config.missingDataPenalty)
+        // 没数据的罚分代替的是一次地磁观测，按同一个相关长度折算（不然地磁变软之后它相对重了 corrFactor 倍）。
+        // 撞墙 / 走向这些运动约束不折算：它们是地图的物理约束，不是地磁证据
+        let missing = (hasConverged || recoveringLocally) ? neutral : (missingDataPenaltyOverride ?? config.missingDataPenalty) / corrFactor
         for i in 0..<xs.count {
             if let ll = lls[i] {
                 logw[i] += ll * gate

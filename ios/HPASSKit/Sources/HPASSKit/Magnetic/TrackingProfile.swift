@@ -36,19 +36,25 @@ public enum TrackingProfile {
     /// 自己丢了之后走了这么远（cm）还没在附近找回，就改回全图找
     public static let localRecoveryGlobalAfterCm: Double = 6000
 
-    // 地磁似然标定。数值来自公开数据集的实测残差（hpass-eval --residuals：测试会话每 50 cm 的读数和
-    // 「全局解偏移的融合图」在参考位置的值比，扣掉每条会话的整体偏移），不是按定位结果调的：
-    // - 残差按 Student-t（ν = 4）拟合的尺度三个分量都是 5 µT 左右，而地图格子自己的标准差中位才 1 µT，
-    //   原来的 1.5 µT 下限让 1/3 的读数落在 3σ 以外（t 分布应该是 5%）；
-    // - 残差沿路的积分相关长度约 12～17 次更新（6～8 m）：地图误差、偏移误差都是成片的，每 50 cm 一次的更新远不是独立的；
-    // - 用开头一次读数估整体偏移，误差中位 5～7 µT、P90 11～25 µT；攒 20 次（10 m）取中位数，降到中位 2.5～4.5 µT。
+    // 地磁似然标定。数值来自公开数据集的实测残差（hpass-eval --residuals + tools/bench/mag_residuals.py：会话每 50 cm 的读数
+    // 和「全局解偏移的融合图」在真值位置的值比，扣掉每条会话的整体偏移），不是按定位结果调的。
+    // 用的是留出的数据：建图会话两折交叉（一半建图、另一半当测试，44 + 48 条会话），不用 Lab 打分的测试会话：
+    // - 残差按 Student-t（ν = 4）拟合的尺度 3.7～4.5 µT，而地图格子自己的标准差中位才 1 µT；
+    //   原来的 1.5 µT 下限让 21～30% 的读数落在 3σ 以外（t 分布应该是 5.5%），4 µT 时 5～8%；
+    // - 残差沿路的积分相关长度约 11～15 次更新（5.5～7.5 m）：地图误差、偏移误差都是成片的，每 50 cm 一次的更新远不是独立的；
+    // - 用开头一次读数估整体偏移，误差中位 3～4 µT、P90 8～14 µT；攒 20 次（10 m）取中位数，降到中位 1.5～1.9 µT。
+    // （Lab 的测试会话上量的是 t 尺度 5 µT、相关长度 6～8.5 m，结论一样；Lab 结果对下限 4 / 5 µT、相关长度 3～10 m 都不敏感。）
     /// 观测噪声下限（µT），和地图格子的标准差合成
-    public static let observationSigmaFloorUT: Double = 5
+    public static let observationSigmaFloorUT: Double = 4
     /// 地磁残差的相关长度（cm）：走这么远才算一次独立的地磁观测
     public static let magneticCorrelationCm: Double = 600
     /// 定到之后攒这么多次更新的残差再估整体偏移（中位数），之后用最近 `offsetMedianWindow` 次的中位数慢慢跟
     public static let offsetWarmupUpdates = 20
     public static let offsetMedianWindow = 60
+    /// 跟踪时的「丢了」置信度门限（全局默认 0.2）。置信度 = 簇质量 × (1 − 不确定度 / confidenceScaleCm)；
+    /// 地磁按相关长度变软之后粒子云如实地宽了，0.2 会在位置其实没错的路段频繁判丢（Lab：误差中位 0.8 m 时 16% 的时间
+    /// 不报位置，App 里就是位置冻住）。0.1 时公开基准覆盖 94～100%，错定 ≤ 1%（计步）。
+    public static let lostConfidence: Double = 0.1
 }
 
 public extension MagneticConfig {
@@ -80,6 +86,7 @@ public extension MagneticConfig {
         c.magneticCorrelationCm = TrackingProfile.magneticCorrelationCm
         c.offsetWarmupUpdates = TrackingProfile.offsetWarmupUpdates
         c.offsetMedianWindow = TrackingProfile.offsetMedianWindow
+        c.lostConfidence = TrackingProfile.lostConfidence
         c.bleSoftTracking = true
         return c
     }

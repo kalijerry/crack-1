@@ -81,6 +81,8 @@ final class TrackingProfileTests: XCTestCase {
             XCTAssertEqual(x.magneticCorrelationCm, TrackingProfile.magneticCorrelationCm)
             XCTAssertEqual(x.offsetWarmupUpdates, TrackingProfile.offsetWarmupUpdates)
             XCTAssertEqual(x.offsetMedianWindow, TrackingProfile.offsetMedianWindow)
+            XCTAssertEqual(x.lostConfidence, TrackingProfile.lostConfidence)
+            XCTAssertLessThan(x.lostConfidence, MagneticConfig().lostConfidence)
             XCTAssertEqual(x.likelihoodTemperature, 1.5)
         }
         XCTAssertEqual(c.trackingOdometry, .vio)

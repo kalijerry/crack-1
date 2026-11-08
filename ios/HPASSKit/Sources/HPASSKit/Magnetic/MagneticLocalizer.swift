@@ -29,6 +29,9 @@ public struct MagneticConfig {
     /// 不知道朝向（冷启动，或只知道位置不知道朝向）时，每个粒子的航向偏差在整圆上均匀取值，
     /// 靠通道走向和磁场匹配把它挑出来；不依赖罗盘或「地图朝向」。
     public var uniformHeadingWhenUnknown = true
+    /// 重采样时注入的随机粒子：航向未知时航向偏差也在整圆上均匀取值（false = 沿用 N(0, `initialHeadingBiasSigmaDeg`)）。
+    /// 默认关，保持原有冷启动行为；由需要的配置档显式打开。
+    public var uniformHeadingForInjection = false
 
     /// 累计位移达到多少 cm 才做一次观测更新。
     public var updateDistanceCm: Double = 50
@@ -208,17 +211,21 @@ public final class MagneticLocalizer {
     /// 有磁场数据的面积（m²），冷启动只在这里面找。
     public var mappedAreaM2: Double { Double(mappedCells.count) * field.cellCm * field.cellCm / 10_000 }
 
-    private func randomPosition() -> Point2 {
+    private func randomPosition() -> Point2 { randomPositionWithAnchor().point }
+
+    /// 随机位置，外加一个保证可走的「锚点」（选中的有数据格子中心；没有时为 nil）。
+    /// 格内偏移最多半格，可能落到通道外，调用方可以退回锚点。
+    private func randomPositionWithAnchor() -> (point: Point2, anchor: Point2?) {
         // 只在有磁场数据的地方找：没采集过的地方本来就没法用地磁定位
         if !mappedCells.isEmpty {
             let c = mappedCells[min(Int(rng.uniform() * Double(mappedCells.count)), mappedCells.count - 1)]
             let h = field.cellCm / 2
-            return Point2(c.x + (rng.uniform() * 2 - 1) * h, c.y + (rng.uniform() * 2 - 1) * h)
+            return (Point2(c.x + (rng.uniform() * 2 - 1) * h, c.y + (rng.uniform() * 2 - 1) * h), c)
         }
         if let w = walkable, let p = w.randomPoint(u1: rng.uniform(), u2: rng.uniform(), u3: rng.uniform()) {
-            return p
+            return (p, p)
         }
-        return Point2(rng.uniform() * field.widthCm, rng.uniform() * field.heightCm)
+        return (Point2(rng.uniform() * field.widthCm, rng.uniform() * field.heightCm), nil)
     }
 
     /// 重新开始。start 为 nil 时在可走区域（没有通道信息就是整张图）均匀撒点；
@@ -763,7 +770,8 @@ public final class MagneticLocalizer {
         var u = rng.uniform() * step
         var nx = [Double](repeating: 0, count: m), ny = nx, nb = nx, ns = nx
         var e0 = [Double](repeating: .nan, count: m), e1 = e0, e2 = e0
-        var src = [Int](repeating: 0, count: m)  // 每个新粒子的重采样来源下标
+        var src = [Int](repeating: 0, count: m)  // 每个新粒子的重采样来源下标；注入粒子为 -1
+        var anchor = [Point2?](repeating: nil, count: m)  // 注入粒子的可走锚点
         var j = 0
         for i in 0..<m {
             while j < n - 1 && cum[j] < u { j += 1 }
@@ -778,17 +786,27 @@ public final class MagneticLocalizer {
         let inject = Int(Double(m) * (hasConverged ? config.randomInjectionConverged : config.randomInjection))
         for k in 0..<inject {
             let i = m - 1 - k
-            let p = randomPosition()
+            let (p, a) = randomPositionWithAnchor()
             nx[i] = p.x
             ny[i] = p.y
-            nb[i] = headingUnknown ? (rng.uniform() * 2 - 1) * Double.pi : rng.normal() * config.initialHeadingBiasSigmaDeg * Double.pi / 180
+            src[i] = -1
+            anchor[i] = a
+            nb[i] = headingUnknown && config.uniformHeadingForInjection ? (rng.uniform() * 2 - 1) * Double.pi : rng.normal() * config.initialHeadingBiasSigmaDeg * Double.pi / 180
             ns[i] = 1 + rng.normal() * config.initialScaleSigma
             e0[i] = .nan; e1[i] = .nan; e2[i] = .nan
         }
         for i in 0..<m {
             var p = Point2(min(max(nx[i], 0), field.widthCm), min(max(ny[i], 0), field.heightCm))
-            // 抖动后落到不可走区域：退回它的重采样来源粒子的位置（不是旧数组里同下标的无关粒子）
-            if let w = walkable, !w.isWalkable(p) { p = Point2(xs[src[i]], ys[src[i]]) }
+            if let w = walkable, !w.isWalkable(p) {
+                if src[i] >= 0 {
+                    // 抖动后落到不可走区域：退回它的重采样来源粒子的位置（不是旧数组里同下标的无关粒子）
+                    p = Point2(xs[src[i]], ys[src[i]])
+                } else {
+                    // 注入粒子的格内偏移落到通道外：退回选中的格子中心（或最近的可走点），
+                    // 绝不退回重采样来源，否则会被拉进已收敛（可能锁错）的簇里
+                    p = anchor[i] ?? w.nearestWalkable(to: p, radiusCm: 300) ?? p
+                }
+            }
             nx[i] = p.x
             ny[i] = p.y
         }

@@ -3,19 +3,19 @@ import Foundation
 
 struct BLEReading {
     let tMs: Int64
-    let eslId: String?
+    let tagId: String?
     let rssi: Int
     let src: String
     let mfgHex: String
 }
 
-enum ESLParser {
-    /// 价签广播使用的公司 ID（Handy+ 中 getManufacturerSpecificData(13)）。
+enum TagParser {
+    /// 标签广播使用的公司 ID。
     static let companyId: UInt16 = 0x000D
 
     /// 与 Android 端规则一致：去掉 2 字节公司 ID 后 payload 长度 4..7，取前 4 字节转大写十六进制，用 "-" 连接。
     /// 注意 iOS 的 kCBAdvDataManufacturerData 含公司 ID 前缀，Android 的 getManufacturerSpecificData 不含。
-    static func eslId(from data: Data) -> String? {
+    static func tagId(from data: Data) -> String? {
         let b = [UInt8](data)
         guard b.count >= 2 else { return nil }
         let cid = UInt16(b[0]) | (UInt16(b[1]) << 8)
@@ -33,8 +33,8 @@ enum ESLParser {
 final class BLEScanner: NSObject, CBCentralManagerDelegate {
     var onReading: (@Sendable (BLEReading) -> Void)?
     var onState: (@Sendable (CBManagerState) -> Void)?
-    /// 只记录价签广播；关闭时记录所有带厂商数据的广播。
-    var onlyESL = true
+    /// 只记录标签广播；关闭时记录所有带厂商数据的广播。
+    var onlyTags = true
 
     private var central: CBCentralManager!
     private let queue = DispatchQueue(label: "ble.scan", qos: .userInitiated)
@@ -77,12 +77,12 @@ final class BLEScanner: NSObject, CBCentralManagerDelegate {
         let rssi = RSSI.intValue
         if rssi >= 127 || rssi == 0 { return } // 127 = 不可用
         guard let mfg = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data else { return }
-        let id = ESLParser.eslId(from: mfg)
-        if onlyESL, id == nil { return }
+        let id = TagParser.tagId(from: mfg)
+        if onlyTags, id == nil { return }
         onReading?(BLEReading(tMs: Fmt.nowMs(),
-                              eslId: id,
+                              tagId: id,
                               rssi: rssi,
                               src: peripheral.identifier.uuidString,
-                              mfgHex: ESLParser.hex(mfg)))
+                              mfgHex: TagParser.hex(mfg)))
     }
 }

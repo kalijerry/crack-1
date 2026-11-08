@@ -9,7 +9,7 @@ import Security
 enum Keychain {
     /// 服务名。取 bundle id，避免在代码里写死任何业务标识。
     private static let service: String =
-        (Bundle.main.bundleIdentifier ?? "ESLCollector") + ".credentials"
+        (Bundle.main.bundleIdentifier ?? "HPASSApp") + ".credentials"
 
     /// 写入；传 nil 等同删除。
     static func set(_ value: String?, for key: String) {

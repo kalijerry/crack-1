@@ -31,7 +31,7 @@ struct ServerConfig: Codable, Equatable {
     var baseURL: String = ""            // 形如 https://…
     var mapPath: String = ""            // 路径或完整地址，可含 {store} {floor} 占位符
     var fingerprintPath: String = ""
-    var eslPath: String = ""
+    var tagPath: String = ""
     var storeCode: String = ""
     var floorId: String = ""
     var authMode: AuthMode = .none
@@ -39,11 +39,17 @@ struct ServerConfig: Codable, Equatable {
     var extraHeadersText: String = ""   // 每行一条 "Name: Value"
     var allowInsecureTLS: Bool = false  // 自签名内网服务器用，默认关
 
+    // UserDefaults 里已存的配置用的是旧键名，tagPath 照旧读写 "eslPath"
+    enum CodingKeys: String, CodingKey {
+        case baseURL, mapPath, fingerprintPath, tagPath = "eslPath", storeCode, floorId, authMode,
+             authHeaderName, extraHeadersText, allowInsecureTLS
+    }
+
     func path(for kind: StoreDataStore.FileKind) -> String {
         switch kind {
         case .map: return mapPath
         case .fingerprint: return fingerprintPath
-        case .esl: return eslPath
+        case .tags: return tagPath
         }
     }
 
@@ -126,7 +132,7 @@ private final class InsecureTLSDelegate: NSObject, URLSessionDelegate {
 
 // MARK: - 客户端
 
-/// 门店数据下载客户端。所有服务端信息来自 `ServerConfig`，代码内不含任何地址或密钥。
+/// 场地数据下载客户端。所有服务端信息来自 `ServerConfig`，代码内不含任何地址或密钥。
 final class StoreDataClient: @unchecked Sendable {
     static let shared = StoreDataClient()
 
@@ -151,7 +157,7 @@ final class StoreDataClient: @unchecked Sendable {
 
     // MARK: 下载
 
-    /// 下载一项门店数据，返回原始字节，交给 `StoreDataStore.save(_:as:)` 落盘。
+    /// 下载一项场地数据，返回原始字节，交给 `StoreDataStore.save(_:as:)` 落盘。
     func fetch(_ kind: StoreDataStore.FileKind,
                config: ServerConfig,
                credential: String,
@@ -376,12 +382,12 @@ final class StoreDataClient: @unchecked Sendable {
         switch kind {
         case .map: return "地图"
         case .fingerprint: return "指纹库"
-        case .esl: return "标签/物品"
+        case .tags: return "标签/物品"
         }
     }
 
-    /// 日志里只记录路径「形状」：保留占位符，并把已填的门店编码 / 楼层回写成占位符，
-    /// 不输出完整地址，避免把门店标识写进日志。
+    /// 日志里只记录路径「形状」：保留占位符，并把已填的场地编码 / 楼层回写成占位符，
+    /// 不输出完整地址，避免把场地标识写进日志。
     static func pathShape(_ template: String, config: ServerConfig) -> String {
         var s = template.trimmingCharacters(in: .whitespacesAndNewlines)
         let store = config.storeCode.trimmingCharacters(in: .whitespaces)

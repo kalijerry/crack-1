@@ -6,7 +6,7 @@ import UIKit
 /// - WebSocket 实时发日志、定位 / 采集状态（每秒最多 2 次），断网时先攒着，连上再批量补发；
 /// - HTTP 上传采集会话（zip）和当前地图（看板画地图用）。
 ///
-/// 地址和口令在「门店数据 → 云端后台」里填，口令存钥匙串。只在 App 前台工作。
+/// 地址和口令在「场地数据 → 云端后台」里填，口令存钥匙串。只在 App 前台工作。
 @MainActor
 final class Telemetry: ObservableObject {
     static let shared = Telemetry()
@@ -263,8 +263,8 @@ final class Telemetry: ObservableObject {
         var isCloudFused: Bool { origin == "cloud" }
     }
 
-    /// 后台的价签位置表（正常模式下从这里拿，不用自己导入）
-    func downloadEslLocations() async -> Data? {
+    /// 后台的标签位置表（正常模式下从这里拿，不用自己导入）
+    func downloadTagLocations() async -> Data? {
         guard let r = request("api/esl/locations.csv", method: "GET") else { return nil }
         guard let res = try? await URLSession.shared.data(for: r), (res.1 as? HTTPURLResponse)?.statusCode == 200 else { return nil }
         return res.0
@@ -280,8 +280,8 @@ final class Telemetry: ObservableObject {
         }
     }
 
-    /// 价签位置表传到后台（云端融合当蓝牙底图）
-    func uploadEslLocations(_ data: Data) async {
+    /// 标签位置表传到后台（云端融合当蓝牙底图）
+    func uploadTagLocations(_ data: Data) async {
         guard enabled, var r = request("api/esl/locations.csv", method: "PUT") else { return }
         r.setValue("text/csv; charset=utf-8", forHTTPHeaderField: "Content-Type")
         let resp = try? await URLSession.shared.upload(for: r, from: data).1

@@ -3,7 +3,7 @@ import HPASSKit
 
 /// 地磁模式用的「一张地图」：10×10 m 的范围、手动定的点位、校准得到的磁场网格，全放在一个 JSON 里。
 ///
-/// 文件在 `Documents/magmap.json`，格式兼容门店地图（`width` `height` `mapElementList`），
+/// 文件在 `Documents/magmap.json`，格式兼容场地地图（`width` `height` `mapElementList`），
 /// 额外字段：`markPoints`（点位）、`magField`（校准结果，定位用）、`magStats`（累积统计，继续校准用）。
 @MainActor
 final class MagMapStore: ObservableObject {
@@ -16,7 +16,7 @@ final class MagMapStore: ObservableObject {
     @Published private(set) var field: MagneticFieldMap?
     /// 当前磁场图从哪来（例如「2 个会话：…，10-06 16:20」），界面上显示，删除时清掉
     @Published private(set) var fieldSource: String? = UserDefaults.standard.string(forKey: "magFieldSource")
-    /// 蓝牙自动指纹（建图采集时顺便录的价签信号，和磁场图一起生成）；定位时当粗定位
+    /// 蓝牙自动指纹（建图采集时顺便录的标签信号，和磁场图一起生成）；定位时当粗定位
     @Published private(set) var bleMap: BLEFingerprintMap? = MagMapStore.loadBLE()
 
     nonisolated static var bleURL: URL {
@@ -38,7 +38,7 @@ final class MagMapStore: ObservableObject {
     @Published private(set) var validCells = 0
     @Published private(set) var lastError: String?
 
-    /// 门店地图里的通道（来自「门店数据」页导入的地图），用于通道约束。
+    /// 场地地图里的通道（来自「场地数据」页导入的地图），用于通道约束。
     @Published private(set) var crosses: [CrossSegment] = []
     /// 地图的真实朝向：地图 +y 轴的磁罗盘方位角（度）。第一次「定点 + 设朝向」时自动记下，之后冷启动用。
     /// 地图朝向：地图「上方」（−y）指向的罗盘方位（度，顺时针，0 = 北）。由用户填写，例如 316。
@@ -72,9 +72,9 @@ final class MagMapStore: ObservableObject {
         }
     }
 
-    // MARK: 门店地图
+    // MARK: 场地地图
 
-    /// 采用「门店数据」页导入的地图：尺寸、通道。尺寸变了就清掉不再对得上的校准数据和点位。
+    /// 采用「场地数据」页导入的地图：尺寸、通道。尺寸变了就清掉不再对得上的校准数据和点位。
     func adopt(map: StoreMap?) {
         guard let m = map, m.width > 0, m.height > 0 else { return }
         let sameSize = abs(m.width - widthCm) < 1 && abs(m.height - heightCm) < 1
@@ -156,8 +156,8 @@ final class MagMapStore: ObservableObject {
         AppLog.i("地磁", "地图朝向：" + (mapUpBearingDeg.map { "上方指向 \(Fmt.f($0, 0))°" } ?? "未设置"))
     }
 
-    /// 用门店地图做底，还是没有门店地图时的小测试区。
-    /// 有门店地图（通道）或房间地图（地面）
+    /// 用场地地图做底，还是没有场地地图时的小测试区。
+    /// 有场地地图（通道）或房间地图（地面）
     var usesStoreMap: Bool { !crosses.isEmpty || !floor.isEmpty }
 
     // MARK: 点位

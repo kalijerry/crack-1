@@ -19,7 +19,7 @@ struct DepthLateral {
 /// - 打开 `wantsDepth` 时，约 10 Hz 把 LiDAR 深度图转成通道左右的货架距离。
 ///
 /// ARKit 世界系：重力对齐，x 右、y 上、z 朝向观察者。俯视（从 +y 往下看）时 x 向右、z 向下，
-/// 与门店地图的 x 向右、y 向下是同一个手性，所以 (x, z) → 地图 (x, y) 只需要一次平面旋转加平移。
+/// 与场地地图的 x 向右、y 向下是同一个手性，所以 (x, z) → 地图 (x, y) 只需要一次平面旋转加平移。
 final class ARKitLogger: NSObject, ARSessionDelegate {
 
     /// 回调：Unix 毫秒、x 厘米、z 厘米、跟踪状态（0 不可用 1 受限 2 正常）。在内部串行队列上调用。

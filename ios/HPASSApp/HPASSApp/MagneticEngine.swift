@@ -93,7 +93,7 @@ private final class MagPipeline {
     var shownA: Point2?
     /// 地磁滤波器当前是否有把握（没用地磁时为 true）
     var lastConverged = true
-    /// 蓝牙粗定位：价签指纹、最近几秒的读数、上次用的时间
+    /// 蓝牙粗定位：标签指纹、最近几秒的读数、上次用的时间
     var bleMap: BLEFingerprintMap?
     var bleAssist: BLEAssist?
     /// 地图还准不准（变化检测 + 定位时的磁场累积），有磁场图时才有
@@ -101,7 +101,7 @@ private final class MagPipeline {
     var monitorField: MagneticFieldMap?
     var bleWindow: [(t: Int64, id: String, rssi: Double)] = []
     var lastBleApply: Int64 = 0
-    /// 上次「贴近价签」定位的时间
+    /// 上次「贴近标签」定位的时间
     var lastTouchMs: Int64 = 0
     /// 视觉认出了房间：ARKit 坐标系就是房间扫描时的，位置直接 = arAlign(ARKit 位姿)（实测误差 0.1～0.6 m），
     /// 不再让地磁滤波器改（没采过地磁的房间里，地磁会锁到 13 m 外长得像的地方）
@@ -231,7 +231,7 @@ final class MagneticEngine: ObservableObject {
     private let motion = MotionRecorder()
     private let ar = ARKitLogger()
 
-    // 抓定位：货架黄标签（摄像头）、手机贴近价签。都是「人一定在这一小块」的确定观测，能把定错的位置拉回来
+    // 抓定位：货架黄标签（摄像头）、手机贴近标签。都是「人一定在这一小块」的确定观测，能把定错的位置拉回来
     private let signReader = ShelfSignReader()
     private var shelfSigns: ShelfSigns?
     private var lastSignText: (String, Date)?
@@ -654,7 +654,7 @@ final class MagneticEngine: ObservableObject {
     private func makeFusion(at p: Point2, heading: Double?, declinationDeg: Double? = nil, compass: Bool? = nil) -> FusionEngine {
         let store = MagMapStore.shared
         var cfg = FusionConfig()
-        // 有门店通道时，惯导位置被限制在通道里（与蓝牙定位页一致）
+        // 有场地通道时，惯导位置被限制在通道里（与蓝牙定位页一致）
         cfg.useCorridorConstraint = !store.crosses.isEmpty
         cfg.useMagneticHeading = compass ?? useCompassHeading
         cfg.stepLengthScale = stepScale
@@ -697,16 +697,16 @@ final class MagneticEngine: ObservableObject {
 
     // MARK: 蓝牙粗定位
 
-    /// 蓝牙底图：价签位置表（全店）+ 采集学到的（表明显不对时用学到的）
+    /// 蓝牙底图：标签位置表（全店）+ 采集学到的（表明显不对时用学到的）
     private func bleBaseMap() -> BLEFingerprintMap? {
         let learned = MagMapStore.shared.bleMap
-        let locs = StoreDataStore.shared.eslLocations
+        let locs = StoreDataStore.shared.tagLocations
         if locs.isEmpty { return learned }
-        return EslLocations.seededBLEMap(locs, learned: learned)
+        return TagLocations.seededBLEMap(locs, learned: learned)
     }
 
     private func startBLE() {
-        // 这张地图不用蓝牙（房间 / 办公室默认）：定位不开蓝牙，只在找价签时开扫描
+        // 这张地图不用蓝牙（房间 / 办公室默认）：定位不开蓝牙，只在找标签时开扫描
         guard MapLibrary.shared.activeBLEEnabled else {
             AppLog.i("地磁", "这张地图不用蓝牙：只用地磁 + ARKit（+ 视觉定位）")
             startFinderScanOnly()
@@ -716,17 +716,17 @@ final class MagneticEngine: ObservableObject {
         let pipe = self.pipe, queue = self.queue
         queue.sync { pipe.bleMap = m; pipe.bleAssist = nil; pipe.bleWindow = []; pipe.lastBleApply = 0 }
         if ble == nil { ble = BLEScanner() }
-        ble?.onlyESL = true
-        let whitelist = StoreDataStore.shared.eslIds
+        ble?.onlyTags = true
+        let whitelist = StoreDataStore.shared.tagIds
         let finder = finderBox
         ble?.onReading = { [weak self] r in
-            guard let id = r.eslId, whitelist?.contains(id) ?? true else { return }
+            guard let id = r.tagId, whitelist?.contains(id) ?? true else { return }
             if finder.matches(id) { Task { @MainActor in self?.heardTarget(rssi: Double(r.rssi)) } }
             queue.async {
                 pipe.bleWindow.append((r.tMs, id, Double(r.rssi)))
                 pipe.bleWriter?.append("\(r.tMs),,\(id),\(r.rssi),,")
                 if pipe.bleWindow.count > 2000 { pipe.bleWindow.removeFirst(pipe.bleWindow.count - 2000) }
-                // 手机贴近价签：信号特别强 → 人就在这片价签所在的货架前（2.5 m 以内）
+                // 手机贴近标签：信号特别强 → 人就在这片标签所在的货架前（2.5 m 以内）
                 if Double(r.rssi) >= BLEAssist.touchRssi, r.tMs - pipe.lastTouchMs > 4000,
                    let tag = pipe.bleMap?.tags[id], let loc = pipe.localizer {
                     pipe.lastTouchMs = r.tMs
@@ -743,10 +743,10 @@ final class MagneticEngine: ObservableObject {
         AppLog.i("地磁", "蓝牙粗定位：已开，指纹 \(m.tags.count) 个标签")
     }
 
-    // MARK: 寻找模式：找一个价签
+    // MARK: 寻找模式：找一个标签
 
-    /// 正在找的价签（地图上高亮它的货架；实时显示它的信号）
-    @Published private(set) var findTarget: EslLocation?
+    /// 正在找的标签（地图上高亮它的货架；实时显示它的信号）
+    @Published private(set) var findTarget: TagLocation?
     @Published private(set) var findRssi: Double?
     @Published private(set) var findLastHeard: Date?
     /// 信号在变强（1）/ 变弱（-1）/ 差不多（0）
@@ -755,7 +755,7 @@ final class MagneticEngine: ObservableObject {
     private var findHistory: [(Date, Double)] = []
     private var lastProximity = 0
 
-    func setFindTarget(_ e: EslLocation?) {
+    func setFindTarget(_ e: TagLocation?) {
         if navFromFind { stopNavigation() }
         findTarget = e
         finderBox.set(e?.id)
@@ -773,10 +773,10 @@ final class MagneticEngine: ObservableObject {
     private func startFinderScanOnly() {
         guard phase == .live, finderBox.id != nil || findTarget != nil else { return }
         if ble == nil { ble = BLEScanner() }
-        ble?.onlyESL = true
+        ble?.onlyTags = true
         let finder = finderBox
         ble?.onReading = { [weak self] r in
-            guard let id = r.eslId, finder.matches(id) else { return }
+            guard let id = r.tagId, finder.matches(id) else { return }
             Task { @MainActor in self?.heardTarget(rssi: Double(r.rssi)) }
         }
         ble?.start()
@@ -797,7 +797,7 @@ final class MagneticEngine: ObservableObject {
         lastProximity = prox
     }
 
-    /// 0 远 / 1 附近 / 2 很近 / 3 就在旁边（价签广播功率小，按经验阈值）
+    /// 0 远 / 1 附近 / 2 很近 / 3 就在旁边（标签广播功率小，按经验阈值）
     static func proximity(_ rssi: Double) -> Int { rssi > -60 ? 3 : (rssi > -70 ? 2 : (rssi > -80 ? 1 : 0)) }
     static let proximityText = ["还远（> 8 m）", "附近（3～8 m）", "很近（1～3 m）", "就在旁边（< 1 m）"]
 
@@ -808,7 +808,7 @@ final class MagneticEngine: ObservableObject {
         bleEstimate = nil
     }
 
-    /// 每秒一次：最近 2.5 秒听到的价签 → 粗定位、「不在采集区域」判断、交叉检验（BLEAssist，和回放评估同一套）。
+    /// 每秒一次：最近 2.5 秒听到的标签 → 粗定位、「不在采集区域」判断、交叉检验（BLEAssist，和回放评估同一套）。
     /// 在引擎队列上调用。
     private nonisolated func bleTick(pipe: MagPipeline, tMs: Int64, loc: MagneticLocalizer) {
         guard let m = pipe.bleMap, tMs - pipe.lastBleApply >= 1000 else { return }
@@ -1723,7 +1723,7 @@ final class MagneticEngine: ObservableObject {
     }
 }
 
-/// 寻找模式的目标价签编号（蓝牙回调线程读、主线程写）
+/// 寻找模式的目标标签编号（蓝牙回调线程读、主线程写）
 final class FinderBox: @unchecked Sendable {
     private let lock = NSLock()
     private var _id: String?

@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct ESLCollectorApp: App {
+struct HPASSMainApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()

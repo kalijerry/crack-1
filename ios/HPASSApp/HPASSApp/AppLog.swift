@@ -132,7 +132,7 @@ final class AppLog: ObservableObject {
 
     /// 写一份 log.txt 到临时目录，返回可分享的 URL。
     func exportToTemporaryFile() throws -> URL {
-        let name = "eslcollector-log-\(Int(Date().timeIntervalSince1970)).txt"
+        let name = "hpass-log-\(Int(Date().timeIntervalSince1970)).txt"
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
         try text.data(using: .utf8)?.write(to: url)
         return url

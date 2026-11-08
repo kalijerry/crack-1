@@ -423,7 +423,7 @@ final class SurveyEngine: ObservableObject {
     /// 轨迹离标签所在货架段前的区域超过这么远（cm）才自动纠（区域本身已经含了站位误差）
     static let signFixCm = 300.0
 
-    // 蓝牙打底：全店价签位置表不用采集就能定到 2 m 左右（实测中位 1.4～2.3 m）。采集时它做「低精度的底」——
+    // 蓝牙打底：全店标签位置表不用采集就能定到 2 m 左右（实测中位 1.4～2.3 m）。采集时它做「低精度的底」——
     // 自动定起点（罗盘 + 地图朝向定方向）、发现 ARKit 轨迹走偏就拉回；ARKit + 贴通道 + 地磁做高精度。
     @Published var bleBase = true
     @Published private(set) var bleFix: (position: Point2, spreadCm: Double)?
@@ -536,7 +536,7 @@ final class SurveyEngine: ObservableObject {
         lastError = nil
         worldMapGivenUp = false
         recorder.deviceLabel = "survey"
-        // 价签广播顺便录下来，生成磁场图时自动做成蓝牙指纹；这张地图不用蓝牙（房间 / 办公室）就不录
+        // 标签广播顺便录下来，生成磁场图时自动做成蓝牙指纹；这张地图不用蓝牙（房间 / 办公室）就不录
         let bleOn = MapLibrary.shared.activeBLEEnabled
         recorder.recordBLE = bleOn
         recorder.arbiterName = ""
@@ -571,8 +571,8 @@ final class SurveyEngine: ObservableObject {
             signFixes = 0
             lastSign = nil
             if bleBase && bleOn {
-                let locs = StoreDataStore.shared.eslLocations
-                bleBaseMap = locs.isEmpty ? MagMapStore.shared.bleMap : EslLocations.seededBLEMap(locs, learned: MagMapStore.shared.bleMap)
+                let locs = StoreDataStore.shared.tagLocations
+                bleBaseMap = locs.isEmpty ? MagMapStore.shared.bleMap : TagLocations.seededBLEMap(locs, learned: MagMapStore.shared.bleMap)
                 bleWalk = store.walkableMap()
             } else {
                 bleBaseMap = nil
@@ -780,7 +780,7 @@ final class SurveyEngine: ObservableObject {
         bleFix = TagRangeFix.fix(tags, walkable: bleWalk)
         switch stage {
         case .needPosition:
-            // 站着几秒、价签定位稳定（连续 3 秒落在 3 m 内、范围 ≤ 4 m）→ 自动定起点
+            // 站着几秒、标签定位稳定（连续 3 秒落在 3 m 内、范围 ≤ 4 m）→ 自动定起点
             guard let f = bleFix, f.spreadCm <= 400 else { bleStable = 0; return }
             bleStable = (lastFixPos.map { $0.distance(to: f.position) <= 300 } ?? false) ? bleStable + 1 : 1
             lastFixPos = f.position

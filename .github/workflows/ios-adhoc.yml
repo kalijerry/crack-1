@@ -73,13 +73,13 @@ jobs:
 
       - name: Generate project (signed settings)
         if: env.SKIP != '1'
-        working-directory: ios/ESLCollector
+        working-directory: ios/HPASSApp
         run: |
           brew install xcodegen
           python3 - <<'PY'
           import os, re
           p = "project.yml"; s = open(p).read()
-          s = s.replace("PRODUCT_BUNDLE_IDENTIFIER: com.example.eslcollector", "PRODUCT_BUNDLE_IDENTIFIER: " + os.environ["BUNDLE_ID"])
+          s = s.replace("PRODUCT_BUNDLE_IDENTIFIER: com.example.hpassapp", "PRODUCT_BUNDLE_IDENTIFIER: " + os.environ["BUNDLE_ID"])
           s = s.replace("CODE_SIGN_STYLE: Automatic",
                         "CODE_SIGN_STYLE: Manual\n        DEVELOPMENT_TEAM: " + os.environ["TEAM_ID"] +
                         "\n        CODE_SIGN_IDENTITY: \"Apple Distribution\"\n        PROVISIONING_PROFILE_SPECIFIER: \"" + os.environ["PROFILE_NAME"] + "\"")
@@ -90,10 +90,10 @@ jobs:
 
       - name: Archive and export
         if: env.SKIP != '1'
-        working-directory: ios/ESLCollector
+        working-directory: ios/HPASSApp
         run: |
           set -o pipefail
-          xcodebuild -project ESLCollector.xcodeproj -scheme ESLCollector -configuration Release \
+          xcodebuild -project HPASSApp.xcodeproj -scheme HPASSApp -configuration Release \
             -destination 'generic/platform=iOS' -archivePath $RUNNER_TEMP/HPASS.xcarchive archive | tail -50
           cat > $RUNNER_TEMP/export.plist <<PL
           <?xml version="1.0" encoding="UTF-8"?>

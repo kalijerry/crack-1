@@ -98,7 +98,7 @@ final class SurveyMapService: ObservableObject {
         let already = Set(prior?.sessions ?? [])
         let urls = items.filter { selected.contains($0.id) && !already.contains($0.id) }.map(\.url)
         guard !urls.isEmpty else { lastError = append ? "没有新会话可以追加" : "先选至少一个建图会话"; return }
-        let whitelist = StoreDataStore.shared.eslIds
+        let whitelist = StoreDataStore.shared.tagIds
         running = true
         lastError = nil
         lines = ["正在建图：\(urls.count) 个会话……"]
@@ -120,7 +120,7 @@ final class SurveyMapService: ObservableObject {
                     let s = try SurveySessionLoader.load(u)
                     let r = b.add(s)
                     total += r.samplesUsed
-                    // 蓝牙自动指纹：价签读数按时间放到对齐好的轨迹上
+                    // 蓝牙自动指纹：标签读数按时间放到对齐好的轨迹上
                     bleUsed += bb.add(samples: SurveySessionLoader.loadBLE(u), track: r.track)
                     var line = "\(u.lastPathComponent)：\(r.samplesUsed) 个样本"
                     if let a = r.corridorResidualBefore, let c = r.corridorResidualAfter {
@@ -157,7 +157,7 @@ final class SurveyMapService: ObservableObject {
                 if let d = try? JSONEncoder().encode(state) { try? d.write(to: Self.stateURL, options: .atomic) }
                 self.included = Set(doneNames)
                 // 不自动上传：云端（GitHub Actions）用后台所有会话融合出来的才是正式版本；
-                // 手机上生成的只是本机预览，要给别人用可以在「门店数据 → 云端地图」手动上传
+                // 手机上生成的只是本机预览，要给别人用可以在「场地数据 → 云端地图」手动上传
                 self.lines.append("完成：有数据的格子 \(valid) 个（补齐后 \(f.coveredCells)），已启用")
                 AppLog.i("建图", "手机上生成磁场图完成：样本 \(total)，有效格 \(valid)，补齐后 \(f.coveredCells)")
             }

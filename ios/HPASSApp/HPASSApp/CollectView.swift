@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 数据采集页：录制价签广播和 IMU，支持按点位打点。
+/// 数据采集页：录制标签广播和 IMU，支持按点位打点。
 struct CollectView: View {
     @StateObject private var rec = Recorder()
     private let durations = [15, 30, 60, 120, 300]
@@ -49,9 +49,9 @@ struct CollectView: View {
             TextField("备注：保护壳/MagSafe/姿态", text: $rec.setupNote)
                 .autocorrectionDisabled()
                 .disabled(rec.isRecording)
-            Toggle("仅记录标签广播（公司ID 13）", isOn: $rec.onlyESL)
+            Toggle("仅记录标签广播（公司ID 13）", isOn: $rec.onlyTags)
                 .disabled(rec.isRecording)
-                .onChange(of: rec.onlyESL) { v in AppLog.tap("仅记录标签广播", v ? "开" : "关") }
+                .onChange(of: rec.onlyTags) { v in AppLog.tap("仅记录标签广播", v ? "开" : "关") }
             LoggedButton(name: rec.isRecording ? "停止录制" : "开始录制",
                          detail: rec.isRecording ? "" : "标签 \(rec.deviceLabel)") {
                 rec.isRecording ? rec.stopRecording() : rec.startRecording()

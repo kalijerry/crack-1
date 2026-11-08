@@ -2,13 +2,13 @@ import Foundation
 
 /// 云端地图包：一张地图定位要用的全部东西打成一个压缩文件，客户端拉下来就能用。
 ///
-/// 内容：说明（名字、版本、来源…）+ 门店 / 房间地图 JSON + 磁场图（只存有数据的格，均值和标准差量化成
-/// 0.01 µT 的 int16）+ 蓝牙价签位置 + 房间的视觉特征地图（可选）。整体再用 zlib 压缩。
-/// 13000 m² 门店（可走约 5600 m²）全采满估算：磁场约 350 KB、价签约 300 KB、地图约 50 KB，压缩后 1 MB 以内。
+/// 内容：说明（名字、版本、来源…）+ 场地 / 房间地图 JSON + 磁场图（只存有数据的格，均值和标准差量化成
+/// 0.01 µT 的 int16）+ 蓝牙标签位置 + 房间的视觉特征地图（可选）。整体再用 zlib 压缩。
+/// 一万多平方米的场地全采满估算：磁场约 350 KB、标签约 300 KB、地图约 50 KB，压缩后 1 MB 以内。
 ///
 /// 格式（压缩前，小端）："HPMP" + u16 版本 + 5 段（u32 长度 + 内容）：说明 JSON、地图 JSON、磁场、蓝牙、视觉特征地图，
 /// 后面可选第 6 段：采集涂色（CoveragePaint.serialized，哪里采过，换手机也能接着补采）；
-/// 第 7 段：价签位置表原文（CSV：价签 → 通道 / 段 / 层 / 商品条码 / 货架图，找价签用）；
+/// 第 7 段：标签位置表原文（CSV：标签 → 通道 / 段 / 层 / 商品条码 / 货架图，找标签用）；
 /// 第 8 段：方向图 JSON（DirectionCoverage.File）。旧包没有这几段。
 public enum MapPackage {
     public struct Meta: Codable, Equatable {
@@ -43,8 +43,8 @@ public enum MapPackage {
         public var worldMap: Data?
         /// 采集涂色（CoveragePaint.serialized）
         public var paint: Data?
-        /// 价签位置表 CSV 原文
-        public var eslCSV: Data?
+        /// 标签位置表 CSV 原文
+        public var tagCSV: Data?
         /// 方向图 JSON（DirectionCoverage.File）
         public var direction: Data?
     }
@@ -62,7 +62,7 @@ public enum MapPackage {
     // MARK: 打包
 
     public static func encode(meta m: Meta, mapJSON: Data, field: MagneticFieldMap?, ble: BLEFingerprintMap?,
-                              worldMap: Data?, paint: Data? = nil, eslCSV: Data? = nil, direction: Data? = nil) throws -> Data {
+                              worldMap: Data?, paint: Data? = nil, tagCSV: Data? = nil, direction: Data? = nil) throws -> Data {
         var meta = m
         meta.fieldCells = field?.coveredCells
         meta.bleTags = ble?.tags.count
@@ -75,7 +75,7 @@ public enum MapPackage {
         section(ble.map(encodeBLE) ?? Data())
         section(worldMap ?? Data())
         section(paint ?? Data())
-        section(eslCSV ?? Data())
+        section(tagCSV ?? Data())
         section(direction ?? Data())
         return try (out as NSData).compressed(using: .zlib) as Data
     }
@@ -98,7 +98,7 @@ public enum MapPackage {
                         ble: b.isEmpty ? nil : try decodeBLE(b),
                         worldMap: w.isEmpty ? nil : w,
                         paint: p.isEmpty ? nil : p,
-                        eslCSV: e.isEmpty ? nil : e,
+                        tagCSV: e.isEmpty ? nil : e,
                         direction: dc.isEmpty ? nil : dc)
     }
 
@@ -138,8 +138,8 @@ public enum MapPackage {
         return MagneticFieldMap(widthCm: w, heightCm: h, cellCm: c, cells: cells, sigmas: sig)
     }
 
-    // MARK: 蓝牙：价签数 u32 + 每个：编号（u8 长度 + UTF-8）、x、y（f32 cm）、最强信号 i8、样本数 u16
-    // 定位只用价签位置（格子指纹太稀，不用，不打包）
+    // MARK: 蓝牙：标签数 u32 + 每个：编号（u8 长度 + UTF-8）、x、y（f32 cm）、最强信号 i8、样本数 u16
+    // 定位只用标签位置（格子指纹太稀，不用，不打包）
 
     static func encodeBLE(_ b: BLEFingerprintMap) -> Data {
         var d = Data()
@@ -162,7 +162,7 @@ public enum MapPackage {
         var tags: [String: BLEFingerprintMap.Tag] = [:]
         for _ in 0..<n {
             let len = Int(try r.int() as UInt8)
-            guard let id = String(data: try r.bytes(len), encoding: .utf8) else { throw PackageError.badFormat("价签编号") }
+            guard let id = String(data: try r.bytes(len), encoding: .utf8) else { throw PackageError.badFormat("标签编号") }
             let x = Double(Float32(bitPattern: try r.int())), y = Double(Float32(bitPattern: try r.int()))
             let rssi = Double(Int8(bitPattern: try r.int()))
             let samples = Int(try r.int() as UInt16)

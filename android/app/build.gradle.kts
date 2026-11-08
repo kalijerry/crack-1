@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.example.eslcollector"
+    namespace = "com.example.hpasscollector"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.example.eslcollector"
+        applicationId = "com.example.hpasscollector"
         minSdk = 26
         targetSdk = 34
         versionCode = 1

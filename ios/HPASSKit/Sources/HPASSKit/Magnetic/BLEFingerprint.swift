@@ -1,6 +1,6 @@
 import Foundation
 
-/// 一条蓝牙读数（价签广播）：时间、价签编号、信号强度（dBm）。
+/// 一条蓝牙读数（标签广播）：时间、标签编号、信号强度（dBm）。
 public struct BLESample {
     public var tMs: Int64
     public var id: String
@@ -8,18 +8,18 @@ public struct BLESample {
     public init(tMs: Int64, id: String, rssi: Double) { self.tMs = tMs; self.id = id; self.rssi = rssi }
 }
 
-/// 蓝牙自动指纹：建图采集时位置已知（ARKit + 贴通道），顺便录下周围价签的信号强度，自动生成指纹，不用人工打点。
+/// 蓝牙自动指纹：建图采集时位置已知（ARKit + 贴通道），顺便录下周围标签的信号强度，自动生成指纹，不用人工打点。
 ///
 /// 存两样东西：
-/// - **格子指纹**：每 2 m 一格，记每个价签在这格里的平均信号强度；
-/// - **价签位置**：每个价签按「在哪儿听到它最响」加权估出大致位置。
-/// 定位时取最近 3 秒听到的价签，两种方法都能给出位置的似然：格子指纹在采过的地方准，价签位置能外推到旁边没走过的地方。
+/// - **格子指纹**：每 2 m 一格，记每个标签在这格里的平均信号强度；
+/// - **标签位置**：每个标签按「在哪儿听到它最响」加权估出大致位置。
+/// 定位时取最近 3 秒听到的标签，两种方法都能给出位置的似然：格子指纹在采过的地方准，标签位置能外推到旁边没走过的地方。
 /// 给地磁粒子滤波当「粗定位」：冷启动几秒内把粒子圈到对的区域，地磁再精修。
 public struct BLEFingerprintMap: Codable {
     public struct Cell: Codable {
         public var x: Double
         public var y: Double
-        /// 价签 → 平均信号强度
+        /// 标签 → 平均信号强度
         public var tags: [String: Double]
         public var samples: Int
     }
@@ -42,7 +42,7 @@ public struct BLEFingerprintMap: Codable {
         Array(obs.filter { $0.value >= minRssi }.sorted { $0.value > $1.value }.prefix(k))
     }
 
-    /// 格子指纹的对数似然（越大越像）。观测到的强价签在这格里没出现过要扣分（越强扣得越多）。
+    /// 格子指纹的对数似然（越大越像）。观测到的强标签在这格里没出现过要扣分（越强扣得越多）。
     public func cellLogLikelihood(_ c: Cell, _ obs: [(String, Double)], sigma: Double = 7) -> Double {
         var ll = 0.0
         for (id, r) in obs {
@@ -72,7 +72,7 @@ public struct BLEFingerprintMap: Codable {
         return (p, (v / w).squareRoot())
     }
 
-    /// 按价签位置估：听到的最强几个价签的位置，按信号强度加权平均。
+    /// 按标签位置估：听到的最强几个标签的位置，按信号强度加权平均。
     public func estimateByTags(_ obsAll: [String: Double], k: Int = 6) -> (position: Point2, spreadCm: Double)? {
         let obs = Self.strongest(obsAll, k: k).compactMap { o in tags[o.0].map { ($0, o.1) } }
         guard obs.count >= 2 else { return nil }
@@ -104,11 +104,11 @@ public final class BLEFingerprintBuilder {
     public let cellCm: Double
     private var cells: [Int: (x: Double, y: Double, n: Int, tags: [String: (n: Int, sum: Double)])] = [:]
     private var tagAcc: [String: (w: Double, x: Double, y: Double, maxR: Double, n: Int)] = [:]
-    /// 每个价签「听到它的位置」的二阶矩（强信号加权）：固定的价签只在一小片区域里听得到，
-    /// 跟着人走的手机、手表到哪儿都一样响，范围会大得离谱 → 不当价签用
+    /// 每个标签「听到它的位置」的二阶矩（强信号加权）：固定的标签只在一小片区域里听得到，
+    /// 跟着人走的手机、手表到哪儿都一样响，范围会大得离谱 → 不当标签用
     private var tagSpread: [String: (w: Double, xx: Double, yy: Double)] = [:]
     private let cols: Int
-    /// 价签名单（门店系统导出的价签 ID）。给了就只收名单里的
+    /// 标签名单（后台系统导出的标签 ID）。给了就只收名单里的
     public var whitelist: Set<String>?
     /// 听到范围（强信号位置的标准差）超过这个（cm）就认为不是固定设备
     public var maxSpreadCm = 1500.0
@@ -146,7 +146,7 @@ public final class BLEFingerprintBuilder {
         cols = max(Int((widthCm / cellCm).rounded(.up)), 1)
     }
 
-    /// 只要价签读数，强度在 −100 dBm 以上
+    /// 只要标签读数，强度在 −100 dBm 以上
     public func add(position p: Point2, id: String, rssi: Double) {
         guard rssi >= -100, rssi < 0, p.x >= 0, p.y >= 0 else { return }
         if let wl = whitelist, !wl.contains(id) { return }
@@ -158,7 +158,7 @@ public final class BLEFingerprintBuilder {
         t.n += 1; t.sum += rssi
         c.tags[id] = t
         cells[k] = c
-        // 价签位置：强信号权重大（-60 dBm 比 -90 dBm 大 1000 倍）
+        // 标签位置：强信号权重大（-60 dBm 比 -90 dBm 大 1000 倍）
         let w = pow(10, (rssi + 100) / 10)
         var a = tagAcc[id] ?? (0, 0, 0, -200, 0)
         a.w += w; a.x += w * p.x; a.y += w * p.y; a.maxR = max(a.maxR, rssi); a.n += 1
@@ -202,7 +202,7 @@ public final class BLEFingerprintBuilder {
     /// 被当成「不是固定设备」丢掉的
     public var rejectedMoving: [String] { tagAcc.keys.filter { (spreadCm($0) ?? 0) > maxSpreadCm } }
 
-    /// 从文本里找价签 ID（XX-XX-XX-XX），给名单用：CSV、TXT、门店系统导出的表格另存为 CSV 都行
+    /// 从文本里找标签 ID（XX-XX-XX-XX），给名单用：CSV、TXT、后台系统导出的表格另存为 CSV 都行
     public static func parseIdList(_ text: String) -> Set<String> {
         var out = Set<String>()
         let pattern = try! NSRegularExpression(pattern: "\\b[0-9A-Fa-f]{2}-[0-9A-Fa-f]{2}-[0-9A-Fa-f]{2}-[0-9A-Fa-f]{2}\\b")
@@ -227,7 +227,7 @@ public final class BLEFingerprintBuilder {
 }
 
 extension SurveySessionLoader {
-    /// 读会话里的 ble.csv（只要有价签编号的行）。没有这个文件返回空。
+    /// 读会话里的 ble.csv（只要有标签编号的行）。没有这个文件返回空。
     public static func loadBLE(_ dir: URL) -> [BLESample] {
         guard let text = try? String(contentsOf: dir.appendingPathComponent("ble.csv"), encoding: .utf8) else { return [] }
         var out: [BLESample] = []

@@ -55,7 +55,7 @@
 <main>
   <section class="panel">
     <h2>设备</h2>
-    <div id="devices"><div class="kv">还没有设备。App 里「门店数据 → 云端后台」填好地址和口令就会出现。</div></div>
+    <div id="devices"><div class="kv">还没有设备。App 里「场地数据 → 云端后台」填好地址和口令就会出现。</div></div>
   </section>
   <section class="panel" id="mapWrap">
     <canvas id="map"></canvas>
@@ -76,7 +76,7 @@
       <div id="logs"></div>
     </div>
     <div id="tab-sessions" hidden><button id="reloadSessions">刷新</button><table id="sessions"></table></div>
-    <div id="tab-builds" hidden><button id="reloadBuilds">刷新</button> <button id="dlEsl">下载价签位置表（价签 → 通道 / 段 / 层 / 货架图 / 商品）</button><table id="builds"></table></div>
+    <div id="tab-builds" hidden><button id="reloadBuilds">刷新</button> <button id="dlTags">下载标签位置表（标签 → 通道 / 段 / 层 / 货架图 / 商品）</button><table id="builds"></table></div>
     <div id="tab-reports" hidden><button id="reloadReports">刷新</button><div id="reports"></div></div>
   </section>
 </main>
@@ -205,18 +205,32 @@ async function loadBuilds() {
   };
 }
 $("reloadBuilds").onclick = loadBuilds;
-$("dlEsl").onclick = async () => {
-  const r = await api("/api/esl/locations.csv"); if (!r.ok) { alert("后台还没有价签位置表（App 开发模式里导入一次就会传上来）"); return; }
+$("dlTags").onclick = async () => {
+  const r = await api("/api/esl/locations.csv"); if (!r.ok) { alert("后台还没有标签位置表（App 开发模式里导入一次就会传上来）"); return; }
   const u = URL.createObjectURL(await r.blob()); const x = document.createElement("a"); x.href = u; x.download = "esl_locations.csv"; x.click(); URL.revokeObjectURL(u);
 };
 async function loadReports() {
   const r = await api("/api/reports"); if (!r.ok) return;
   const list = await r.json();
   const box = $("reports"); box.innerHTML = list.length ? "" : '<div class="kv">还没有报告。电脑上跑 hpass-eval --json 后上传（见 server/telemetry/README.md）。</div>';
+  const labs = [];
   for (const o of list.slice(0, 20)) {
     const rr = await api("/api/" + o.key); if (!rr.ok) continue;
     const data = await rr.json();
     const div = document.createElement("div");
+    if (data && data.kind === "lab") {
+      // 定位实验室（Lab CI）报告：一次运行一张表，另外在最上面画各场景的趋势
+      labs.push({ key: o.key, data });
+      const pc = (v) => (v != null ? Math.round(v * 100) + "%" : "—");
+      const mm = (v) => (v != null ? (v / 100).toFixed(1) + " m" : "—");
+      div.innerHTML = `<h2>${esc(o.key.replace("reports/", ""))}</h2><div class="kv">实验室 · ${esc(data.tier)} · 每场景 ${data.runs} 个种子 · 提交 ${esc((data.commit || "").slice(0, 7))} · ${esc(data.created || "")}</div>` +
+        `<table><tr><th>场景</th><th>中位</th><th>P75</th><th>P90</th><th>错定</th><th>覆盖</th><th>首次定位</th></tr>` +
+        (data.results || []).map((x) => { const m = x.metrics;
+          return m ? `<tr><td>${esc(x.title)}<br><span class="kv">${esc(x.id)}</span></td><td>${mm(m.median_cm)}</td><td>${mm(m.p75_cm)}</td><td>${mm(m.p90_cm)}</td><td>${pc(m.wrong_fix)}</td><td>${pc(m.coverage)}</td><td>${m.first_fix_m != null ? m.first_fix_m.toFixed(1) + " m" : "—"}</td></tr>`
+                   : `<tr><td>${esc(x.title)}</td><td colspan="6">❌ 运行失败</td></tr>`; }).join("") + "</table>";
+      box.appendChild(div);
+      continue;
+    }
     if (!Array.isArray(data)) {
       // 云端融合报告
       const sess = (data.sessions || []).map((s) => `<tr><td>${esc(s.name)}</td><td>${s.cells}</td><td>${s.offset.map((x) => x.toFixed(1)).join(" / ")}</td><td>${s.component}</td><td>${esc((s.warnings || []).join("；"))}</td></tr>`).join("");
@@ -227,10 +241,10 @@ async function loadReports() {
           `<td>${esc(q.reason || (q.droppedSpans.length ? "丢掉 " + q.droppedSpans.map((x) => x[0] + "–" + x[1] + " 秒").join("、") : "全部合格"))}</td></tr>`; }).join("");
       const tests = (data.tests || []).map((x) => `<tr><td>${esc(x.session)}</td><td>${x.inMapMedianCm != null ? Math.round(x.inMapMedianCm) + " cm" : "—"}</td><td>${x.inMapP90Cm != null ? Math.round(x.inMapP90Cm) + " cm" : "—"}</td><td>${x.jumps}</td></tr>`).join("");
       div.innerHTML = `<h2>${esc(o.key.replace("reports/", ""))}</h2>
-        <div class="kv">${esc(data.name || "")} · 磁场 ${data.fieldCells} 格 · 蓝牙 ${data.bleTags} 个价签 · 覆盖 ${data.coverage != null ? (data.coverage * 100).toFixed(1) + "%" : "—"} · 包 ${Math.round((data.packageBytes || 0) / 1024)} KB · ${data.components} 个连通分量</div>
+        <div class="kv">${esc(data.name || "")} · 磁场 ${data.fieldCells} 格 · 蓝牙 ${data.bleTags} 个标签 · 覆盖 ${data.coverage != null ? (data.coverage * 100).toFixed(1) + "%" : "—"} · 包 ${Math.round((data.packageBytes || 0) / 1024)} KB · ${data.components} 个连通分量</div>
         ${(data.warnings || []).map((w) => `<div class="log warn">${esc(w)}</div>`).join("")}
         ${(data.zones || []).length ? `<div class="kv">采集区域：${data.zones.map((z) => `${z.id === data.nextZone ? "👉 " : ""}${esc(z.name)} ${Math.round(z.fraction * 100)}%${z.done ? " ✅" : ""}`).join(" · ")}${data.nextZone ? `（下次采区域 ${data.nextZone}）` : "（全部采完）"}</div>` : ""}
-        ${qual ? `<table><tr><th>质量筛选</th><th>价签修正（人−价签中位）</th><th>价签距离</th><th>磁场残差</th><th>结果</th></tr>${qual}</table>` : ""}
+        ${qual ? `<table><tr><th>质量筛选</th><th>标签修正（人−标签中位）</th><th>标签距离</th><th>磁场残差</th><th>结果</th></tr>${qual}</table>` : ""}
         <table><tr><th>会话</th><th>格</th><th>偏移 |B|/Bz/Bh µT</th><th>分量</th><th>提示</th></tr>${sess}</table>
         ${tests ? `<table><tr><th>测试会话</th><th>覆盖区中位</th><th>P90</th><th>跳</th></tr>${tests}</table>` : ""}
         ${(data.unfinishedCorridors || []).length ? `<div class="kv">没涂完一半的通道：${esc(data.unfinishedCorridors.slice(0, 30).join("、"))}</div>` : ""}`;
@@ -241,6 +255,17 @@ async function loadReports() {
     div.innerHTML = `<h2>${esc(o.key.replace("reports/", ""))}</h2><table><tr><th>测试会话</th><th>中位</th><th>P90</th><th>≤1m</th><th>跳</th><th>首次定位</th></tr>` +
       rows.map((x) => `<tr><td>${esc(x.session)}</td><td>${x.medianCm != null ? Math.round(x.medianCm) + " cm" : "—"}</td><td>${x.p90Cm != null ? Math.round(x.p90Cm) + " cm" : "—"}</td><td>${x.within1m != null ? Math.round(x.within1m * 100) + "%" : "—"}</td><td>${x.jumps}</td><td>${x.firstFixM != null ? x.firstFixM.toFixed(1) + " m" : "没定到"}</td></tr>`).join("") + "</table>";
     box.appendChild(div);
+  }
+  if (labs.length) {
+    // 趋势：各场景最近几次的中位 / 错定（左旧右新）
+    const runs = labs.slice().reverse();
+    const ids = [...new Set(runs.flatMap((l) => (l.data.results || []).map((x) => x.id)))];
+    const cell = (l, id) => { const x = (l.data.results || []).find((y) => y.id === id); const m = x && x.metrics;
+      return m && m.median_cm != null ? `${(m.median_cm / 100).toFixed(1)} m / ${Math.round((m.wrong_fix || 0) * 100)}%` : "—"; };
+    const t = document.createElement("div");
+    t.innerHTML = `<h2>定位实验室趋势（中位 / 错定，左旧右新）</h2><table><tr><th>场景</th>${runs.map((l) => `<th>${esc((l.data.commit || "").slice(0, 7) || l.key.slice(-12))}</th>`).join("")}</tr>` +
+      ids.map((id) => `<tr><td>${esc(id)}</td>${runs.map((l) => `<td>${cell(l, id)}</td>`).join("")}</tr>`).join("") + "</table>";
+    box.prepend(t);
   }
 }
 $("reloadReports").onclick = loadReports;

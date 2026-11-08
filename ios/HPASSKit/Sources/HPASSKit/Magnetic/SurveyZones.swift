@@ -3,11 +3,11 @@ import Foundation
 /// 采集分区：把整店的通道切成一块块「一次采得完」的区域（默认每块走线约 1.2 km ≈ 25 分钟），
 /// 每次进采集模式自动分到一块；融合后按涂色算各区域进度，告诉下次该去哪块。
 ///
-/// - 通道先切成 ≤ pieceCm 的小段（贯穿全店的主通道会被分到沿途的几个区域里）；
+/// - 通道先切成 ≤ pieceCm 的小段（贯穿全场的主通道会被分到沿途的几个区域里）；
 /// - 按小段中心递归二分（沿分布更散的那个方向、按走线长度对半分），直到每块 ≤ targetLaneCm，
 ///   得到空间上紧凑的区域；区域按位置从上到下、从左到右编号；
 /// - 下一个区域：先把开了头的（≥ startedFraction）采完；否则选离已采部分最近的（有重叠才能对齐磁场整体偏差）；
-///   全店都没采过就选离我最近的；
+///   全场都没采过就选离我最近的；
 /// - 进区入口：区域里还没怎么采时，给出离它最近的已采过的地方：从那里进，先沿已采路段走 10～20 m。
 public struct SurveyZones {
     public struct Piece: Codable, Equatable {
@@ -114,7 +114,7 @@ public struct SurveyZones {
         }
     }
 
-    /// 离区域最近的已采过的地方（区域里还没怎么采时给进区入口）；全店都没采过返回 nil
+    /// 离区域最近的已采过的地方（区域里还没怎么采时给进区入口）；全场都没采过返回 nil
     public func entry(_ z: Zone, paint: CoveragePaint, stride: Int = 2) -> Point2? {
         var best: (Point2, Double)?
         for j in Swift.stride(from: 0, to: paint.rows, by: stride) {

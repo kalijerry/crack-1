@@ -10,8 +10,8 @@ import Foundation
 // 冷启动：  没有起点时在可走区域均匀撒粒子，收敛后缩到较少的粒子数。
 
 public struct MagneticConfig {
-    /// 按场景调地磁权重（见 MagneticLocalizer.magneticWeight）：磁场图稀、走得还短、磁场平、和价签对不上时，
-    /// 地磁似然打折，交给价签 / 通道 / 运动去定，免得地磁把位置带偏（公开数据集上「只用地磁比纯推算还差」）
+    /// 按场景调地磁权重（见 MagneticLocalizer.magneticWeight）：磁场图稀、走得还短、磁场平、和标签对不上时，
+    /// 地磁似然打折，交给标签 / 通道 / 运动去定，免得地磁把位置带偏（公开数据集上「只用地磁比纯推算还差」）
     public var adaptiveMagWeight = false
     public var magWeightFloor = 0.15
     /// 已知起点或收敛之后用的粒子数。
@@ -277,13 +277,13 @@ public final class MagneticLocalizer {
     /// 是否已经收敛（有把握）
     public var isConverged: Bool { hasConverged }
 
-    /// 外部判断「现在不在采集过的区域」（例如听到的价签大多不在指纹里）时设为 true：不允许收敛，
+    /// 外部判断「现在不在采集过的区域」（例如听到的标签大多不在指纹里）时设为 true：不允许收敛，
     /// 宁可不显示位置，也不在别处「定」一个错的。
     public var convergenceBlocked = false
-    /// 有价签约束时（BLEAssist 设）：没有磁场数据的地方不罚。全店只有一小部分采过磁场，重罚会把粒子都推到
-    /// 采过的地方，人在没采过的地方时就会「先漂到别处、走几步再被价签拉回来」；价签全场都有，交给价签定。
+    /// 有标签约束时（BLEAssist 设）：没有磁场数据的地方不罚。全场只有一小部分采过磁场，重罚会把粒子都推到
+    /// 采过的地方，人在没采过的地方时就会「先漂到别处、走几步再被标签拉回来」；标签全场都有，交给标签定。
     public var missingDataPenaltyOverride: Double?
-    /// 外部（BLEAssist）给的：当前位置落在几成强价签的范围里；nil = 不知道
+    /// 外部（BLEAssist）给的：当前位置落在几成强标签的范围里；nil = 不知道
     public var externalAgreement: Double?
     /// 当前地磁权重（0…1，adaptiveMagWeight 打开时才变），和它的各项因子（调试 / 日志用）
     public private(set) var magneticWeight = 1.0
@@ -331,10 +331,10 @@ public final class MagneticLocalizer {
         normalize()
     }
 
-    /// 价签范围约束：每片听到的价签都要求「人在它 rangeCm 以内」（按信号强弱定，实测 P90：−75 dBm 2.5 m、
-    /// −80 3.2 m、−85 5 m、−90 8 m）。磁场平缓的地方几处长得像，粒子会被拉到别处；附近没有这片价签的位置直接被压下去。
-    /// 每片价签的惩罚有上限 capLog（价签表个别位置不对、反射，不至于一片就把正确的位置否掉）。
-    /// 还没定到时，把一部分最差的粒子撒到最强那片价签的范围里。
+    /// 标签范围约束：每片听到的标签都要求「人在它 rangeCm 以内」（按信号强弱定，实测 P90：−75 dBm 2.5 m、
+    /// −80 3.2 m、−85 5 m、−90 8 m）。磁场平缓的地方几处长得像，粒子会被拉到别处；附近没有这片标签的位置直接被压下去。
+    /// 每片标签的惩罚有上限 capLog（标签表个别位置不对、反射，不至于一片就把正确的位置否掉）。
+    /// 还没定到时，把一部分最差的粒子撒到最强那片标签的范围里。
     public func applyTagRanges(_ tags: [(position: Point2, rangeCm: Double)], sigmaCm: Double = 150, capLog: Double = 3,
                                weight: Double = 1, injectFraction: Double = 0) {
         guard !xs.isEmpty, !tags.isEmpty, weight > 0 else { return }
@@ -367,7 +367,7 @@ public final class MagneticLocalizer {
         normalize()
     }
 
-    /// 确定的区域观测（读到货架标签、手机贴近价签）：区域外的粒子按离区域的距离重罚（上限 capLog），
+    /// 确定的区域观测（读到货架标签、手机贴近蓝牙标签）：区域外的粒子按离区域的距离重罚（上限 capLog），
     /// 并把一部分最差的粒子撒进区域。已经定到、但当前估计离区域超过 relocateCm：说明定错了，先退回没把握，再多撒一些。
     /// - distance: 点到区域的距离（区域内为 0）；sample: 在区域里随机取一点
     /// - Returns: 是否判定为定错并重新定位
@@ -696,7 +696,7 @@ public final class MagneticLocalizer {
     /// - 磁场图密度：粒子加权中心 4 m 内有数据的格子比例（< 20% 几乎不用地磁，≥ 70% 全用）；
     /// - 走过的路：冷启动后走得越长，磁场序列越有区分度（< 5 m 只给一半，20 m 后全给）；
     /// - 磁场起伏：最近约 20 次读数 |B| 的标准差（< 1 µT 很平、匹配不出东西 → 打折）；
-    /// - 价签一致：当前位置落在几成强价签范围里（≤ 30% 只给三成）。
+    /// - 标签一致：当前位置落在几成强标签范围里（≤ 30% 只给三成）。
     private func updateMagWeight(_ f: MagneticFeature) {
         recentTotals.append(f.total)
         if recentTotals.count > 20 { recentTotals.removeFirst(recentTotals.count - 20) }
@@ -728,10 +728,10 @@ public final class MagneticLocalizer {
         let fAgree = externalAgreement.map { min(max(($0 - 0.3) / 0.4, 0), 1) * 0.7 + 0.3 } ?? 1
         magWeightFactors = (fCov, fPath, fInfo, fAgree)
         if hasConverged {
-            // 已经定到（跟踪）：地磁跟踪很准（实测 0.7～1.1 m），全权给地磁；只有和价签明显对不上才打折
+            // 已经定到（跟踪）：地磁跟踪很准（实测 0.7～1.1 m），全权给地磁；只有和标签明显对不上才打折
             magneticWeight = max(0.5, fAgree)
         } else {
-            // 找位置（冷启动 / 丢了）：地磁容易被长得像的地方带偏，按场景打折，让价签 / 通道 / 运动先把范围定下来
+            // 找位置（冷启动 / 丢了）：地磁容易被长得像的地方带偏，按场景打折，让标签 / 通道 / 运动先把范围定下来
             magneticWeight = max(config.magWeightFloor, fCov * fPath * fInfo * fAgree)
         }
     }

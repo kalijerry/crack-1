@@ -160,6 +160,8 @@ def main():
     ap.add_argument("--test-n", type=int, default=15)
     ap.add_argument("--test-min-s", type=float, default=45)
     ap.add_argument("--build-min-s", type=float, default=10)
+    ap.add_argument("--build-max", type=int, default=0,
+                    help="建图最多用几条 trace（随机抽，0 = 全部）：模拟「只走几趟」的稀疏建图")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--drift", choices=["arkit", "pdr", "none"], default="arkit")
     ap.add_argument("--dilate", type=int, default=2, help="可走区域在真值路径外膨胀多少米")
@@ -179,6 +181,8 @@ def main():
     rng.shuffle(cand)
     test_ids = sorted(cand[: a.test_n])
     build_ids = sorted(k for k in traces if k not in test_ids and dur[k] >= a.build_min_s)
+    if a.build_max > 0 and len(build_ids) > a.build_max:
+        build_ids = sorted(random.Random(a.seed + 1).sample(build_ids, a.build_max))
 
     # 漂移参数：ARKit 约 1% 尺度、慢朝向漂移；PDR 约 4% 尺度、朝向漂移快
     sc, hd = {"arkit": (0.01, math.radians(0.5)), "pdr": (0.04, math.radians(1.5)), "none": (0, 0)}[a.drift]

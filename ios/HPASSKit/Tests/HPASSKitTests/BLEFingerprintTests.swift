@@ -3,8 +3,8 @@ import XCTest
 @testable import HPASSKit
 
 final class BLEFingerprintTests: XCTestCase {
-    /// 沿一条 30 m 的直线走，两边每 2 m 一个价签，信号随距离衰减：
-    /// 学出来的价签位置在路线附近，用某处听到的信号估位置误差在几米内。
+    /// 沿一条 30 m 的直线走，两边每 2 m 一个标签，信号随距离衰减：
+    /// 学出来的标签位置在路线附近，用某处听到的信号估位置误差在几米内。
     func testTagPositionsAndEstimate() {
         var tags: [(String, Point2)] = []
         for k in 0..<15 { tags.append(("T\(k)", Point2(100 + Double(k) * 200, 400 + (k % 2 == 0 ? 150 : -150)))) }
@@ -22,7 +22,7 @@ final class BLEFingerprintTests: XCTestCase {
         XCTAssertGreaterThan(b.add(samples: samples, track: track), 100)
         let m = b.build()
         XCTAssertEqual(m.tags.count, 15)
-        // 价签位置被拉到走过的路线上（y = 400），x 大致对
+        // 标签位置被拉到走过的路线上（y = 400），x 大致对
         XCTAssertEqual(m.tags["T7"]!.x, 1500, accuracy: 150)
         let here = Point2(1600, 400)
         var obs: [String: Double] = [:]

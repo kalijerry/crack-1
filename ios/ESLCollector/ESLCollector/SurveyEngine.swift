@@ -786,7 +786,7 @@ final class SurveyEngine: ObservableObject {
             lastFixPos = f.position
             guard bleStable >= 3 else { return }
             anchor(at: f.position)
-            AppLog.i("建图", "蓝牙定了起点（\(tags.count) 片信标，范围 ±\(Int(f.spreadCm / 100)) m）")
+            AppLog.i("建图", "蓝牙定了起点（\(tags.count) 片标签，范围 ±\(Int(f.spreadCm / 100)) m）")
             autoHeadingFromCompass()
         case .tracking:
             guard tags.count >= 3, let p = position else { disagreeTicks = 0; return }

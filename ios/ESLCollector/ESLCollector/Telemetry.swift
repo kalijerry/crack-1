@@ -286,7 +286,7 @@ final class Telemetry: ObservableObject {
         r.setValue("text/csv; charset=utf-8", forHTTPHeaderField: "Content-Type")
         let resp = try? await URLSession.shared.upload(for: r, from: data).1
         if (resp as? HTTPURLResponse)?.statusCode == 200 {
-            AppLog.i("后台", "信标位置表已上传")
+            AppLog.i("后台", "标签位置表已上传")
         }
     }
 

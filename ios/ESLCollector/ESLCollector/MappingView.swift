@@ -215,7 +215,7 @@ struct MappingView: View {
         DSCard {
             DisclosureGroup(isExpanded: $showOptions) {
                 VStack(alignment: .leading, spacing: DS.Spacing.m) {
-                    Toggle("用蓝牙信标辅助定起点", isOn: $survey.bleBase)
+                    Toggle("用蓝牙标签辅助定起点", isOn: $survey.bleBase)
                     Toggle("识别位置标识牌（相机）", isOn: $survey.readSigns)
                     Toggle("激光雷达实景扫描（文件较大）", isOn: $survey.scanMesh)
                         .disabled(!ARKitLogger.supportsMesh)

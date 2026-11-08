@@ -40,7 +40,7 @@ final class StoreDataStore: ObservableObject {
             switch self {
             case .map: return "地图"
             case .fingerprint: return "指纹库"
-            case .esl: return "信标/物品"
+            case .esl: return "标签/物品"
             }
         }
     }
@@ -90,7 +90,7 @@ final class StoreDataStore: ObservableObject {
     /// 装上从后台拿到的价签位置表（正常模式），不再往回传
     func installEslLocations(_ data: Data) throws {
         guard let text = String(data: data, encoding: .utf8), !EslLocations.parse(text, map: map).isEmpty else {
-            throw StoreDataError.unsupportedFormat("后台的信标位置表读不出来")
+            throw StoreDataError.unsupportedFormat("后台的标签位置表读不出来")
         }
         try FileManager.default.createDirectory(at: Self.rootURL, withIntermediateDirectories: true)
         try data.write(to: eslLocURL, options: .atomic)
@@ -99,7 +99,7 @@ final class StoreDataStore: ObservableObject {
         eslLocCache = nil
         eslLocCount = locs.count
         loadEslIds()
-        AppLog.i("场地数据", "从后台装上信标位置表：\(locs.count) 个")
+        AppLog.i("场地数据", "从后台装上标签位置表：\(locs.count) 个")
     }
 
     /// 导入价签位置表：同时当价签名单用，连着后台就传上去（云端融合用它当蓝牙底图）
@@ -117,7 +117,7 @@ final class StoreDataStore: ObservableObject {
         eslLocCount = locs.count
         loadEslIds()
         let onShelf = locs.filter { $0.position != nil }.count
-        AppLog.i("场地数据", "导入信标位置表：\(locs.count) 个，对上地图障碍物 \(onShelf) 个")
+        AppLog.i("场地数据", "导入标签位置表：\(locs.count) 个，对上地图障碍物 \(onShelf) 个")
         Task { await Telemetry.shared.uploadEslLocations(data) }
         return (locs.count, onShelf)
     }
@@ -142,11 +142,11 @@ final class StoreDataStore: ObservableObject {
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
         let text = try String(contentsOf: source, encoding: .utf8)
         let ids = BLEFingerprintBuilder.parseIdList(text)
-        guard !ids.isEmpty else { throw StoreDataError.unsupportedFormat("文件里没找到信标 ID（格式 XX-XX-XX-XX）") }
+        guard !ids.isEmpty else { throw StoreDataError.unsupportedFormat("文件里没找到标签 ID（格式 XX-XX-XX-XX）") }
         try FileManager.default.createDirectory(at: Self.rootURL, withIntermediateDirectories: true)
         try ids.sorted().joined(separator: "\n").write(to: eslIdsURL, atomically: true, encoding: .utf8)
         loadEslIds()
-        AppLog.i("场地数据", "导入信标名单：\(ids.count) 个")
+        AppLog.i("场地数据", "导入标签名单：\(ids.count) 个")
         return ids.count
     }
 
@@ -266,7 +266,7 @@ final class StoreDataStore: ObservableObject {
             self.goods = g
             self.eslItems = g.flatMap(\.positions)
             let skus = g.filter { !$0.sku.isEmpty }.count
-            return "\(self.eslItems.count) 个信标" + (skus > 0 ? " / \(skus) 个物品" : "")
+            return "\(self.eslItems.count) 个标签" + (skus > 0 ? " / \(skus) 个物品" : "")
         } onMissing: {
             self.goods = []
             self.eslItems = []
@@ -308,7 +308,7 @@ final class StoreDataStore: ObservableObject {
         let positioner = FingerprintPositioner(points: fingerprints, eslToShelf: eslToShelf)
         issues = positioner.validate()
         if issues.isEmpty {
-            AppLog.i("场地数据", "自检通过：\(fingerprints.count) 个指纹点，\(eslItems.count) 个信标")
+            AppLog.i("场地数据", "自检通过：\(fingerprints.count) 个指纹点，\(eslItems.count) 个标签")
         } else {
             AppLog.w("场地数据", "自检发现 \(issues.count) 个问题，详见场地数据页")
         }

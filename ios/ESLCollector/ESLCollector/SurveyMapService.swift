@@ -138,9 +138,9 @@ final class SurveyMapService: ObservableObject {
             let state = MapBuildState(field: b.field.snapshot(), ble: bb.state(), sessions: doneNames)
             let bleMap = bb.build()
             let ble: BLEFingerprintMap? = bleMap.tags.count >= 20 ? bleMap : nil
-            out.append(ble.map { "蓝牙指纹：\($0.tags.count) 个信标，\(bleUsed) 条读数" + (whitelist != nil ? "（按信标名单）" : "")
+            out.append(ble.map { "蓝牙指纹：\($0.tags.count) 个标签，\(bleUsed) 条读数" + (whitelist != nil ? "（按标签名单）" : "")
                 + (bb.rejectedMoving.isEmpty ? "" : "，\(bb.rejectedMoving.count) 个到处都听得到的设备不算") }
-                ?? "蓝牙指纹：信标读数太少（\(bleUsed) 条），不启用")
+                ?? "蓝牙指纹：标签读数太少（\(bleUsed) 条），不启用")
             let valid = b.field.validCells()
             await MainActor.run {
                 self.running = false

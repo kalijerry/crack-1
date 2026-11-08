@@ -117,7 +117,7 @@ struct SettingsView: View {
                     StoreDataView()
                 } label: {
                     DSRowLabel(title: "场地数据与导入", systemImage: "square.and.arrow.down", tint: DS.Palette.info,
-                               subtitle: "地图文件、服务器下载、蓝牙信标列表")
+                               subtitle: "地图文件、服务器下载、蓝牙标签列表")
                 }
                 Button { showRoomScan = true } label: {
                     DSRowLabel(title: "房间扫描", systemImage: "cube.transparent", tint: .teal, subtitle: "激光雷达扫描生成房间地图")

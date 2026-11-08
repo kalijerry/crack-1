@@ -196,7 +196,7 @@ struct StoreDataView: View {
                 .keyboardType(.URL)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-            TextField("信标/物品接口路径", text: $config.eslPath)
+            TextField("标签/物品接口路径", text: $config.eslPath)
                 .keyboardType(.URL)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -487,29 +487,29 @@ struct EslListSection: View {
     var body: some View {
         Section {
             HStack {
-                Text("信标位置表")
+                Text("标签位置表")
                 Spacer()
                 Text(store.eslLocCount > 0 ? "\(store.eslLocCount) 个（对上障碍物 \(store.eslLocations.filter { $0.position != nil }.count) 个）" : "未导入")
                     .foregroundStyle(.secondary).font(.footnote)
             }
-            Button("导入信标位置表（esl_locations_*.csv）") { importingLoc = true }
+            Button("导入标签位置表（esl_locations_*.csv）") { importingLoc = true }
             HStack {
-                Text("信标名单")
+                Text("标签名单")
                 Spacer()
                 Text(store.eslIdCount > 0 ? "\(store.eslIdCount) 个" : "未导入").foregroundStyle(.secondary)
             }
-            Button("导入信标名单（CSV / TXT）") { importing = true }
+            Button("导入标签名单（CSV / TXT）") { importing = true }
             if store.eslIdCount > 0 {
                 Button("清除名单", role: .destructive) { store.clearEslIds() }
             }
             if let m = message { Text(m).font(.footnote).foregroundStyle(.secondary) }
         } header: { Text("蓝牙") } footer: {
-            Text("信标位置表（场地系统导出的 esl_locations_*.csv）：每个信标在哪个通道、段、层，对上地图障碍物后当蓝牙定位的底图（全场不用采集也有粗定位，实测中位 1.6～3.4 m），也能在「定位 → 找信标」里找具体信标；导入时自动当信标名单，并传到后台给云端融合用。信标广播用厂商 ID 0x000D、内容是 4 字节信标编号，App 只收这种广播。")
+            Text("标签位置表（esl_locations_*.csv）：每个标签所在的位置，对上地图后当蓝牙粗定位的底图（不用采集也有粗定位），也能在「高级控制台 → 找标签」里找具体标签；导入时自动当标签名单，并传到后台给云端生成地图用。")
         }
         .fileImporter(isPresented: $importingLoc, allowedContentTypes: [.commaSeparatedText, .plainText, .text]) { r in
             switch r {
             case .success(let u):
-                do { let (n, s) = try store.importEslLocations(from: u); message = "已导入 \(n) 个信标，\(s) 个对上了地图障碍物" }
+                do { let (n, s) = try store.importEslLocations(from: u); message = "已导入 \(n) 个标签，\(s) 个对上了地图障碍物" }
                 catch { message = "导入失败：\(error)" }
             case .failure(let e): message = "导入失败：\(e.localizedDescription)"
             }
@@ -517,7 +517,7 @@ struct EslListSection: View {
         .fileImporter(isPresented: $importing, allowedContentTypes: [.commaSeparatedText, .plainText, .text, .json]) { r in
             switch r {
             case .success(let u):
-                do { message = "已导入 \(try store.importEslIds(from: u)) 个信标" } catch { message = "导入失败：\(error)" }
+                do { message = "已导入 \(try store.importEslIds(from: u)) 个标签" } catch { message = "导入失败：\(error)" }
             case .failure(let e): message = "导入失败：\(e.localizedDescription)"
             }
         }
@@ -534,15 +534,15 @@ struct ModeSection: View {
             Toggle("开发模式", isOn: $mode.developer)
             if !mode.developer {
                 HStack {
-                    Text("信标位置表")
+                    Text("标签位置表")
                     Spacer()
                     Text(store.eslLocCount > 0 ? "\(store.eslLocCount) 个（来自后台）" : "还没有：连上后台后自动下载").font(.footnote).foregroundStyle(.secondary)
                 }
             }
         } header: { Text("模式") } footer: {
             Text(mode.developer
-                 ? "开发模式：本机生成磁场图、选会话、导入地图和信标数据、扫房间、实验功能、上传本机版本都能用。"
-                 : "正常模式：只用云端融合（GitHub Actions）出来的地图，带版本号；可以采集（结束后自动上传）、定位、找信标。地图在下面「云端地图」下载 / 更新。")
+                 ? "开发模式：本机生成磁场图、选会话、导入地图和标签数据、扫房间、实验功能、上传本机版本都能用。"
+                 : "正常模式：只用云端融合（GitHub Actions）出来的地图，带版本号；可以采集（结束后自动上传）、定位、找标签。地图在下面「云端地图」下载 / 更新。")
         }
     }
 }

@@ -287,7 +287,7 @@ final class MapLibrary: ObservableObject {
         }
         // 价签位置表（价签 → 绑定的货架、商品）：包里带了就用包里的（比单独拉的新）
         if let e = c.eslCSV, m.kind == "store" {
-            do { try StoreDataStore.shared.installEslLocations(e) } catch { AppLog.w("地图库", "信标位置表：\(error)") }
+            do { try StoreDataStore.shared.installEslLocations(e) } catch { AppLog.w("地图库", "标签位置表：\(error)") }
         }
         // 增量统计和变化检测是针对旧图的，清掉
         for f in ["build-state.json", "live-monitor.json"] { try? fm.removeItem(at: ws.appendingPathComponent(f)) }
@@ -306,7 +306,7 @@ final class MapLibrary: ObservableObject {
             try Data(src.utf8).write(to: ws.appendingPathComponent("field-source.txt"))
         }
         if !AppMode.shared.developer && active?.isCloudFused != true && m.origin == "cloud" { try? activate(m.id) }
-        AppLog.i("地图库", "装上云端地图：\(m.name)（磁场 \(m.fieldCells ?? 0) 格，蓝牙 \(m.bleTags ?? 0) 个信标）")
+        AppLog.i("地图库", "装上云端地图：\(m.name)（磁场 \(m.fieldCells ?? 0) 格，蓝牙 \(m.bleTags ?? 0) 个标签）")
     }
 
     private func writeMeta(_ e: Entry) throws {

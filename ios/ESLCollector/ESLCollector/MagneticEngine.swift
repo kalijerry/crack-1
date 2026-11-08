@@ -735,12 +735,12 @@ final class MagneticEngine: ObservableObject {
                         let a = Double.random(in: 0..<(2 * Double.pi)), d = radius * Double.random(in: 0..<1).squareRoot()
                         return Point2(c.x + cos(a) * d, c.y + sin(a) * d)
                     })
-                    Task { @MainActor in self?.noteAnchor("贴近信标 \(id)", relocated: relocated) }
+                    Task { @MainActor in self?.noteAnchor("贴近标签 \(id)", relocated: relocated) }
                 }
             }
         }
         ble?.start()
-        AppLog.i("地磁", "蓝牙粗定位：已开，指纹 \(m.tags.count) 个信标")
+        AppLog.i("地磁", "蓝牙粗定位：已开，指纹 \(m.tags.count) 个标签")
     }
 
     // MARK: 寻找模式：找一个价签
@@ -763,7 +763,7 @@ final class MagneticEngine: ObservableObject {
         findLastHeard = nil
         findHistory = []
         lastProximity = 0
-        if let e { AppLog.i("寻找", "找信标 \(e.id)：\(e.label) \(e.plano)") }
+        if let e { AppLog.i("寻找", "找标签 \(e.id)：\(e.label) \(e.plano)") }
         if e != nil && phase == .live && ble == nil { startFinderScanOnly() }
         // 有货架就直接导航过去；还没定位的话等第一个位置
         if let code = e?.shelfCode { navigateToShelf(code: code, fromFind: true) }
@@ -828,7 +828,7 @@ final class MagneticEngine: ObservableObject {
             self.bleTagsHeard = n
             if self.bleOutside != outside {
                 self.bleOutside = outside
-                AppLog.w("地磁", outside ? "听到的信标大多不在指纹里：可能在没采集过的区域，先不定位" : "回到采集过的区域")
+                AppLog.w("地磁", outside ? "听到的标签大多不在指纹里：可能在没采集过的区域，先不定位" : "回到采集过的区域")
             }
             if reset { AppLog.w("地磁", "蓝牙判断地磁定位错了，重新找") }
         }
@@ -1237,7 +1237,7 @@ final class MagneticEngine: ObservableObject {
         switch locState {
         case .searching:
             if bleOutside {
-                return "听到的信标大多不在蓝牙指纹里：你可能在没采集过的区域，这里没法自动定位。走到采集过的通道（地图上绿色），或长按地图定点。"
+                return "听到的标签大多不在蓝牙指纹里：你可能在没采集过的区域，这里没法自动定位。走到采集过的通道（地图上绿色），或长按地图定点。"
             }
             if visualAvailable && arRunning {
                 if phase == .live { return nil }           // 实时定位页由 VisualRelocalizeBanner 显示

@@ -376,7 +376,7 @@ final class StoreDataClient: @unchecked Sendable {
         switch kind {
         case .map: return "地图"
         case .fingerprint: return "指纹库"
-        case .esl: return "信标/物品"
+        case .esl: return "标签/物品"
         }
     }
 

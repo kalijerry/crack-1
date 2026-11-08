@@ -75,7 +75,7 @@ struct LiveLocationView: View {
                 Form {
                     if !store.isReady {
                         Section {
-                            Text("请先在场地数据页导入地图、指纹和信标")
+                            Text("请先在场地数据页导入地图、指纹和标签")
                                 .foregroundStyle(.orange)
                         }
                     }
@@ -111,7 +111,7 @@ struct LiveLocationView: View {
                 Text("置信 \(Fmt.f(engine.estimate?.confidence ?? 0, 2))")
                 Text("σ \(Int(uncertaintyCm.rounded()))cm")
                 Text("读数 \(engine.readingsPerSecond)/s")
-                Text("信标 \(engine.uniqueTagsPerSecond)/s")
+                Text("标签 \(engine.uniqueTagsPerSecond)/s")
                 Text("步 \(engine.stepCount)")
             }
             HStack(spacing: 10) {

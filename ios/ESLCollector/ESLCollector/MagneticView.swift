@@ -507,7 +507,7 @@ struct MagneticView: View {
             }
             if store.field != nil {
                 row("格子数", "\(store.validCells)")
-                row("蓝牙指纹", store.bleMap.map { "\($0.tags.count) 个信标" } ?? "没有（采集时录到的信标太少，或旧版本生成的）")
+                row("蓝牙指纹", store.bleMap.map { "\($0.tags.count) 个标签" } ?? "没有（采集时录到的标签太少，或旧版本生成的）")
                 Text(store.fieldSource ?? "来源未记录（旧版本生成或导入的）").font(.caption).foregroundStyle(.secondary)
                 if mode.developer {
                     Button(role: .destructive) { confirmDeleteField = true } label: {
@@ -678,7 +678,7 @@ struct MagneticView: View {
                 }
                 TextField("备注：保护壳 / 手持姿态 / 场地状态", text: $surveyNote)
                     .autocorrectionDisabled()
-                Toggle("蓝牙打底（信标自动定起点、罗盘定朝向、发现走偏自动拉回）", isOn: $survey.bleBase)
+                Toggle("蓝牙打底（标签自动定起点、罗盘定朝向、发现走偏自动拉回）", isOn: $survey.bleBase)
                 Toggle("识别位置标识牌（摄像头，自动定起点、自动纠偏）", isOn: $survey.readSigns)
                 Toggle("LiDAR 实景扫描（结束时导出网格，文件较大）", isOn: $survey.scanMesh)
                     .disabled(!ARKitLogger.supportsMesh)
@@ -748,7 +748,7 @@ struct MagneticView: View {
                 }
                 Toggle("自动贴通道（实时）", isOn: $survey.corridorLock)
                 if survey.bleBase {
-                    let fixText = survey.bleFix.map { "\(survey.bleTagCount) 片信标 · 范围 ±\(Int($0.spreadCm / 100)) m（黄圈）" } ?? "等信标信号…"
+                    let fixText = survey.bleFix.map { "\(survey.bleTagCount) 片标签 · 范围 ±\(Int($0.spreadCm / 100)) m（黄圈）" } ?? "等标签信号…"
                     row("蓝牙打底", fixText + (survey.bleBaseFixes > 0 ? " · 走偏拉回 \(survey.bleBaseFixes) 次" : "")).font(.footnote)
                 }
                 if survey.readSigns {
@@ -933,7 +933,7 @@ struct MagneticView: View {
 
     private var surveyInstruction: String {
         switch survey.stage {
-        case .needPosition: return "站着别动几秒：信标自动定起点、罗盘定朝向，然后直接往前走。也可以把摄像头对准立柱上的位置标识牌（如 082-20），读到就自动定好起点；也可以长按地图：我现在在这里。已经有磁场图的区域也可以点「自动定位起点」直接走。"
+        case .needPosition: return "站着别动几秒：标签自动定起点、罗盘定朝向，然后直接往前走。也可以把摄像头对准立柱上的位置标识牌（如 082-20），读到就自动定好起点；也可以长按地图：我现在在这里。已经有磁场图的区域也可以点「自动定位起点」直接走。"
         case .autoLocating: return "沿采集过的通道正常往前走，地磁定位成功后会自动设好起点和方向（震动提示）。想手动也可以随时长按地图。"
         case .needHeading: return "点「设朝向」（或双击地图），在地图上点或拖动，让橙色箭头指向你要走的方向，再点「确定朝向」（或再双击）。"
         case .aligning: return "朝箭头方向直线走 1.5 m，App 会自动对齐 ARKit 轨迹。"
@@ -1029,7 +1029,7 @@ struct MagneticView: View {
                               name: "实时·自动定位") { engine.startColdSearch() }
                 }
                 if engine.phase == .live && store.bleMap != nil {
-                    row("蓝牙粗定位", engine.bleEstimate == nil ? "等信标信号…" : "听到 \(engine.bleTagsHeard) 个信标（橙色圈）").font(.footnote)
+                    row("蓝牙粗定位", engine.bleEstimate == nil ? "等标签信号…" : "听到 \(engine.bleTagsHeard) 个标签（橙色圈）").font(.footnote)
                 }
                 if engine.monitorSamples > 0 || !engine.changedSpots.isEmpty {
                     VStack(alignment: .leading, spacing: 2) {
@@ -1042,7 +1042,7 @@ struct MagneticView: View {
                     row("抓定位", "\(a.text) · \(Int(Date().timeIntervalSince(a.at))) 秒前" + (engine.anchorFixes > 0 ? " · 拉回 \(engine.anchorFixes) 次" : ""))
                         .font(.footnote)
                 }
-                Text("位置不对或定不上：让摄像头扫到立柱上的位置标识牌（如 082-20），或把手机贴近任意一片信标 2 秒。地磁位置和信标对不上时会先显示「定位中」，不会乱给位置。")
+                Text("位置不对或定不上：让摄像头扫到立柱上的位置标识牌（如 082-20），或把手机贴近任意一片标签 2 秒。地磁位置和标签对不上时会先显示「定位中」，不会乱给位置。")
                     .font(.caption).foregroundStyle(.secondary)
                 if engine.visualFixes > 0 || engine.visualTimeouts > 0 {
                     row("视觉定位", "认出 \(engine.visualFixes) 次" + (engine.visualTimeouts > 0 ? "，超时没认出 \(engine.visualTimeouts) 次" : "")).font(.footnote)
@@ -1130,7 +1130,7 @@ struct MagneticView: View {
         let locs = storeData.eslLocations
         Section {
             if locs.isEmpty {
-                Text("先在「场地数据与导入 → 蓝牙」导入信标位置表（esl_locations_*.csv）。").font(.footnote).foregroundStyle(.secondary)
+                Text("先在「场地数据与导入 → 蓝牙」导入标签位置表（esl_locations_*.csv）。").font(.footnote).foregroundStyle(.secondary)
             } else if let t = engine.findTarget {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(t.id).font(.headline.monospaced())
@@ -1152,7 +1152,7 @@ struct MagneticView: View {
                     ProgressView(value: min(max((r + 95) / 45, 0), 1)).tint(prox >= 2 ? .green : .orange)
                     Text("信号 \(Int(r)) dBm · \(engine.findTrend > 0 ? "越来越近" : (engine.findTrend < 0 ? "走远了" : "差不多"))").font(.caption).foregroundStyle(.secondary)
                 } else {
-                    Text(engine.phase == .live ? "还没听到这个信标：先走到红框区域附近" : "点上面「打开传感器」才能听信标信号").font(.footnote).foregroundStyle(.secondary)
+                    Text(engine.phase == .live ? "还没听到这个标签：先走到红框区域附近" : "点上面「打开传感器」才能听标签信号").font(.footnote).foregroundStyle(.secondary)
                 }
                 HStack {
                     if let p = t.position {
@@ -1165,7 +1165,7 @@ struct MagneticView: View {
                     Button("不找了", role: .cancel) { engine.setFindTarget(nil) }.buttonStyle(.bordered)
                 }
             } else {
-                TextField("信标编号 / 物品编码 / 分组名", text: $findQuery)
+                TextField("标签编号 / 物品编码 / 分组名", text: $findQuery)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                 let q = findQuery.trimmingCharacters(in: .whitespaces).uppercased()
                 if q.count >= 2 {
@@ -1183,8 +1183,8 @@ struct MagneticView: View {
                     }
                 }
             }
-        } header: { Text("找信标") } footer: {
-            Text("信标位置表里大约 5% 的位置不准：到了红框没找到，就看信号强弱——越来越近会震动，「就在旁边」时在 1 m 以内。")
+        } header: { Text("找标签") } footer: {
+            Text("标签位置表里少数位置可能不准：到了红框没找到，就看信号强弱——越来越近会震动，「就在旁边」时在 1 m 以内。")
         }
     }
 

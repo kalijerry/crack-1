@@ -17,6 +17,8 @@ public final class ShadowLocalizer {
     private let bias = RawBiasTracker()
     private var lastRaw: (t: Int64, v: (Double, Double, Double))?
     private var latest: MagneticFeature?
+    /// 最近一次的磁场特征（诊断用：量读数和地图的残差）
+    public var latestFeature: MagneticFeature? { latest }
     private var lastA: Point2?
     private var accum = Point2.zero
 

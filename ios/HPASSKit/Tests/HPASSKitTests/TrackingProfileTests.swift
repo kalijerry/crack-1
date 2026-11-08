@@ -45,6 +45,12 @@ final class TrackingProfileTests: XCTestCase {
         XCTAssertNil(c.localRecoveryGlobalAfterCm)
         XCTAssertNil(c.trackingOdometry)
         XCTAssertEqual(c.randomInjectionConverged, 0.003)
+        // 似然标定的开关默认关：冷启动 / 私有场景的行为不变
+        XCTAssertEqual(c.observationSigmaFloorUT, 1.5)
+        XCTAssertEqual(c.likelihoodTemperature, 1.5)
+        XCTAssertEqual(c.magneticCorrelationCm, 0)
+        XCTAssertEqual(c.offsetWarmupUpdates, 0)
+        XCTAssertEqual(c.featureWeights.0, 1.0); XCTAssertEqual(c.featureWeights.1, 1.0); XCTAssertEqual(c.featureWeights.2, 0.5)
     }
 
     /// 视觉里程计跟踪档和实时定位页原来的写法数值一致
@@ -71,6 +77,11 @@ final class TrackingProfileTests: XCTestCase {
             XCTAssertTrue(x.coverageGatedMagWeight)
             XCTAssertLessThan(x.convergedMagWeight, 1)
             XCTAssertEqual(x.localRecoveryGlobalAfterCm, TrackingProfile.localRecoveryGlobalAfterCm)
+            XCTAssertEqual(x.observationSigmaFloorUT, TrackingProfile.observationSigmaFloorUT)
+            XCTAssertEqual(x.magneticCorrelationCm, TrackingProfile.magneticCorrelationCm)
+            XCTAssertEqual(x.offsetWarmupUpdates, TrackingProfile.offsetWarmupUpdates)
+            XCTAssertEqual(x.offsetMedianWindow, TrackingProfile.offsetMedianWindow)
+            XCTAssertEqual(x.likelihoodTemperature, 1.5)
         }
         XCTAssertEqual(c.trackingOdometry, .vio)
         XCTAssertEqual(p.trackingOdometry, .pdr)
@@ -230,5 +241,59 @@ final class TrackingProfileTests: XCTestCase {
             XCTAssertLessThan(e.position.distance(to: truth), 300, "第 \(k) 步提前跳到了远处")
         }
         XCTAssertEqual(loc.lostCount, 0)
+    }
+
+    /// 稳健偏移估计：已知起点时先按起伏比，攒够 offsetWarmupUpdates 次更新才给整体偏移；
+    /// 偏移取中位数，偶尔的离群读数（+40 µT）不把它带偏。
+    func testRobustOffsetWaitsForWindowAndIgnoresOutliers() {
+        let cfg = MagneticConfig.tracking(odometry: .pdr)
+        let loc = MagneticLocalizer(field: world(period: nil), config: cfg, seed: 21)
+        var truth = Point2(300, 200)
+        loc.reset(start: truth, spreadCm: TrackingProfile.startSpreadCm)
+        let off = MagneticFeature(total: 3, vertical: -5, horizontal: 2)
+        let step = Point2(25, 0)
+        var k = 0
+        var firstOffsetAt: Int?
+        while truth.x < 4500 {
+            truth = truth + step
+            k += 1
+            var f = g(truth.x) + off
+            if k % 14 == 0 { f = f + MagneticFeature(total: 40, vertical: 40, horizontal: 40) }
+            let e = loc.step(delta: pdr(step), feature: f)
+            if firstOffsetAt == nil, loc.currentOffset != nil { firstOffsetAt = e.updates }
+            if firstOffsetAt == nil { XCTAssertLessThan(e.updates, cfg.offsetWarmupUpdates, "攒够之前就给了偏移") }
+        }
+        XCTAssertEqual(firstOffsetAt, cfg.offsetWarmupUpdates)
+        let o = loc.currentOffset!
+        XCTAssertEqual(o.total, off.total, accuracy: 1.5)
+        XCTAssertEqual(o.vertical, off.vertical, accuracy: 1.5)
+        XCTAssertEqual(o.horizontal, off.horizontal, accuracy: 1.5)
+        XCTAssertLessThan(loc.estimate().position.distance(to: truth), 300)
+        // 原有行为（offsetWarmupUpdates = 0）：第一次更新就给偏移
+        var old = cfg
+        old.offsetWarmupUpdates = 0
+        let l2 = MagneticLocalizer(field: world(period: nil), config: old, seed: 21)
+        l2.reset(start: Point2(300, 200), spreadCm: TrackingProfile.startSpreadCm)
+        var t2 = Point2(300, 200)
+        for _ in 0..<6 { t2 = t2 + step; l2.step(delta: pdr(step), feature: g(t2.x) + off) }
+        XCTAssertNotNil(l2.currentOffset)
+        XCTAssertLessThan(l2.estimate().updates, cfg.offsetWarmupUpdates)
+    }
+
+    /// 地磁残差的相关长度：同样的读数，按 6 m 才算一次独立观测时，一次更新后的粒子权重平得多（有效粒子比例高）；
+    /// 0 = 原有行为
+    func testMagneticCorrelationLengthSoftensUpdate() {
+        func ratio(_ corr: Double) -> Double {
+            var cfg = MagneticConfig.tracking(odometry: .pdr)
+            cfg.magneticCorrelationCm = corr
+            cfg.observationSigmaFloorUT = 1.5
+            cfg.hybridOffset = false          // 按绝对值比：第一次更新就有信息（起伏模式第一次的残差恒为 0）
+            let loc = MagneticLocalizer(field: world(period: nil), config: cfg, seed: 2)
+            loc.reset(start: Point2(1000, 200), spreadCm: 300)
+            return loc.step(delta: Point2(50, 0), feature: g(1050)).effectiveRatio
+        }
+        let independent = ratio(0), correlated = ratio(600)
+        XCTAssertGreaterThan(correlated, independent + 0.1, "相关长度没有让更新变软：\(independent) → \(correlated)")
+        XCTAssertEqual(ratio(25), independent, accuracy: 1e-9, "相关长度短于一次更新的距离时等于原有行为")
     }
 }

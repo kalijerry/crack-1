@@ -32,18 +32,7 @@ do {
     guard !build.isEmpty, !test.isEmpty else { print("--build 和 --test 都要给"); exit(2) }
     let overlap = Set(build.map(\.standardizedFileURL)).intersection(test.map(\.standardizedFileURL))
     if !overlap.isEmpty { print("⚠️ 有会话同时在建图和测试里：\(overlap.map(\.lastPathComponent))，结果会偏乐观") }
-    // 磁场图默认和云端出图同一套（各会话偏移一起解）；--map-build sequential = 手机上按顺序逐个对齐的老办法
-    let mapMode: SessionEvaluator.MapBuild = arg("--map-build") == "sequential" ? .sequential : .fusion
-    let (field, bleMap, reps) = try SessionEvaluator.buildMaps(sessions: build, map: map, mode: mapMode)
-    for r in reps {
-        let off = r.offsetUT.map { String(format: "，偏移 |B| %+.1f Bz %+.1f Bh %+.1f µT", $0.total, $0.vertical, $0.horizontal) } ?? ""
-        print("建图 \(r.name)：样本 \(r.samplesUsed)" + off + (r.warnings.isEmpty ? "" : "，⚠️ \(r.warnings.joined(separator: "；"))"))
-    }
-    print("磁场图：有数据 \(field.coveredCells) 格；蓝牙指纹：\(bleMap.map { "\($0.tags.count) 个标签" } ?? "无")")
-    if CommandLine.arguments.contains("--old-ble") { BLEAssist.defaultTagRanges = false }
-    if CommandLine.arguments.contains("--no-pregate") { BLEAssist.defaultPreGate = false }
-    if CommandLine.arguments.contains("--no-covgate") { BLEAssist.defaultCoverageGate = false }
-    var ble = CommandLine.arguments.contains("--no-ble") ? nil : bleMap
+    // 标签位置表：建图时和 hpass-build 一样用来修正轨迹 / 质量筛选，测试时用来修正参考轨迹
     var refTags: [String: Point2]?
     if let p = arg("--tag-locations") ?? arg("--esl-locations"), let t = try? String(contentsOfFile: p, encoding: .utf8) {
         let locs = TagLocations.parse(t, map: map)
@@ -52,6 +41,23 @@ do {
         refTags = tp
         print("参考轨迹：用标签锚定修正")
     }
+    // 磁场图默认和云端出图同一份流水线（MultiSessionFusion.buildProduction：三遍融合、质量筛选、只用主体连通分量）；
+    // --map-build sequential = 手机上按顺序逐个对齐的老办法
+    let mapMode: SessionEvaluator.MapBuild = arg("--map-build") == "sequential" ? .sequential : .fusion
+    let built = try SessionEvaluator.buildMaps(sessions: build, map: map, mode: mapMode, tagPositions: refTags ?? [:])
+    let field = built.field, bleMap = built.ble
+    for r in built.reports {
+        let off = r.offsetUT.map { String(format: "，偏移 |B| %+.1f Bz %+.1f Bh %+.1f µT", $0.total, $0.vertical, $0.horizontal) } ?? ""
+        print("建图 \(r.name)：样本 \(r.samplesUsed)" + off + (r.warnings.isEmpty ? "" : "，⚠️ \(r.warnings.joined(separator: "；"))"))
+    }
+    for x in built.rejected { print("建图不用 \(x.name)：\(x.reason)") }
+    print("建图：\(build.count) 个会话，合格 \(build.count - built.rejected.count) 个，\(built.components) 个连通分量"
+          + (built.magExcluded.isEmpty ? "" : "，磁场图不用（和主体连不上）：\(built.magExcluded.joined(separator: "、"))"))
+    print("磁场图：有数据 \(field.coveredCells) 格；蓝牙指纹：\(bleMap.map { "\($0.tags.count) 个标签" } ?? "无")")
+    if CommandLine.arguments.contains("--old-ble") { BLEAssist.defaultTagRanges = false }
+    if CommandLine.arguments.contains("--no-pregate") { BLEAssist.defaultPreGate = false }
+    if CommandLine.arguments.contains("--no-covgate") { BLEAssist.defaultCoverageGate = false }
+    var ble = CommandLine.arguments.contains("--no-ble") ? nil : bleMap
     if ble != nil, let p = arg("--tag-locations") ?? arg("--esl-locations"), let t = try? String(contentsOfFile: p, encoding: .utf8) {
         ble = TagLocations.seededBLEMap(TagLocations.parse(t, map: map), learned: bleMap)
         print("蓝牙底图：标签位置表 + 学到的，\(ble!.tags.count) 个标签")

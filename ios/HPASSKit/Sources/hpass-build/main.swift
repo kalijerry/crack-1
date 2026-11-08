@@ -75,63 +75,34 @@ do {
     if let p = arg("--tag-locations") ?? arg("--esl-locations"), let t = try? String(contentsOfFile: p, encoding: .utf8) { tagText = t; locs = TagLocations.parse(t, map: map) }
     var tagPos: [String: Point2] = [:]
     for e in locs { if let p = e.position { tagPos[e.id] = p } }
-
-    // 第 1 遍：各会话原样对齐（起点 + 贴通道）
-    let r1 = fusion.fuse(sessions)
-    // 货架标签（摄像头读到的「082-20」）：每条换成「人应该在那段货架前」的区域
     let shelfSigns = ShelfSigns(map: map, walkable: SessionEvaluator.walkable(map))
-    let signObs: [[TagTrajectoryCorrector.SignObservation]] = signSamples.map { ss in
-        ss.compactMap { x in shelfSigns.sign(for: x.text).map { sg in .init(tMs: x.tMs, region: { shelfSigns.nearestValid(sg, to: $0) }) } }
+
+    // 磁场建图流水线（三遍融合 + 标签锚定修正 + 质量筛选 + 只用主体分量）：和评估共用 MultiSessionFusion.buildProduction
+    guard let pb = fusion.buildProduction(sessions, ble: bleSamples, signs: signSamples, tagPositions: tagPos) else {
+        print("没有合格的会话，不出图"); exit(3)
     }
-    let signDist: [[(tMs: Int64, distanceTo: (Point2) -> Double)]] = signSamples.map { ss in
-        ss.compactMap { x in shelfSigns.sign(for: x.text).map { sg in (x.tMs, { shelfSigns.distance(sg, from: $0) }) } }
+    if pb.signObservations > 0 { print("货架标签：\(pb.signObservations) 次") }
+    for s in sessions {
+        guard let st = pb.corrections[s.name] else { continue }
+        print(String(format: "蓝牙标签 / 货架标签修正 %@：蓝牙标签读数 %d、货架标签 %d，人−蓝牙标签中位 %.1f → %.1f m，最大挪动 %.1f m",
+                     s.name, st.readings, st.signs ?? 0, st.beforeMedianM, st.afterMedianM, st.maxShiftM))
     }
-    let nSigns = signObs.reduce(0) { $0 + $1.count }
-    if nSigns > 0 { print("货架标签：\(nSigns) 次（\(signObs.filter { !$0.isEmpty }.count) 个会话）") }
-    // 标签锚定修正：每 5 秒一个结点，把轨迹拉向听到的标签（每个标签都是一个绝对锚点）
-    var corrections: [((Int64) -> Point2)?] = Array(repeating: nil, count: sessions.count)
-    var corrStats: [String: TagTrajectoryCorrector.Stats] = [:]
-    if (!tagPos.isEmpty || nSigns > 0) && !map.crosses.isEmpty {
-        let corr = TagTrajectoryCorrector(tagPositions: tagPos)
-        for (k, s) in sessions.enumerated() where k < bleSamples.count {
-            guard let (fn, st) = corr.solve(track: r1.tracks[k], ble: bleSamples[k], signs: signObs[k]) else { continue }
-            corrections[k] = fn
-            corrStats[s.name] = st
-            print(String(format: "蓝牙标签 / 货架标签修正 %@：蓝牙标签读数 %d、货架标签 %d，人−蓝牙标签中位 %.1f → %.1f m，最大挪动 %.1f m",
-                         s.name, st.readings, st.signs ?? 0, st.beforeMedianM, st.afterMedianM, st.maxShiftM))
-        }
-    }
-    // 第 2 遍：带修正对齐，拿来做质量检查
-    let r2 = fusion.fuse(sessions, corrections: corrections)
-    // 质量筛选：每 10 秒一段，标签 + 磁场（和别的会话比）两种证据；不合格的段丢掉，整体不可信的会话整个不用
-    let gate = SessionQualityGate(tagPositions: tagPos)
-    if map.crosses.isEmpty { gate.minPathCm = 500; gate.minGoodSamples = 150 }   // 房间小，走几米就够
-    var quality: [SessionQualityGate.Report] = []
-    var filters: [((Int64) -> Bool)?] = []
-    var keepIdx: [Int] = []
-    for (k, s) in sessions.enumerated() {
-        let others = MagneticFieldBuilder(widthCm: map.width, heightCm: map.height, cellCm: fusion.cellCm)
-        var any = false
-        for (j, ss) in r2.samples.enumerated() where j != k { for x in ss { _ = others.add(position: x.p, feature: x.f); any = true } }
-        let v = gate.evaluate(name: s.name, track: r2.tracks[k], ble: k < bleSamples.count ? bleSamples[k] : [],
-                              mag: r2.samples[k], others: any ? others.snapshot() : nil, othersBuilder: any ? others : nil,
-                              signs: signDist[k])
-        quality.append(v.report)
-        let q = v.report
+    let quality = pb.quality
+    let corrStats = pb.corrections
+    for q in quality {
         let ble = q.bleMedianM.map { String(format: "标签 %.1f m（最差 %.1f）", $0, q.bleWorstM ?? 0) } ?? "标签 -"
         let mag = q.magResidualUT.map { String(format: "磁场残差 %.1f µT（最差 %.1f）", $0, q.magWorstUT ?? 0) } ?? "磁场 -"
-        if v.keep != nil {
-            filters.append(v.keep); keepIdx.append(k)
-            print("✅ \(s.name)：\(ble)，\(mag)，\(q.windows) 段里 \(q.bad) 段不合格" + (q.droppedSpans.isEmpty ? "" : "，丢掉 " + q.droppedSpans.map { "\($0[0])–\($0[1]) 秒" }.joined(separator: "、")))
+        if q.kept {
+            print("✅ \(q.name)：\(ble)，\(mag)，\(q.windows) 段里 \(q.bad) 段不合格" + (q.droppedSpans.isEmpty ? "" : "，丢掉 " + q.droppedSpans.map { "\($0[0])–\($0[1]) 秒" }.joined(separator: "、")))
         } else {
-            print("❌ \(s.name)：不用 —— \(q.reason ?? "")（\(ble)，\(mag)）")
+            print("❌ \(q.name)：不用 —— \(q.reason ?? "")（\(ble)，\(mag)）")
         }
     }
-    guard !keepIdx.isEmpty else { print("没有合格的会话，不出图"); exit(3) }
-    // 第 3 遍：只用合格的会话和合格的段
+    let keepIdx = pb.keptIndices
     let keptSessions = keepIdx.map { sessions[$0] }
-    let keptBLE = keepIdx.map { k in k < bleSamples.count ? bleSamples[k].filter { filters[keepIdx.firstIndex(of: k)!]!($0.tMs) } : [] }
-    let r = fusion.fuse(keptSessions, filters: filters, corrections: keepIdx.map { corrections[$0] })
+    let keptBLE = pb.keptBLE
+    let r = pb.all
+    let gate = pb.gate
     print("融合 \(keptSessions.count) / \(sessions.count) 个会话，\(r.components) 个连通分量，磁场 \(r.field.coveredCells) 格（\(Int(Date().timeIntervalSince(t0))) 秒）")
     for s in r.sessions {
         print(String(format: "  %@：样本 %d，格 %d，偏移 |B| %+.1f Bz %+.1f Bh %+.1f µT，分量 %d，重叠 %@",
@@ -141,15 +112,11 @@ do {
     }
     // 和主体连不上的会话（重叠不够、整体偏移解不出来）：磁场整体可能差 10～16 µT，放进去会污染磁场图，
     // 所以磁场图只用主体（分量 0）；它们的标签读数照用（标签位置和磁场水平无关）。补采一段重叠后自动加入。
-    var magExcluded: [String] = []
-    var rm = r
-    if r.components > 1 {
-        let main = r.sessions.indices.filter { r.sessions[$0].component == 0 }
-        magExcluded = r.sessions.indices.filter { r.sessions[$0].component != 0 }.map { r.sessions[$0].name }
-        let cs = keepIdx.map { corrections[$0] }
-        rm = fusion.fuse(main.map { keptSessions[$0] }, filters: main.map { filters[$0] }, corrections: main.map { cs[$0] })
+    let magExcluded = pb.magExcluded
+    var rm = pb.magnetic
+    if !magExcluded.isEmpty {
         print("⚠️ 磁场图不用（和主体没有足够重叠，整体偏移对不齐）：\(magExcluded.joined(separator: "、"))；标签读数照用。补采一段和已采区域重叠的路段后会自动加入")
-        print("磁场图：\(main.count) 个会话，磁场 \(rm.field.coveredCells) 格")
+        print("磁场图：\(rm.sessions.count) 个会话，磁场 \(rm.field.coveredCells) 格")
     }
     // 地图自愈：实时定位记录里可信的路段，低权重并进磁场图（要和建图数据有重叠才能对齐，对不齐的跳过）
     var liveReport: LiveFieldMerger.Report?

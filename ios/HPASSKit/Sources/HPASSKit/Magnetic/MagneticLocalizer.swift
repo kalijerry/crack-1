@@ -137,6 +137,14 @@ public struct MagneticConfig {
     /// 用 `MagneticLocalizer.setOdometry` 换成对应那一套参数。
     public var trackingOdometry: OdometrySource?
     public var trackingHeadingKnown = true
+    /// 已知起点开始的跟踪里，蓝牙（BLEAssist）只做软约束：位置先验放宽（σ ≥ `bleSoftPriorSigmaCm`、权重
+    /// `bleSoftPriorWeight`），不挡收敛；蓝牙持续对不上时只触发局部找回（`declareLost(local: true)`），不全图找。
+    /// false = 原有行为（标签范围硬约束、对不上 / 不在采集区域就判丢全图找、挡收敛）。冷启动不受影响。
+    public var bleSoftTracking = false
+    public var bleSoftPriorSigmaCm: Double = 700
+    public var bleSoftPriorWeight: Double = 0.2
+    /// 软约束时蓝牙持续对不上是否触发局部找回（false = 只给先验，从不判丢）
+    public var bleSoftLocalRecovery = true
 
     public init() {}
 }
@@ -356,6 +364,16 @@ public final class MagneticLocalizer {
     /// 外部判断「定错了」（例如蓝牙粗定位持续离得很远）：退回没把握的状态，重新找。
     /// 粒子不清空，靠后面的观测和外部粗定位把它们拉回去。
     /// 不做局部找回：最后一次可靠位置就是刚被否定的那个，围着它找等于往回拉。
+    /// - Parameter local: true 且是已知起点开始、打开了 localRecovery 时，只在最后一次可靠位置附近找回（和自己丢了一样），
+    ///   不全图找；用于外部证据（跟踪时的蓝牙）只说明「不太对」、但不足以否定整个跟踪的情况。
+    public func declareLost(local: Bool) {
+        guard local, config.localRecovery, startedFromPrior, hasConverged else { declareLost(); return }
+        let fix = lastGoodFix ?? committed
+        loseTrack()
+        lastGoodFix = fix
+        sinceGoodCm = 0
+    }
+
     public func declareLost() {
         pathSinceResetCm = 0
         recentTotals = []

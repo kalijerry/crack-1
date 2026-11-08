@@ -8,20 +8,26 @@
 输出：
   <out>/map.json            宽高 + floorPolygons：默认来自楼层平面图 geojson_map.json（外轮廓减去店铺等单元，
                             --walkable geojson）；--walkable paths 时只由「建图 trace 的真值路径」膨胀得到（不看测试 trace）
-  <out>/build/<id>/         建图会话：imu/mag_raw/ble/arkit_pose(=真值)/anchors(真值)
-  <out>/test/<id>/          测试会话：imu/mag_raw/ble + 合成漂移位姿(arkit_pose) + truth.csv(真值)
+  <out>/build/<id>/         建图会话：imu/mag_raw/ble/wifi/arkit_pose(=真值)/anchors(真值)
+  <out>/test/<id>/          测试会话：imu/mag_raw/ble/wifi + 合成漂移位姿(arkit_pose) + truth.csv(真值)
   <out>/manifest.json
 
 近似说明：
 - 真值 = 稀疏 waypoint 按时间线性插值（人在点之间匀速直走）。
 - 测试会话没有 ARKit：位姿 = 真值位移加旋转(随机初始朝向)、尺度误差、朝向随机游走，是合成的，不是真实 PDR。
+- Wi-Fi（wifi.csv，格式见 docs/data-format.md）：原始记录里每条带「扫描结果上报时刻」和「这个 AP 最后一次被看到的时刻」，
+  系统会把几十秒前缓存的旧结果混进新一轮扫描里；最后看到的时刻比上报时刻早 WIFI_MAX_AGE_MS 以上的丢掉。
+  Wi-Fi 只在 Android 能扫（iOS 第三方 App 拿不到），只给 --wifi 场景用。
 - 纯标准库，不依赖 numpy。
 """
 import argparse, bisect, glob, json, math, os, random, sys
 
+# Wi-Fi 结果「最后看到」比上报时刻早这么多（ms）就算缓存的旧结果，不要
+WIFI_MAX_AGE_MS = 5000
+
 
 def parse(path):
-    d = {k: [] for k in ("acc", "gyr", "mag", "raw", "ble", "wp")}
+    d = {k: [] for k in ("acc", "gyr", "mag", "raw", "ble", "wifi", "wp")}
     with open(path, errors="ignore") as f:
         for l in f:
             if l[0] == "#":
@@ -42,6 +48,11 @@ def parse(path):
                     d["raw"].append((t, float(p[2]), float(p[3]), float(p[4])))
                 elif k == "TYPE_BEACON":
                     d["ble"].append((t, p[8].strip(), float(p[6])))   # MAC, RSSI
+                elif k == "TYPE_WIFI":
+                    # t  TYPE_WIFI  ssid  bssid  rssi  freq_mhz  last_seen_ms
+                    last = int(p[6]) if len(p) > 6 and p[6].strip() else t
+                    if t - last <= WIFI_MAX_AGE_MS:
+                        d["wifi"].append((t, p[3].strip().lower(), float(p[4]), int(p[5])))
                 elif k == "TYPE_WAYPOINT":
                     d["wp"].append((t, float(p[2]) * 100, float(p[3]) * 100))   # m -> cm
             except (ValueError, IndexError):
@@ -95,6 +106,11 @@ def write_sensors(dst, d, t0, t1):
         for t, mac, rssi in d["ble"]:
             if t0 <= t <= t1:
                 f.write(f"{t},,{mac},{rssi:.0f},{mac},\n")
+    with open(os.path.join(dst, "wifi.csv"), "w", newline="\n") as f:
+        f.write("t_ms,bssid,rssi,freq\n")
+        for t, bssid, rssi, freq in d["wifi"]:
+            if t0 <= t <= t1:
+                f.write(f"{t},{bssid},{rssi:.0f},{freq}\n")
     json.dump({"format_version": 3, "survey": True, "source": "ILC2.0"}, open(os.path.join(dst, "meta.json"), "w", newline="\n"))
 
 

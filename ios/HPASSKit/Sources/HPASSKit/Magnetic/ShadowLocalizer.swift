@@ -40,6 +40,13 @@ public final class ShadowLocalizer {
     public var crossCheckResets: Int { assist?.resets ?? 0 }
     public var outsideSurveyed: Bool { assist?.outsideSurveyed ?? false }
 
+    /// Wi-Fi 冷启动（见 WiFiColdStartProfile；只有 Android 能扫 Wi-Fi）。用 `enableWiFi` 打开，nil = 不用
+    public private(set) var wifiMap: WiFiFingerprintMap?
+    /// 已经用第一次 Wi-Fi 定位撒过粒子
+    public private(set) var wifiSeeded = false
+    /// 用上的 Wi-Fi 定位次数
+    public private(set) var wifiFixes = 0
+
     /// - Parameter coldStartGate: 打开冷启动收敛门（`MagneticConfig.applyColdStartGate`）：只在还没用过外部位置先验
     ///   （蓝牙粗定位 / 标签范围）时起作用，走够路、峰够突出才宣布定到，宁可不报也不报错的。默认关（原有行为）。
     public init(field: MagneticFieldMap, walkable: WalkableMap?, useRawMag: Bool,
@@ -94,6 +101,27 @@ public final class ShadowLocalizer {
                      current: localizer.isConverged ? estimate?.position : nil, candidate: estimate?.position)
     }
 
+    /// 打开 Wi-Fi 冷启动：滤波器换成 Wi-Fi 冷启动配置档（configure 照样最后套上），第一次 Wi-Fi 定位之前不报位置。
+    public func enableWiFi(_ map: WiFiFingerprintMap, odometry: OdometrySource, configure: ((inout MagneticConfig) -> Void)? = nil) {
+        var cfg = MagneticConfig.wifiColdStart(odometry: odometry)
+        configure?(&cfg)
+        localizer.config = cfg
+        wifiMap = map
+        wifiSeeded = false
+    }
+
+    /// 一次 Wi-Fi 扫描（打开了 Wi-Fi 冷启动才有用）。第一次定到就按它撒粒子，之后每次给一个重尾的位置观测。
+    public func wifiScan(_ scan: WiFiScan) {
+        guard let m = wifiMap, let fix = m.locate(scan, k: WiFiColdStartProfile.neighbours) else { return }
+        wifiFixes += 1
+        if !wifiSeeded {
+            localizer.reset(start: fix.position, spreadCm: WiFiColdStartProfile.seedSpreadCm, headingUnknown: true, walkableTries: 30)
+            wifiSeeded = true
+        } else {
+            localizer.applyRobustPositionPrior(fix.position, sigmaCm: WiFiColdStartProfile.priorSigmaCm, nu: WiFiColdStartProfile.priorNu)
+        }
+    }
+
     /// ARKit 位姿。送进滤波器时返回新的估计。`tMs` 给了才会用蓝牙。
     @discardableResult
     public func pose(a: Point2, normal: Bool, tMs: Int64? = nil) -> MagneticEstimate? {
@@ -108,7 +136,25 @@ public final class ShadowLocalizer {
         accum = .zero
         let prev = estimate
         if let t = tMs { bleTick(t) }
-        let e = localizer.step(delta: step, feature: latest, trust: 1)
+        var e: MagneticEstimate
+        if wifiMap != nil {
+            // Wi-Fi 冷启动：第一次 Wi-Fi 定位之前不动滤波器、不报位置；之后报全部粒子的加权平均，散布够小才算定到
+            // （门限见 WiFiColdStartProfile：开始报要位置、航向都够集中，已经在报时位置门限放宽一点）
+            guard wifiSeeded else {
+                estimate = MagneticEstimate(position: .zero, uncertaintyCm: .infinity, confidence: 0, effectiveRatio: 1,
+                                            updates: 0, converged: false)
+                stableCm = 0
+                return estimate
+            }
+            e = localizer.step(delta: step, feature: latest, trust: 1)
+            let (mean, spread, headingSpread) = localizer.weightedSpread()
+            e.position = mean
+            e.uncertaintyCm = spread
+            let gate = prev?.converged == true ? WiFiColdStartProfile.holdSpreadCm : WiFiColdStartProfile.reportSpreadCm
+            e.converged = spread < gate && headingSpread < WiFiColdStartProfile.reportHeadingSpreadDeg
+        } else {
+            e = localizer.step(delta: step, feature: latest, trust: 1)
+        }
         estimate = e
         estimateA = a
         if e.converged {

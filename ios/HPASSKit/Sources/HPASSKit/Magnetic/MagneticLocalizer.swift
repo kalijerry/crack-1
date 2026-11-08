@@ -392,7 +392,10 @@ public final class MagneticLocalizer {
     /// - Parameter headingUnknown: 位置已知但朝向不知道（或冷启动）。此时粒子的航向偏差在整圆上均匀取值。
     /// - Parameter priorFraction: 朝向不知道时，有一部分粒子仍按惯导给的方向（偏差 1σ = `initialHeadingBiasSigmaDeg`），
     ///   其余在整圆上均匀。惯导方向来自罗盘 + 地图朝向时设 0.5 左右；完全没有参考时设 0。
-    public func reset(start: Point2?, spreadCm: Double = 150, headingUnknown: Bool = false, priorFraction: Double = 0) {
+    /// - Parameter walkableTries: 给了 start 时，撒到不可走区域的粒子重新抽几次（0 = 原有行为：直接挪到 3 m 内最近的可走点）。
+    ///   撒得很开（例如 Wi-Fi 粗定位，σ 8 m）时用：挪到最近可走点会把粒子堆在通道边上。
+    public func reset(start: Point2?, spreadCm: Double = 150, headingUnknown: Bool = false, priorFraction: Double = 0,
+                      walkableTries: Int = 0) {
         pathSinceResetCm = start == nil ? 0 : 3000     // 已知起点：不用等走够路
         recentTotals = []
         magneticWeight = 1
@@ -414,7 +417,14 @@ public final class MagneticLocalizer {
             var p: Point2
             if let s = start {
                 p = Point2(s.x + rng.normal() * spreadCm, s.y + rng.normal() * spreadCm)
-                if let w = walkable, !w.isWalkable(p) { p = w.nearestWalkable(to: p, radiusCm: 300) ?? s }
+                if let w = walkable {
+                    var k = 0
+                    while k < walkableTries && !w.isWalkable(p) {
+                        p = Point2(s.x + rng.normal() * spreadCm, s.y + rng.normal() * spreadCm)
+                        k += 1
+                    }
+                    if !w.isWalkable(p) { p = w.nearestWalkable(to: p, radiusCm: 300) ?? s }
+                }
             } else {
                 p = randomPosition()
             }
@@ -530,6 +540,41 @@ public final class MagneticLocalizer {
             }
         }
         normalize()
+    }
+
+    /// 重尾的「粗位置」观测（Wi-Fi 指纹等，偶尔偏很远）：每个粒子按离 `center` 的距离加 Student-t 对数似然
+    /// −(ν+1)/2 · ln(1 + (d/σ)²/ν) × weight。比高斯（applyPositionPrior）宽容：一次离谱的粗定位不会把对的粒子全压掉。
+    /// 有效粒子数低了就重采样（不等下一次地磁更新）。
+    public func applyRobustPositionPrior(_ center: Point2, sigmaCm: Double, nu: Double = 3, weight: Double = 1) {
+        guard !xs.isEmpty, sigmaCm > 0, nu > 0, weight > 0 else { return }
+        let inv = 1 / (sigmaCm * sigmaCm * nu), k = weight * (nu + 1) / 2
+        for i in 0..<xs.count {
+            let dx = xs[i] - center.x, dy = ys[i] - center.y
+            logw[i] -= k * log(1 + (dx * dx + dy * dy) * inv)
+        }
+        normalize()
+        lastEffectiveRatio = effectiveCount() / Double(xs.count)
+        if lastEffectiveRatio < config.resampleThreshold { resample(to: xs.count) }
+    }
+
+    /// 全部粒子的加权平均位置、位置散布（cm，√(σx² + σy²)）和航向偏差的圆周标准差（度），不分簇。
+    public func weightedSpread() -> (mean: Point2, spreadCm: Double, headingSpreadDeg: Double) {
+        guard !xs.isEmpty else { return (.zero, .infinity, 180) }
+        let mx = logw.max() ?? 0
+        var sw = 0.0, sx = 0.0, sy = 0.0, sc = 0.0, ss = 0.0
+        for i in xs.indices {
+            let w = exp(logw[i] - mx)
+            sw += w; sx += w * xs[i]; sy += w * ys[i]; sc += w * cos(bias[i]); ss += w * sin(bias[i])
+        }
+        let m = Point2(sx / sw, sy / sw)
+        var v = 0.0
+        for i in xs.indices {
+            let w = exp(logw[i] - mx), dx = xs[i] - m.x, dy = ys[i] - m.y
+            v += w * (dx * dx + dy * dy)
+        }
+        // 圆周标准差 √(−2 ln R)，R = 平均合向量长度
+        let r = min(max((sc * sc + ss * ss).squareRoot() / sw, 1e-12), 1)
+        return (m, (v / sw).squareRoot(), (-2 * log(r)).squareRoot() * 180 / Double.pi)
     }
 
     /// 标签范围约束：每片听到的标签都要求「人在它 rangeCm 以内」（按信号强弱定，实测 P90：−75 dBm 2.5 m、

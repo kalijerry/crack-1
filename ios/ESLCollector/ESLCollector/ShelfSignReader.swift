@@ -48,3 +48,25 @@ final class ShelfSignReader: @unchecked Sendable {
         }
     }
 }
+
+extension ShelfSignReader {
+    /// 通用文字识别（门牌、房间名）：中文 + 英文，返回置信度够的整行文字，按画面里从上到下排。
+    /// 在调用方的线程上同步执行（Vision 要几百毫秒），不要在主线程调。
+    static func recognizeLines(_ image: CGImage, orientation: CGImagePropertyOrientation) -> [String] {
+        let req = VNRecognizeTextRequest()
+        req.recognitionLevel = .accurate
+        req.usesLanguageCorrection = true
+        req.recognitionLanguages = ["zh-Hans", "en-US"]
+        let handler = VNImageRequestHandler(cgImage: image, orientation: orientation, options: [:])
+        do { try handler.perform([req]) } catch { return [] }
+        let obs = (req.results ?? []).sorted { $0.boundingBox.midY > $1.boundingBox.midY }
+        var seen = Set<String>()
+        var out: [String] = []
+        for o in obs {
+            guard let c = o.topCandidates(1).first, c.confidence >= 0.3 else { continue }
+            let t = c.string.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty, seen.insert(t).inserted { out.append(t) }
+        }
+        return out
+    }
+}

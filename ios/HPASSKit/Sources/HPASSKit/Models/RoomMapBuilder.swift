@@ -1,6 +1,6 @@
 import Foundation
 
-/// 房间扫描（Apple RoomPlan）的结果，换成和门店地图同一种 JSON（`mapElementList` 等），
+/// 房间扫描（Apple RoomPlan）的结果，换成和场地地图同一种 JSON（`mapElementList` 等），
 /// 这样 2D / 3D 显示、可走区域、建图采集、定位都能直接用。
 ///
 /// 输入是 ARKit 世界坐标（米，水平面取 (x, z)，与地图 (x, y) 同手性）；输出是地图坐标（cm，y 向下）。
@@ -35,7 +35,47 @@ public enum RoomMapBuilder {
         public var objects: [Item] = []
         /// 地面多边形，ARKit (x, z)，米。iOS 17 起 RoomPlan 有；没有时用墙端点的凸包
         public var floors: [[Point2]] = []
+        /// 多房间扫描（iOS 17 StructureBuilder）：每个房间 / 走廊一个单元。非空时代替 `floors`
+        public var rooms: [Room] = []
+        /// 楼层序号（IMDF level.ordinal，0 = 地面层）
+        public var ordinal: Int?
+        /// 所属场馆（同一栋楼的多层扫描归到一起，导出时合成一个 IMDF）
+        public var venueId: String?
+        public var venueName: String?
+        /// 入口处记的 GPS + 真北朝向，用来算 `geoRef`
+        public var geoAnchor: GeoAnchor?
         public init() {}
+    }
+
+    /// 一个房间 / 走廊 / 电梯厅：地面多边形 + 编号，扫完后在手机上选 IMDF 类别、填名字
+    public struct Room {
+        public var id: String
+        /// 地面多边形，ARKit (x, z)，米
+        public var floor: [Point2]
+        /// IMDF unit category（room / walkway / restroom / elevator / stairs …）
+        public var category: String
+        public var name: String?
+        public init(id: String, floor: [Point2], category: String = "room", name: String? = nil) {
+            self.id = id; self.floor = floor; self.category = category; self.name = name
+        }
+    }
+
+    /// 入口处的一次 GPS + 朝向记录（ARKit 世界坐标下的位置和手机朝向）
+    public struct GeoAnchor {
+        /// 记录时手机位置，ARKit (x, z)，米
+        public var arPosition: Point2
+        /// 手机朝向在 ARKit (x, z) 平面里的方向（弧度）= atan2(dir.z, dir.x)
+        public var arYaw: Double
+        public var lon: Double
+        public var lat: Double
+        /// CLHeading.trueHeading（度，从正北顺时针）
+        public var trueHeadingDeg: Double
+        /// GPS 水平精度（米），只记录
+        public var accuracyM: Double?
+        public init(arPosition: Point2, arYaw: Double, lon: Double, lat: Double, trueHeadingDeg: Double, accuracyM: Double? = nil) {
+            self.arPosition = arPosition; self.arYaw = arYaw; self.lon = lon; self.lat = lat
+            self.trueHeadingDeg = trueHeadingDeg; self.accuracyM = accuracyM
+        }
     }
 
     /// 四周留白（cm）
@@ -50,8 +90,8 @@ public enum RoomMapBuilder {
         let ct = cos(-theta), st = sin(-theta)
         func rot(_ p: Point2) -> Point2 { Point2(p.x * ct - p.y * st, p.x * st + p.y * ct) }
 
-        // 2. 地面：没有就用墙端点的凸包
-        var floors = input.floors
+        // 2. 地面：多房间时每个房间一块；没有就用墙端点的凸包
+        var floors = input.rooms.isEmpty ? input.floors : input.rooms.map(\.floor).filter { $0.count >= 3 }
         if floors.isEmpty {
             var pts: [Point2] = []
             for w in input.walls {
@@ -109,20 +149,167 @@ public enum RoomMapBuilder {
                              "x": r1(tl.x), "y": r1(tl.y), "width": r1(w), "height": r1(h), "rotation": rd,
                              "heightCm": r1(it.height * 100)])
         }
-        let polys: [[Double]] = floors.map { f in f.flatMap { p -> [Double] in let q = toMap(p); return [r1(q.x), r1(q.y)] } }
-        let root: [String: Any] = [
+        func flatPoly(_ f: [Point2]) -> [Double] { f.flatMap { p -> [Double] in let q = toMap(p); return [r1(q.x), r1(q.y)] } }
+        // 单元：多房间时每个房间一个；单房间（或老数据）时每块地面一个 room，编号 R1、R2…
+        let rooms: [Room] = input.rooms.isEmpty
+            ? floors.enumerated().map { Room(id: "R\($0.offset + 1)", floor: $0.element) }
+            : input.rooms.filter { $0.floor.count >= 3 }
+        let units: [[String: Any]] = rooms.map { r in
+            var u: [String: Any] = ["id": r.id, "category": r.category, "polygon": flatPoly(r.floor)]
+            if let n = r.name, !n.isEmpty { u["name"] = n }
+            return u
+        }
+        var root: [String: Any] = [
             "width": r1((maxX - minX) * 100 + 2 * m), "height": r1((maxY - minY) * 100 + 2 * m),
             "floorName": name, "source": "roomplan", "rotatedDeg": r1(theta * 180 / Double.pi),
-            "mapElementList": elements, "floorPolygons": polys,
+            "mapElementList": elements, "units": units,
             // ARKit (x, z) cm → 地图：map = pRef + R(φ)·a，φ = −θ，pRef = 留白 − 范围起点
             "arAlign": ["phi": -theta, "pRefX": m - minX * 100, "pRefY": m - minY * 100, "aRefX": 0, "aRefY": 0],
         ]
+        if let o = input.ordinal { root["ordinal"] = o }
+        if let v = input.venueId { root["venueId"] = v }
+        if let v = input.venueName { root["venueName"] = v }
+        if let a = input.geoAnchor {
+            // ARKit 里的方向 yaw 在地图里是 yaw − θ
+            let p = toMap(a.arPosition)
+            let g = GeoRef.fromAnchor(mapPoint: p, lon: a.lon, lat: a.lat, trueHeadingDeg: a.trueHeadingDeg,
+                                      mapDirectionDeg: (a.arYaw - theta) * 180 / Double.pi, marginCm: 0)
+            root["geoRef"] = g.dict
+            var anchor: [String: Any] = ["lon": a.lon, "lat": a.lat, "trueHeadingDeg": a.trueHeadingDeg,
+                                         "x": r1(p.x), "y": r1(p.y)]
+            if let acc = a.accuracyM { anchor["accuracyM"] = acc }
+            root["geoAnchor"] = anchor
+        }
+        applyUnits(&root)
         let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
         return (data, try StoreDataLoader.loadMap(data))
     }
 
+    // MARK: 单元（房间类别、名字）
+
+    /// 按 `units` 重新生成派生字段：`floorPolygons`（可走单元）、`obstaclePolygons`（不可走单元）、
+    /// `connectors`（电梯 / 楼梯 / 扶梯…，格式同 imdf_convert）、`mapElementList` 里的 MapLabel / MapConnector。
+    /// 改了单元的类别或名字之后调用一次。没有 `units` 的老地图不动。
+    public static func applyUnits(_ root: inout [String: Any]) {
+        guard let units = root["units"] as? [[String: Any]] else { return }
+        var walk: [[Double]] = [], obst: [[Double]] = [], conns: [[String: Any]] = []
+        var elements = (root["mapElementList"] as? [[String: Any]] ?? []).filter {
+            let t = $0["shapeType"] as? String
+            return t != "MapLabel" && t != "MapConnector"
+        }
+        func r1(_ v: Double) -> Double { (v * 10).rounded() / 10 }
+        for u in units {
+            let flat = numbers(u["polygon"])
+            let poly = stride(from: 0, to: flat.count - 1, by: 2).map { Point2(flat[$0], flat[$0 + 1]) }
+            guard poly.count >= 3 else { continue }
+            let id = u["id"] as? String ?? ""
+            let cat = (u["category"] as? String ?? "room").lowercased()
+            if !IMDFUnitCategory.isWalkable(cat) { obst.append(flat); continue }
+            walk.append(flat)
+            let c = polygonCentroid(poly)
+            if IMDFUnitCategory.isConnector(cat) {
+                var conn: [String: Any] = ["id": id, "category": cat, "x": r1(c.x), "y": r1(c.y), "polygon": flat]
+                if let o = root["ordinal"] { conn["ordinal"] = o }
+                conns.append(conn)
+                elements.append(["shapeType": "MapConnector", "code": id, "category": cat,
+                                 "x": r1(c.x), "y": r1(c.y), "width": 0, "height": 0, "rotation": 0])
+            }
+            if let n = u["name"] as? String, !n.isEmpty {
+                elements.append(["shapeType": "MapLabel", "code": id, "text": n, "category": cat,
+                                 "x": r1(c.x), "y": r1(c.y), "width": 0, "height": 0, "rotation": 0])
+            }
+        }
+        root["floorPolygons"] = walk
+        root["obstaclePolygons"] = obst
+        root["connectors"] = conns
+        root["mapElementList"] = elements
+    }
+
+    /// JSON 里的数字数组（NSNumber / Double / Int 都认）
+    static func numbers(_ v: Any?) -> [Double] {
+        (v as? [Any] ?? []).compactMap { x -> Double? in
+            if let d = x as? Double { return d }
+            if let n = x as? NSNumber { return n.doubleValue }
+            if let i = x as? Int { return Double(i) }
+            return nil
+        }
+    }
+
+    /// 改一个单元的类别 / 名字（nil = 不改；名字给空串 = 删掉名字），返回新的 map.json。
+    public static func relabel(_ json: Data, unitId: String, category: String? = nil, name: String? = nil) throws -> Data {
+        try update(json) { root in
+            var units = root["units"] as? [[String: Any]] ?? []
+            guard let i = units.firstIndex(where: { ($0["id"] as? String) == unitId }) else { return }
+            if let c = category { units[i]["category"] = c }
+            if let n = name {
+                let t = n.trimmingCharacters(in: .whitespacesAndNewlines)
+                if t.isEmpty { units[i].removeValue(forKey: "name") } else { units[i]["name"] = t }
+            }
+            root["units"] = units
+        }
+    }
+
+    /// 改 map.json 的字段（楼层序号、楼层名、场馆、geoRef、单元…），派生字段跟着更新。
+    public static func update(_ json: Data, _ change: (inout [String: Any]) -> Void) throws -> Data {
+        guard var root = try JSONSerialization.jsonObject(with: json) as? [String: Any] else {
+            throw StoreDataError.unsupportedFormat("地图根节点不是对象")
+        }
+        change(&root)
+        if let o = root["ordinal"], var conns = root["connectors"] as? [[String: Any]] {
+            for i in conns.indices { conns[i]["ordinal"] = o }
+            root["connectors"] = conns
+        }
+        applyUnits(&root)
+        return try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
+    }
+
+    /// map.json 里的单元（地图坐标，cm），给手机上点选房间用。
+    public struct Unit: Identifiable, Equatable {
+        public var id: String
+        public var category: String
+        public var name: String?
+        public var polygon: [Point2]
+    }
+
+    public static func units(_ json: Data) -> [Unit] {
+        guard let root = (try? JSONSerialization.jsonObject(with: json)) as? [String: Any] else { return [] }
+        return (root["units"] as? [[String: Any]] ?? []).compactMap { u in
+            let f = numbers(u["polygon"])
+            let poly = stride(from: 0, to: f.count - 1, by: 2).map { Point2(f[$0], f[$0 + 1]) }
+            guard poly.count >= 3, let id = u["id"] as? String else { return nil }
+            return Unit(id: id, category: u["category"] as? String ?? "room", name: u["name"] as? String, polygon: poly)
+        }
+    }
+
+    /// 多边形面积中心（退化时取顶点平均）
+    public static func polygonCentroid(_ p: [Point2]) -> Point2 {
+        var a = 0.0, cx = 0.0, cy = 0.0
+        for i in p.indices {
+            let q = p[i], r = p[(i + 1) % p.count]
+            let c = q.x * r.y - r.x * q.y
+            a += c; cx += (q.x + r.x) * c; cy += (q.y + r.y) * c
+        }
+        if abs(a) < 1e-9 {
+            let n = Double(max(p.count, 1))
+            return Point2(p.reduce(0) { $0 + $1.x } / n, p.reduce(0) { $0 + $1.y } / n)
+        }
+        return Point2(cx / (3 * a), cy / (3 * a))
+    }
+
+    /// 点是否在多边形内（射线法）
+    public static func polygonContains(_ poly: [Point2], _ p: Point2) -> Bool {
+        var inside = false
+        var j = poly.count - 1
+        for i in poly.indices {
+            let a = poly[i], b = poly[j]
+            if (a.y > p.y) != (b.y > p.y), p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x { inside.toggle() }
+            j = i
+        }
+        return inside
+    }
+
     /// 凸包（Andrew 单调链），逆时针。
-    static func convexHull(_ pts: [Point2]) -> [Point2] {
+    public static func convexHull(_ pts: [Point2]) -> [Point2] {
         let p = pts.sorted { $0.x != $1.x ? $0.x < $1.x : $0.y < $1.y }
         guard p.count >= 3 else { return p }
         func cross(_ o: Point2, _ a: Point2, _ b: Point2) -> Double { (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x) }

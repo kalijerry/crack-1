@@ -669,7 +669,9 @@ final class MagneticEngine: ObservableObject {
         var cfg: MagneticConfig
         if start != nil {
             // 已知起点：和评估的已知起点分支同一份跟踪配置档（HPASSKit MagneticConfig.tracking），
-            // 视觉里程计 / 计步各一套；跟踪策略（不在全图注入、远跳要确认、丢了只在附近找回、地磁按覆盖打折）都在里面
+            // 视觉里程计 / 计步各一套；跟踪策略（远跳要确认、丢了先在附近找回、地磁按覆盖打折）都在里面。
+            // 这里只是初值：每一步按实际在推粒子的来源 loc.setOdometry(.vio / .pdr)（视觉里程计没对齐、跟丢、
+            // 启动失败时是计步在推，要用计步那套参数）
             let odometry: OdometrySource = useVisualOdometry && ARKitLogger.isSupported ? .vio : .pdr
             cfg = MagneticConfig.tracking(odometry: odometry, headingKnown: !headingUnknown)
         } else {
@@ -1402,6 +1404,7 @@ final class MagneticEngine: ObservableObject {
             var est: MagneticEstimate?
             if let loc = pipe.localizer {
                 bleTick(pipe: pipe, tMs: s.tMs, loc: loc)
+                loc.setOdometry(.pdr)       // 这一步是计步在推（视觉里程计没对齐 / 跟丢 / 没开起来）：跟踪档用计步那套参数
                 let e = loc.step(delta: delta, feature: feat, trust: pipe.trustNow)
                 est = e
                 shown = e.position
@@ -1424,6 +1427,7 @@ final class MagneticEngine: ObservableObject {
                 return
             }
             bleTick(pipe: pipe, tMs: s.tMs, loc: loc)
+            loc.setOdometry(.pdr)
             let est = loc.step(delta: delta, feature: feat, trust: pipe.trustNow)
             pipe.estimate = est
             emit(pipe: pipe, tMs: out.tMs, shown: est.position, unc: est.uncertaintyCm, est: est,
@@ -1494,6 +1498,7 @@ final class MagneticEngine: ObservableObject {
             let step = pipe.vioAccum
             pipe.vioAccum = .zero
             bleTick(pipe: pipe, tMs: t, loc: loc)
+            loc.setOdometry(.vio)
             let e = loc.step(delta: step, feature: pipe.latest, trust: pipe.trustNow)
             // 朝向：用地图上显示位置的移动方向（ARKit 自己的方向和地图差一个未知旋转）
             if let ls = pipe.lastShown {
@@ -1564,6 +1569,7 @@ final class MagneticEngine: ObservableObject {
                 let lat = pipe.pendingLateral
                 pipe.pendingLateral = nil
                 bleTick(pipe: pipe, tMs: t, loc: loc)
+                loc.setOdometry(.vio)
                 let e = loc.step(delta: step, feature: pipe.latest, trust: pipe.trustNow, lateral: lat)
                 est = e
                 shown = e.position

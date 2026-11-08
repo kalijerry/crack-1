@@ -12,9 +12,9 @@ final class TrackingProfileTests: XCTestCase {
         return MagneticFeature(total: (bz * bz + bh * bh).squareRoot(), vertical: bz, horizontal: bh)
     }
 
-    /// 60 m × 4 m 的走廊，磁场每 30 m 重复一次：x 和 x + 30 m 完全一样（远处的「长得像」）。
+    /// 60 m × 4 m 的走廊，磁场每 `period` cm 重复一次（默认 30 m：x 和 x + 30 m 完全一样，远处的「长得像」；nil = 不重复）。
     /// hole：第一段里这一段 x 范围没有磁场数据（没采过）。
-    private func world(hole: ClosedRange<Double>? = nil) -> MagneticFieldMap {
+    private func world(hole: ClosedRange<Double>? = nil, period: Double? = 3000) -> MagneticFieldMap {
         let w = 6000.0, h = 400.0, cell = 50.0
         let cols = Int(w / cell), rows = Int(h / cell)
         var cells = [MagneticFeature?](), sig = [MagneticFeature?]()
@@ -22,7 +22,7 @@ final class TrackingProfileTests: XCTestCase {
             for i in 0..<cols {
                 let x = (Double(i) + 0.5) * cell
                 if let hl = hole, hl.contains(x) { cells.append(nil); sig.append(nil); continue }
-                cells.append(g(x.truncatingRemainder(dividingBy: 3000)))
+                cells.append(g(period.map { x.truncatingRemainder(dividingBy: $0) } ?? x))
                 sig.append(MagneticFeature(total: 0.5, vertical: 0.5, horizontal: 0.5))
             }
         }
@@ -42,6 +42,8 @@ final class TrackingProfileTests: XCTestCase {
         XCTAssertTrue(c.zeroConfidenceOffMap)
         XCTAssertFalse(c.keepClusterRequiresNear)
         XCTAssertFalse(c.localRecovery)
+        XCTAssertNil(c.localRecoveryGlobalAfterCm)
+        XCTAssertNil(c.trackingOdometry)
         XCTAssertEqual(c.randomInjectionConverged, 0.003)
     }
 
@@ -68,7 +70,38 @@ final class TrackingProfileTests: XCTestCase {
             XCTAssertTrue(x.localRecovery)
             XCTAssertTrue(x.coverageGatedMagWeight)
             XCTAssertLessThan(x.convergedMagWeight, 1)
+            XCTAssertEqual(x.localRecoveryGlobalAfterCm, TrackingProfile.localRecoveryGlobalAfterCm)
         }
+        XCTAssertEqual(c.trackingOdometry, .vio)
+        XCTAssertEqual(p.trackingOdometry, .pdr)
+    }
+
+    /// 运动来源换了（视觉里程计没对齐 / 跟丢时计步在推）：setOdometry 换成对应那套参数；冷启动配置不受影响
+    func testSetOdometrySwitchesProfile() {
+        func odoFields(_ c: MagneticConfig) -> [Double] {
+            [c.initialHeadingBiasSigmaDeg, c.headingBiasWalkDegPerM, c.positionNoiseFraction,
+             c.initialScaleSigma, c.scaleWalkPerM, c.convergedMagWeight]
+        }
+        let vio = MagneticConfig.tracking(odometry: .vio), pdr = MagneticConfig.tracking(odometry: .pdr)
+        XCTAssertNotEqual(odoFields(vio), odoFields(pdr))
+        let loc = MagneticLocalizer(field: world(), config: vio, seed: 3)
+        loc.reset(start: Point2(300, 200), spreadCm: TrackingProfile.startSpreadCm)
+        loc.setOdometry(.pdr)
+        XCTAssertEqual(loc.config.trackingOdometry, .pdr)
+        XCTAssertEqual(odoFields(loc.config), odoFields(pdr))
+        XCTAssertTrue(loc.config.localRecovery)                // 跟踪策略不变
+        loc.setOdometry(.vio)
+        XCTAssertEqual(odoFields(loc.config), odoFields(vio))
+        // 不知道朝向的计步档：起始朝向 1σ 仍是 30°
+        let unk = MagneticLocalizer(field: world(), config: .tracking(odometry: .vio, headingKnown: false), seed: 3)
+        unk.setOdometry(.pdr)
+        XCTAssertEqual(unk.config.initialHeadingBiasSigmaDeg, 30)
+        // 冷启动配置（不是跟踪档）：什么都不变
+        let cold = MagneticLocalizer(field: world(), seed: 3)
+        let before = odoFields(cold.config)
+        cold.setOdometry(.vio)
+        XCTAssertNil(cold.config.trackingOdometry)
+        XCTAssertEqual(odoFields(cold.config), before)
     }
 
     /// 已知起点，路上有一段 15 m 没采过磁场；30 m 外有一模一样、而且有数据的地方。
@@ -92,16 +125,17 @@ final class TrackingProfileTests: XCTestCase {
         }
     }
 
-    /// 已知起点，中途外部判定定错（declareLost）：只在最后一次可靠位置附近找回，不跳到 30 m 外长得像的地方；
-    /// 走一段之后重新有把握，位置仍然对。
-    func testLocalRecoveryStaysLocal() {
+    /// 已知起点，中途自己判丢（置信度持续低，这里直接调 loseTrack）：找回中心是按推算平移的最后可靠位置、半径有上限，
+    /// 新粒子只撒在这个圆里（圆只管注入，不管已有粒子）；不跳到 30 m 外长得像的地方，走一段之后重新有把握，位置仍然对。
+    func testLocalRecoveryAfterOwnLoss() {
         let map = world()
         let loc = MagneticLocalizer(field: map, config: .tracking(odometry: .pdr), seed: 5)
         var truth = Point2(300, 200)
         loc.reset(start: truth, spreadCm: TrackingProfile.startSpreadCm)
         let step = Point2(25, 0)
         for _ in 0..<12 { truth = truth + step; loc.step(delta: pdr(step), feature: g(truth.x)) }
-        loc.declareLost()
+        loc.loseTrack()
+        XCTAssertNotNil(loc.localRecoveryCenter)
         var recovered = false
         var maxErr = 0.0
         while truth.x < 2200 {
@@ -111,7 +145,6 @@ final class TrackingProfileTests: XCTestCase {
             if let c = loc.localRecoveryCenter, let r = loc.localRecoveryRadiusCm {
                 XCTAssertLessThan(c.distance(to: truth), 300, "找回中心离真值太远")
                 XCTAssertLessThanOrEqual(r, MagneticConfig.tracking(odometry: .pdr).localRecoveryMaxCm)
-                XCTAssertLessThan(e.position.distance(to: c), r + 300, "估计跑出了找回范围")
             }
             if e.converged { recovered = true }
         }
@@ -120,5 +153,82 @@ final class TrackingProfileTests: XCTestCase {
         let e = loc.estimate()
         XCTAssertTrue(e.converged)
         XCTAssertLessThan(e.position.distance(to: truth), 300)
+    }
+
+    /// 外部判定定错（蓝牙说离得很远 → declareLost）：不围着被否定的位置找。
+    /// 起点给错 15 m、锁在错的地方；外部粗定位（同 BLEAssist：没把握时权重 1、注入 20%，有把握后权重 0.3）
+    /// 把它拉回真实位置。
+    func testExternalLostRecoversFromWrongStart() {
+        let map = world(period: nil)
+        let loc = MagneticLocalizer(field: map, config: .tracking(odometry: .pdr), seed: 9)
+        var truth = Point2(500, 200)
+        loc.reset(start: truth + Point2(1500, 0), spreadCm: TrackingProfile.startSpreadCm)
+        let step = Point2(25, 0)
+        for _ in 0..<20 { truth = truth + step; loc.step(delta: pdr(step), feature: g(truth.x)) }
+        XCTAssertGreaterThan(loc.estimate().position.distance(to: truth), 1000, "前提：锁在了错的地方")
+        loc.declareLost()
+        XCTAssertNil(loc.localRecoveryCenter, "外部判定定错后不该围着被否定的位置找")
+        var e = loc.estimate()
+        for k in 0..<120 {
+            truth = truth + step
+            if k % 4 == 0 {
+                let conv = loc.isConverged
+                loc.applyPositionPrior(truth + Point2(100, -50), sigmaCm: 400, weight: conv ? 0.3 : 1, injectFraction: conv ? 0 : 0.2)
+            }
+            e = loc.step(delta: pdr(step), feature: g(truth.x))
+            if !loc.isConverged { XCTAssertNil(loc.localRecoveryCenter) }
+        }
+        XCTAssertTrue(e.converged, "走了 30 m 还没重新有把握")
+        XCTAssertLessThan(e.position.distance(to: truth), 300, "没找回：误差 \(Int(e.position.distance(to: truth))) cm")
+    }
+
+    /// 自己判丢之后在附近一直没找回（这里用 convergenceBlocked 拦着不让重新收敛）：
+    /// 走满 localRecoveryGlobalAfterCm 就改回全图找，不会永远围着一个可能是错的位置找。
+    func testLocalRecoveryFallsBackToGlobal() {
+        let loc = MagneticLocalizer(field: world(period: nil), config: .tracking(odometry: .pdr), seed: 4)
+        var truth = Point2(500, 200)
+        loc.reset(start: truth, spreadCm: TrackingProfile.startSpreadCm)
+        var step = Point2(25, 0)
+        for _ in 0..<8 { truth = truth + step; loc.step(delta: pdr(step), feature: g(truth.x)) }
+        loc.loseTrack()
+        loc.convergenceBlocked = true
+        XCTAssertNotNil(loc.localRecoveryCenter)
+        var walked = 0.0
+        var fallbackAt: Double?
+        for _ in 0..<400 {
+            if truth.x > 5000 { step = Point2(-25, 0) } else if truth.x < 400 { step = Point2(25, 0) }
+            truth = truth + step
+            let d = pdr(step)
+            walked += d.length
+            loc.step(delta: d, feature: g(truth.x))
+            if fallbackAt == nil && loc.localRecoveryCenter == nil { fallbackAt = walked }
+        }
+        let lim = TrackingProfile.localRecoveryGlobalAfterCm
+        XCTAssertEqual(loc.globalFallbackCount, 1)
+        XCTAssertNotNil(fallbackAt)
+        XCTAssertGreaterThanOrEqual(fallbackAt ?? 0, lim - 1)
+        XCTAssertLessThan(fallbackAt ?? .infinity, lim + 100)
+        XCTAssertNil(loc.localRecoveryCenter)
+    }
+
+    /// 定到之后远处（30 m 外、磁场一模一样）突然长出一个更重的簇（这里直接把 95% 的粒子挪过去）：
+    /// 远跳要连续确认 jumpConfirmUpdates 次，确认期间原来的簇很轻也不判丢，估计不提前跳过去。
+    func testFarClusterNeedsFullConfirmation() {
+        let cfg = MagneticConfig.tracking(odometry: .pdr)
+        let loc = MagneticLocalizer(field: world(), config: cfg, seed: 7)
+        var truth = Point2(300, 200)
+        loc.reset(start: truth, spreadCm: TrackingProfile.startSpreadCm)
+        let step = Point2(25, 0)
+        for _ in 0..<12 { truth = truth + step; loc.step(delta: pdr(step), feature: g(truth.x)) }
+        XCTAssertTrue(loc.isConverged)
+        loc.moveParticlesForTesting(fraction: 0.95, to: loc.estimate().position + Point2(3000, 0), spreadCm: 30)
+        // 每 2 步一次观测更新：确认满之前的 jumpConfirmUpdates − 1 次更新里都不能跳、不能判丢
+        for k in 0..<(2 * (cfg.jumpConfirmUpdates - 1)) {
+            truth = truth + step
+            let e = loc.step(delta: pdr(step), feature: g(truth.x))
+            XCTAssertTrue(e.converged, "第 \(k) 步判丢了（判丢后估计直接取远处的簇，绕过了确认）")
+            XCTAssertLessThan(e.position.distance(to: truth), 300, "第 \(k) 步提前跳到了远处")
+        }
+        XCTAssertEqual(loc.lostCount, 0)
     }
 }

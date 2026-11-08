@@ -116,16 +116,27 @@ public struct MagneticConfig {
     /// 估计点落在没有磁场数据的格子上时置信度归零（于是持续几次就判丢）。跟踪时关掉：没采过的地方本来就该纯推算。
     public var zeroConfidenceOffMap = true
     /// 原来的簇权重占比低于 `keepClusterMinMass` 时立刻切换——只在新簇离得近（≤ 2 × `jumpGateCm`）时这样做；
-    /// 远处的簇照样要连续 `jumpConfirmUpdates` 次确认。false = 原有行为（不管远近都立刻切）。
+    /// 远处的簇照样要连续 `jumpConfirmUpdates` 次确认，确认期间原来的簇权重低也不算「走向丢失」
+    /// （否则判丢之后估计直接取最重的簇，等于绕过了确认）。false = 原有行为（不管远近都立刻切）。
     public var keepClusterRequiresNear = false
-    /// 已知起点开始的定位丢了（置信度持续低，或外部 declareLost）：只在最后一次可靠位置（按推算一路平移）附近找回，
-    /// 半径 = `localRecoveryBaseCm` + `localRecoveryPerCm` × 丢了之后走过的路（上限 `localRecoveryMaxCm`）；
-    /// 没有磁场数据的粒子不罚（不用 missingDataPenalty），不在全图注入。false = 原有行为（全图重新找）。
-    /// 冷启动（没有起点）不受影响。
+    /// 已知起点开始的定位自己丢了（置信度持续低）：只在最后一次可靠位置（按推算一路平移）附近找回，
+    /// 半径 = `localRecoveryBaseCm` + `localRecoveryPerCm` × 丢了之后走过的路（上限 `localRecoveryMaxCm`）。
+    /// 这个圆只限制「注入的新粒子撒在哪」：已有的粒子不拉回圆里、也不因为在圆外扣分（公开数据集的移植上量过：
+    /// 圆外扣分让 P90 变差，丢了的时候真实位置常常就在圆外的那部分粒子里），估计和重新收敛照样看全部粒子。
+    /// 找回期间没有磁场数据的粒子不罚（不用 missingDataPenalty）。
+    /// 外部判定定错（declareLost，例如蓝牙说离得很远）不走局部找回：最后的「可靠位置」正是被否定的那个，直接全图找。
+    /// 丢了之后走了 `localRecoveryGlobalAfterCm` 还没找回，也改回全图找（起点 / 最后的可靠位置本身可能就是错的）。
+    /// false = 原有行为（全图重新找）。冷启动（没有起点）不受影响。
     public var localRecovery = false
     public var localRecoveryBaseCm: Double = 300
     public var localRecoveryPerCm: Double = 0.2
     public var localRecoveryMaxCm: Double = 3000
+    /// nil = 一直局部找回
+    public var localRecoveryGlobalAfterCm: Double?
+    /// 跟踪配置档的运动来源（nil = 不是跟踪档）。运动来源中途变了（视觉里程计没对齐 / 跟丢时计步顶上）
+    /// 用 `MagneticLocalizer.setOdometry` 换成对应那一套参数。
+    public var trackingOdometry: OdometrySource?
+    public var trackingHeadingKnown = true
 
     public init() {}
 }
@@ -225,6 +236,10 @@ public final class MagneticLocalizer {
     }
     /// 局部找回的中心（只读，测试 / 调试用）
     public var localRecoveryCenter: Point2? { recoveringLocally ? lastGoodFix : nil }
+    /// 局部找回没找到、改回全图找的次数
+    public private(set) var globalFallbackCount = 0
+    /// 正在为远处的簇做跳转确认（keepClusterRequiresNear），这次更新不算「走向丢失」
+    private var holdingAgainstFar = false
 
     public init(field: MagneticFieldMap, walkable: WalkableMap? = nil,
                 config: MagneticConfig = .init(), seed: UInt64 = 1) {
@@ -310,6 +325,7 @@ public final class MagneticLocalizer {
         lastGoodFix = start
         sinceGoodCm = 0
         switchStreak = 0
+        holdingAgainstFar = false
         lastCenter = nil
         motionSinceUpdate = .zero
         clearLateral()
@@ -339,6 +355,7 @@ public final class MagneticLocalizer {
 
     /// 外部判断「定错了」（例如蓝牙粗定位持续离得很远）：退回没把握的状态，重新找。
     /// 粒子不清空，靠后面的观测和外部粗定位把它们拉回去。
+    /// 不做局部找回：最后一次可靠位置就是刚被否定的那个，围着它找等于往回拉。
     public func declareLost() {
         pathSinceResetCm = 0
         recentTotals = []
@@ -346,6 +363,22 @@ public final class MagneticLocalizer {
         convergedStreak = 0
         committed = nil
         switchStreak = 0
+        holdingAgainstFar = false
+        lastGoodFix = nil
+        sinceGoodCm = 0
+    }
+
+    /// 运动来源换了（视觉里程计 ↔ 计步）：跟踪配置档换成对应的参数，粒子的航向偏差 / 步长比例按新来源的初始 1σ
+    /// 再撒开一些（两路的误差互不相关，之前学到的偏差不能直接沿用）。不是跟踪档（冷启动）或来源没变时什么都不做。
+    public func setOdometry(_ o: OdometrySource) {
+        guard let cur = config.trackingOdometry, cur != o else { return }
+        config.applyTrackingOdometry(o)
+        let hs = config.initialHeadingBiasSigmaDeg * Double.pi / 180
+        for i in 0..<xs.count {
+            bias[i] += rng.normal() * hs
+            scale[i] = min(max(scale[i] + rng.normal() * config.initialScaleSigma, config.scaleRange.lowerBound),
+                           config.scaleRange.upperBound)
+        }
     }
 
     /// 外部给的「粗位置」（蓝牙指纹）：每个粒子按离 `center` 的距离加权（高斯，σ = sigmaCm）。
@@ -477,6 +510,12 @@ public final class MagneticLocalizer {
                 } else if let g = lastGoodFix {
                     lastGoodFix = g + meanMotion
                     sinceGoodCm += dist
+                    // 走了这么远还没找回：最后的可靠位置本身可能就是错的（起点给错 / 早就锁错），改回全图找
+                    if !hasConverged, let lim = config.localRecoveryGlobalAfterCm, sinceGoodCm >= lim {
+                        lastGoodFix = nil
+                        sinceGoodCm = 0
+                        globalFallbackCount += 1
+                    }
                 }
             }
         }
@@ -702,6 +741,7 @@ public final class MagneticLocalizer {
 
     /// 决定认定哪个簇：离当前认定位置近就直接跟；远的另一个簇要连续确认几次才切过去。
     private func decideCluster() {
+        holdingAgainstFar = false
         let best = cluster(from: nil)
         guard hasConverged, let c = committed else { committed = best.center; switchStreak = 0; return }
         if best.center.distance(to: c) <= config.jumpGateCm {
@@ -723,6 +763,8 @@ public final class MagneticLocalizer {
             switchStreak = 0
         } else {
             committed = mine.center
+            // 原来的簇已经很轻、远处的簇还在确认：这几次不算「走向丢失」，否则判丢后估计直接取远处的簇，绕过确认
+            if config.keepClusterRequiresNear && mine.mass < config.keepClusterMinMass { holdingAgainstFar = true }
         }
     }
 
@@ -746,13 +788,28 @@ public final class MagneticLocalizer {
             }
             return
         }
+        if holdingAgainstFar { return }       // 远跳确认期间：丢失计数不动（远跳要么确认、要么原来的簇恢复）
         let bad = e.confidence < config.lostConfidence || e.uncertaintyCm > config.lostUncertaintyCm
         lowStreak = bad ? lowStreak + 1 : 0
-        if lowStreak >= config.lostUpdates {
-            hasConverged = false
-            convergedStreak = 0
-            lowStreak = 0
-            lostCount += 1
+        if lowStreak >= config.lostUpdates { loseTrack() }
+    }
+
+    /// 自己判定丢了（置信度持续低）：退回没把握的状态；已知起点开始时保留最后一次可靠位置做局部找回。
+    func loseTrack() {
+        hasConverged = false
+        convergedStreak = 0
+        lowStreak = 0
+        holdingAgainstFar = false
+        lostCount += 1
+    }
+
+    /// 测试用：把权重最低的一部分粒子挪到 `center` 附近（航向偏差、步长比例不变），模拟远处长出一个簇。
+    func moveParticlesForTesting(fraction: Double, to center: Point2, spreadCm: Double) {
+        let m = Int(Double(xs.count) * min(max(fraction, 0), 1))
+        let order = logw.indices.sorted { logw[$0] < logw[$1] }
+        for k in order.prefix(m) {
+            xs[k] = min(max(center.x + rng.normal() * spreadCm, 0), field.widthCm)
+            ys[k] = min(max(center.y + rng.normal() * spreadCm, 0), field.heightCm)
         }
     }
 

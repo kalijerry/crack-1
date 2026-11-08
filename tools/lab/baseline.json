@@ -1,0 +1,113 @@
+{
+ "tier": "nightly",
+ "runs": 5,
+ "commit": "6e0795d1873f00be9de59f40d6e7e724532952bd",
+ "created": "2026-11-08T18:27:33Z",
+ "results": [
+  {
+   "id": "public/pdr/track-mag",
+   "metrics": {
+    "replays": 75,
+    "points": 22083,
+    "median_cm": 1212.0,
+    "p75_cm": 6011.3,
+    "p90_cm": 9177.3,
+    "wrong_fix": 0.581,
+    "within2m": 0.2173,
+    "coverage": 0.8601,
+    "first_fix_m": 0,
+    "fixed_share": 1.0
+   }
+  },
+  {
+   "id": "public/pdr/cold-mag",
+   "metrics": {
+    "replays": 75,
+    "points": 16982,
+    "median_cm": 7238.6,
+    "p75_cm": 10511.6,
+    "p90_cm": 13223.5,
+    "wrong_fix": 0.9908,
+    "within2m": 0.0019,
+    "coverage": 0.6614,
+    "first_fix_m": 15.2,
+    "fixed_share": 1.0
+   }
+  },
+  {
+   "id": "public/pdr/cold-mag-radio",
+   "metrics": {
+    "replays": 75,
+    "points": 1825,
+    "median_cm": 2161.5,
+    "p75_cm": 3040.6,
+    "p90_cm": 6038.2,
+    "wrong_fix": 0.9759,
+    "within2m": 0.0027,
+    "coverage": 0.0711,
+    "first_fix_m": 34.8,
+    "fixed_share": 0.4533
+   }
+  },
+  {
+   "id": "public/pdr-sparse/track-mag",
+   "metrics": {
+    "replays": 75,
+    "points": 13585,
+    "median_cm": 3092.3,
+    "p75_cm": 7459.1,
+    "p90_cm": 10496.9,
+    "wrong_fix": 0.6676,
+    "within2m": 0.1814,
+    "coverage": 0.5291,
+    "first_fix_m": 0,
+    "fixed_share": 1.0
+   }
+  },
+  {
+   "id": "public/pdr/track-mag-radio",
+   "metrics": {
+    "replays": 75,
+    "points": 5800,
+    "median_cm": 517.6,
+    "p75_cm": 1684.2,
+    "p90_cm": 4858.2,
+    "wrong_fix": 0.5097,
+    "within2m": 0.3562,
+    "coverage": 0.2259,
+    "first_fix_m": 0,
+    "fixed_share": 1.0
+   }
+  },
+  {
+   "id": "public/vio/track-mag",
+   "metrics": {
+    "replays": 75,
+    "points": 22483,
+    "median_cm": 1245.9,
+    "p75_cm": 6854.2,
+    "p90_cm": 9272.7,
+    "wrong_fix": 0.5793,
+    "within2m": 0.2184,
+    "coverage": 0.8819,
+    "first_fix_m": 0,
+    "fixed_share": 1.0
+   }
+  },
+  {
+   "id": "public/vio/cold-mag",
+   "metrics": {
+    "replays": 75,
+    "points": 17217,
+    "median_cm": 7070.5,
+    "p75_cm": 10329.1,
+    "p90_cm": 13451.7,
+    "wrong_fix": 0.9645,
+    "within2m": 0.0156,
+    "coverage": 0.6753,
+    "first_fix_m": 15.6,
+    "fixed_share": 1.0
+   }
+  }
+ ]
+}

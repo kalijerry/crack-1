@@ -51,11 +51,11 @@ tools/bench/run_ilc.sh <楼层目录> <工作目录> [每个会话重复次数]
 
 ```bash
 cd <工作目录>/arkit
-ios/HPASSKit/.build/release/hpass-eval --map map.json --build build --test test --runs 5 [--no-ble] [--oracle-start]
+ios/HPASSKit/.build/release/hpass-eval --map map.json --build build --test test --runs 5 [--no-ble] [--oracle-start [--odometry vio]]
 python3 tools/bench/dr_baseline.py <工作目录>/arkit/test     # 纯推算下限
 ```
 
-对代码的小改动：`hpass-eval` 的 `--build/--test` 可以直接给父目录；`--oracle-start`（已知起点和朝向的跟踪模式，不含冷启动）；`--no-hybrid`；末尾打印 `【汇总】`（所有点混合的中位/P90/错定率）；评估器读 `truth.csv`。
+对代码的小改动：`hpass-eval` 的 `--build/--test` 可以直接给父目录；`--oracle-start`（已知起点和朝向的跟踪模式，不含冷启动；配置用和 App 已知起点时同一份跟踪配置档 `MagneticConfig.tracking`）；`--odometry vio|pdr`（跟踪配置档按哪种运动来源，默认 pdr；公开 vio 场景传 vio）；`--no-hybrid`；末尾打印 `【汇总】`（所有点混合的中位/P90/错定率）；评估器读 `truth.csv`。
 
 ## 结果（15 条测试 trace × 5 次随机种子；误差单位 cm，错定 = 误差 > 5 m）
 

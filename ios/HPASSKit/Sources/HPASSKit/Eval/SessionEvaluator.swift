@@ -139,7 +139,8 @@ public enum SessionEvaluator {
     public static func evaluate(dir: URL, map: StoreMap, field: MagneticFieldMap, ble: BLEFingerprintMap?,
                                 walkable: WalkableMap?, crossCheck: Bool = true,
                                 configure: ((inout MagneticConfig) -> Void)? = nil, seed: UInt64 = 1,
-                                refTagPositions: [String: Point2]? = nil, oracleStart: Bool = false) throws -> EvalReport {
+                                refTagPositions: [String: Point2]? = nil, oracleStart: Bool = false,
+                                odometry: OdometrySource = .pdr) throws -> EvalReport {
         let s = try SurveySessionLoader.load(dir)
         // 参考轨迹：这个会话自己的对齐结果（只用它的锚点和贴通道，不用磁场）；给了标签位置时再用标签锚定修正一遍
         // （采集轨迹中途偏航时，不修正的参考本身就是错的）
@@ -162,8 +163,10 @@ public enum SessionEvaluator {
         let sh = ShadowLocalizer(field: field, walkable: walkable, useRawMag: !s.raw.isEmpty, configure: configure, seed: seed)
         sh.bleMap = ble
         sh.crossCheckEnabled = crossCheck
-        // 已知起点 + 已知朝向的「跟踪」模式（基准用，看磁场图本身有多准，不含冷启动）：
-        // 用参考轨迹前 8 m 把位姿坐标系转到地图坐标系，粒子从真实起点出发
+        // 已知起点 + 已知朝向的「跟踪」模式（基准用，不含冷启动）：
+        // 用参考轨迹前 8 m 把位姿坐标系转到地图坐标系，粒子从真实起点出发。
+        // 配置用和实时定位页同一份跟踪配置档（MagneticConfig.tracking，按运动来源），起点撒开也一样
+        // （TrackingProfile.startSpreadCm），量到的就是产品的跟踪行为；命令行的 configure 照样最后套上
         var poseRot = (c: 1.0, s: 0.0)
         if oracleStart, let r0 = ref.first, let pi0 = s.poses.firstIndex(where: { $0.tMs >= r0.tMs }) {
             let a0 = s.poses[pi0].a
@@ -172,7 +175,10 @@ public enum SessionEvaluator {
                 let da = s.poses[pj].a - a0, dm = rj.p - r0.p
                 let phi = atan2(dm.y, dm.x) - atan2(da.y, da.x)
                 poseRot = (cos(phi), sin(phi))
-                sh.localizer.reset(start: r0.p, spreadCm: 150, headingUnknown: false)
+                var cfg = MagneticConfig.tracking(odometry: odometry, headingKnown: true)
+                configure?(&cfg)
+                sh.localizer.config = cfg
+                sh.localizer.reset(start: r0.p, spreadCm: TrackingProfile.startSpreadCm, headingUnknown: false)
             }
         }
         let bleSamples = ble == nil ? [] : SurveySessionLoader.loadBLE(dir)

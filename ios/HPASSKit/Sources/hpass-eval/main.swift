@@ -75,6 +75,10 @@ do {
     var out: [EvalReport] = []
     // 粒子滤波有随机性（加上字典遍历顺序每次不同），单次结果波动很大：--runs N 跑 N 次（不同随机种子），报中位和范围
     let runs = max(Int(arg("--runs") ?? "1") ?? 1, 1)
+    // 运动来源（只影响 --oracle-start 的跟踪配置档，见 MagneticConfig.tracking）：vio = 视觉里程计，pdr = 计步（默认）
+    let odoArg = arg("--odometry") ?? "pdr"
+    guard let odometry = OdometrySource(rawValue: odoArg) else { print("--odometry 只能是 vio 或 pdr"); exit(2) }
+    if CommandLine.arguments.contains("--oracle-start") { print("跟踪配置档：\(odometry.rawValue)") }
     for t in test {
         var rs: [EvalReport] = []
         for k in 0..<runs {
@@ -89,7 +93,8 @@ do {
                 if let w = arg("--missing").flatMap(Double.init) { cfg.missingDataPenalty = w }
                 if CommandLine.arguments.contains("--adaptive") { cfg.adaptiveMagWeight = true }
             }, seed: UInt64(k + 1), refTagPositions: refTags,
-                                                  oracleStart: CommandLine.arguments.contains("--oracle-start"))
+                                                  oracleStart: CommandLine.arguments.contains("--oracle-start"),
+                                                  odometry: odometry)
             if runs == 1 { print(r.line) }
             rs.append(r)
         }

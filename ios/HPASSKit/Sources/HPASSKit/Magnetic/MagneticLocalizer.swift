@@ -106,6 +106,27 @@ public struct MagneticConfig {
     /// 置信度的参考尺度：不确定度达到该值时置信度归零（cm）。
     public var confidenceScaleCm: Double = 400
 
+    // MARK: 跟踪策略（默认全是原有行为；跟踪配置档 `MagneticConfig.tracking` 打开）
+
+    /// 已收敛后地磁似然乘的权重（adaptiveMagWeight 打开时不用这个）。1 = 原有行为。
+    public var convergedMagWeight: Double = 1
+    /// 已收敛时，地磁似然再乘 g = clamp((有数据粒子的权重占比 − 0.5) / 0.4, 0, 1)：
+    /// 粒子大多落在没采过磁场的格子上时，这一段完全靠推算，不让少数「有数据」的粒子把权重抢走。
+    public var coverageGatedMagWeight = false
+    /// 估计点落在没有磁场数据的格子上时置信度归零（于是持续几次就判丢）。跟踪时关掉：没采过的地方本来就该纯推算。
+    public var zeroConfidenceOffMap = true
+    /// 原来的簇权重占比低于 `keepClusterMinMass` 时立刻切换——只在新簇离得近（≤ 2 × `jumpGateCm`）时这样做；
+    /// 远处的簇照样要连续 `jumpConfirmUpdates` 次确认。false = 原有行为（不管远近都立刻切）。
+    public var keepClusterRequiresNear = false
+    /// 已知起点开始的定位丢了（置信度持续低，或外部 declareLost）：只在最后一次可靠位置（按推算一路平移）附近找回，
+    /// 半径 = `localRecoveryBaseCm` + `localRecoveryPerCm` × 丢了之后走过的路（上限 `localRecoveryMaxCm`）；
+    /// 没有磁场数据的粒子不罚（不用 missingDataPenalty），不在全图注入。false = 原有行为（全图重新找）。
+    /// 冷启动（没有起点）不受影响。
+    public var localRecovery = false
+    public var localRecoveryBaseCm: Double = 300
+    public var localRecoveryPerCm: Double = 0.2
+    public var localRecoveryMaxCm: Double = 3000
+
     public init() {}
 }
 
@@ -190,6 +211,20 @@ public final class MagneticLocalizer {
     /// 收敛判定要求「簇的移动和实际走的一致」：上次更新时的簇中心，以及之后累计的平均位移。
     private var lastCenter: Point2?
     private var motionSinceUpdate = Point2.zero
+    /// 这次是从已知起点开始的（reset 给了 start）
+    public private(set) var startedFromPrior = false
+    /// 局部找回：最后一次可靠位置（丢了之后按粒子平均位移一路平移）和之后走过的路
+    private var lastGoodFix: Point2?
+    private var sinceGoodCm = 0.0
+    /// 正在局部找回（已知起点开始、现在没把握、打开了 localRecovery）
+    private var recoveringLocally: Bool { config.localRecovery && startedFromPrior && !hasConverged && lastGoodFix != nil }
+    /// 局部找回的半径（cm）
+    public var localRecoveryRadiusCm: Double? {
+        guard recoveringLocally else { return nil }
+        return min(config.localRecoveryBaseCm + config.localRecoveryPerCm * sinceGoodCm, config.localRecoveryMaxCm)
+    }
+    /// 局部找回的中心（只读，测试 / 调试用）
+    public var localRecoveryCenter: Point2? { recoveringLocally ? lastGoodFix : nil }
 
     public init(field: MagneticFieldMap, walkable: WalkableMap? = nil,
                 config: MagneticConfig = .init(), seed: UInt64 = 1) {
@@ -271,6 +306,9 @@ public final class MagneticLocalizer {
         featureCount = 0
         trustSum = 0
         committed = start
+        startedFromPrior = start != nil
+        lastGoodFix = start
+        sinceGoodCm = 0
         switchStreak = 0
         lastCenter = nil
         motionSinceUpdate = .zero
@@ -431,6 +469,16 @@ public final class MagneticLocalizer {
             // 认定的位置跟着粒子的平均位移走
             if let c = committed { committed = c + meanMotion }
             motionSinceUpdate = motionSinceUpdate + meanMotion
+            if config.localRecovery && startedFromPrior {
+                // 有把握（且没在走向丢失）时记下可靠位置；否则让它跟着推算走，并累计走过的路
+                if hasConverged && lowStreak == 0, let c = committed {
+                    lastGoodFix = c
+                    sinceGoodCm = 0
+                } else if let g = lastGoodFix {
+                    lastGoodFix = g + meanMotion
+                    sinceGoodCm += dist
+                }
+            }
         }
 
         travelledCm += dist
@@ -581,7 +629,7 @@ public final class MagneticLocalizer {
             }
         }
         if config.adaptiveMagWeight { updateMagWeight(f) }
-        let mw = config.adaptiveMagWeight ? magneticWeight : 1
+        let mw = config.adaptiveMagWeight ? magneticWeight : (hasConverged ? config.convergedMagWeight : 1)
         let rel = config.hybridOffset ? offsetEst == nil : config.offsetInvariant
         let fAbs = offsetEst.map { f - $0 } ?? f
         let slack2 = config.offsetSlackUT * config.offsetSlackUT
@@ -617,12 +665,23 @@ public final class MagneticLocalizer {
             sumLL += pw * ll
             sumW += pw
         }
-        let neutral = sumW > 0 ? sumLL / sumW : 0
+        var neutral = sumW > 0 ? sumLL / sumW : 0
+        // 覆盖门：已收敛时按「有数据粒子的权重占比」给地磁打折，大多落在没采过的地方时完全靠推算
+        var gate = 1.0
+        if config.coverageGatedMagWeight && hasConverged {
+            var total = 0.0
+            for v in logw { total += exp(v) }
+            let share = total > 0 ? sumW / total : 0
+            gate = min(max((share - 0.5) / 0.4, 0), 1)
+            neutral *= gate
+        }
+        // 局部找回时没有数据的粒子也不罚（和已收敛时一样给平均值）：找回范围本来就只在附近
+        let missing = (hasConverged || recoveringLocally) ? neutral : (missingDataPenaltyOverride ?? config.missingDataPenalty)
         for i in 0..<xs.count {
             if let ll = lls[i] {
-                logw[i] += ll
+                logw[i] += ll * gate
             } else {
-                logw[i] += hasConverged ? neutral : (missingDataPenaltyOverride ?? config.missingDataPenalty)
+                logw[i] += missing
             }
         }
         normalize()
@@ -651,7 +710,9 @@ public final class MagneticLocalizer {
             return
         }
         let mine = cluster(from: c)
-        if mine.mass < config.keepClusterMinMass {
+        // 跟踪策略：只有新簇离得近才「立刻切」，远处的簇照样要连续确认
+        let near = !config.keepClusterRequiresNear || best.center.distance(to: c) <= 2 * config.jumpGateCm
+        if mine.mass < config.keepClusterMinMass && near {
             committed = best.center                 // 原来的簇已经快没了，不再坚持
             switchStreak = 0
             return
@@ -784,9 +845,21 @@ public final class MagneticLocalizer {
             u += step
         }
         let inject = Int(Double(m) * (hasConverged ? config.randomInjectionConverged : config.randomInjection))
+        // 局部找回：注入粒子只撒在最后一次可靠位置附近的圆里，不在全图找
+        let localCenter = localRecoveryCenter, localR = localRecoveryRadiusCm ?? 0
         for k in 0..<inject {
             let i = m - 1 - k
-            let (p, a) = randomPositionWithAnchor()
+            let pa: (point: Point2, anchor: Point2?)
+            if let c = localCenter {
+                let ang = rng.uniform() * 2 * Double.pi, r = localR * rng.uniform().squareRoot()
+                let q = Point2(c.x + cos(ang) * r, c.y + sin(ang) * r)
+                // 锚点只在落到不可走区域时才用：最近的可走点，找不到就退回中心
+                let off = walkable.map { !$0.isWalkable(q) } ?? false
+                pa = (q, off ? (walkable?.nearestWalkable(to: q, radiusCm: 300) ?? c) : c)
+            } else {
+                pa = randomPositionWithAnchor()
+            }
+            let p = pa.point, a = pa.anchor
             nx[i] = p.x
             ny[i] = p.y
             src[i] = -1
@@ -866,7 +939,8 @@ public final class MagneticLocalizer {
         let c = cluster(from: hasConverged ? committed : nil)
         var conf = max(0, min(1, c.mass * (1 - c.unc / config.confidenceScaleCm)))
         // 估计点本身落在没有磁场数据的地方：地磁说了不算，置信度归零
-        if field.sample(at: c.center) == nil { conf = 0 }
+        // （跟踪配置档关掉：没采过的地方本来就该纯推算，不算丢）
+        if config.zeroConfidenceOffMap && field.sample(at: c.center) == nil { conf = 0 }
         return MagneticEstimate(position: c.center, uncertaintyCm: c.unc, confidence: conf,
                                 effectiveRatio: lastEffectiveRatio, updates: updateCount, converged: hasConverged)
     }

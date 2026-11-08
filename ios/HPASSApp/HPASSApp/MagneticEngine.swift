@@ -666,32 +666,32 @@ final class MagneticEngine: ObservableObject {
 
     private func makeLocalizer(field: MagneticFieldMap, start: Point2?, headingUnknown: Bool = false,
                                priorFraction: Double = 0) -> MagneticLocalizer {
-        var cfg = MagneticConfig()
-        // 冷启动时航向只来自罗盘，偏差可能很大
-        if start == nil || headingUnknown { cfg.initialHeadingBiasSigmaDeg = 30 }
-        if useVisualOdometry && start != nil {
-            // 视觉里程计的位移和航向都比计步准得多，粒子不用撒那么开；丢跟踪退回计步时仍留有余量
-            cfg.initialHeadingBiasSigmaDeg = 5
-            cfg.headingBiasWalkDegPerM = 1
-            cfg.positionNoiseFraction = 0.04
-            cfg.initialScaleSigma = 0.03
-            cfg.scaleWalkPerM = 0.003
-        }
-        if useVisualOdometry && ARKitLogger.isSupported {
-            // 视觉里程计时：
-            // - 以垂直分量 Bz 为主：人掉头时，手机偏置的估计误差会让水平分量 Bh 和总强度 |B| 的误差反过来，Bz 不受影响；
-            // - 跳到远处另一个簇要连续确认 15 次（约 7.5 m）：视觉里程计一路漂移不到 1%，地磁只该做小修正；
-            // - 收敛后粒子噪声调小，不会沿着「长得像」的通道滑走。
-            cfg.featureWeights = (0.5, 1.0, 0.25)
-            cfg.jumpConfirmUpdates = 15
-            cfg.convergedPositionNoiseFraction = 0.03
+        var cfg: MagneticConfig
+        if start != nil {
+            // 已知起点：和评估的已知起点分支同一份跟踪配置档（HPASSKit MagneticConfig.tracking），
+            // 视觉里程计 / 计步各一套；跟踪策略（不在全图注入、远跳要确认、丢了只在附近找回、地磁按覆盖打折）都在里面
+            let odometry: OdometrySource = useVisualOdometry && ARKitLogger.isSupported ? .vio : .pdr
+            cfg = MagneticConfig.tracking(odometry: odometry, headingKnown: !headingUnknown)
+        } else {
+            cfg = MagneticConfig()
+            // 冷启动时航向只来自罗盘，偏差可能很大
+            cfg.initialHeadingBiasSigmaDeg = 30
+            if useVisualOdometry && ARKitLogger.isSupported {
+                // 视觉里程计时：
+                // - 以垂直分量 Bz 为主：人掉头时，手机偏置的估计误差会让水平分量 Bh 和总强度 |B| 的误差反过来，Bz 不受影响；
+                // - 跳到远处另一个簇要连续确认 15 次（约 7.5 m）：视觉里程计一路漂移不到 1%，地磁只该做小修正；
+                // - 收敛后粒子噪声调小，不会沿着「长得像」的通道滑走。
+                cfg.featureWeights = (0.5, 1.0, 0.25)
+                cfg.jumpConfirmUpdates = 15
+                cfg.convergedPositionNoiseFraction = 0.03
+            }
+            // 每次读数的整体水平会差 10～16 µT（磁力计偏置估计不同）：没定到按起伏找，定到后估出偏移再按绝对值比
+            cfg.hybridOffset = true
         }
         cfg.lateralWeight = depthMode == .fuse ? 1 : 0
-        // 每次读数的整体水平会差 10～16 µT（磁力计偏置估计不同）：没定到按起伏找，定到后估出偏移再按绝对值比
-        cfg.hybridOffset = true
         let loc = MagneticLocalizer(field: field, walkable: MagMapStore.shared.walkableMap(), config: cfg)
         loc.raycaster = MagMapStore.shared.raycaster()
-        loc.reset(start: start, spreadCm: 50, headingUnknown: headingUnknown, priorFraction: priorFraction)
+        loc.reset(start: start, spreadCm: TrackingProfile.startSpreadCm, headingUnknown: headingUnknown, priorFraction: priorFraction)
         return loc
     }
 

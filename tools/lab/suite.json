@@ -17,9 +17,9 @@
      "title": "稀疏建图（走几趟）· 已知起点 · 只地磁", "tiers": ["pr", "nightly"], "gate": true},
     {"id": "public/pdr/track-mag-radio", "dataset": "ilc-pdr", "flags": ["--oracle-start"],
      "title": "已知起点 · 地磁 + 蓝牙 · 无摄像头", "tiers": ["nightly"], "gate": true},
-    {"id": "public/vio/track-mag", "dataset": "ilc-arkit", "flags": ["--oracle-start", "--no-ble"],
+    {"id": "public/vio/track-mag", "dataset": "ilc-arkit", "flags": ["--oracle-start", "--no-ble", "--odometry", "vio"],
      "title": "已知起点 · 只地磁 · 视觉里程计", "tiers": ["nightly"], "gate": true},
-    {"id": "public/vio/cold-mag", "dataset": "ilc-arkit", "flags": ["--no-ble"],
+    {"id": "public/vio/cold-mag", "dataset": "ilc-arkit", "flags": ["--no-ble", "--odometry", "vio"],
      "title": "冷启动 · 只地磁 · 视觉里程计", "tiers": ["nightly"], "gate": true}
   ],
   "private": {

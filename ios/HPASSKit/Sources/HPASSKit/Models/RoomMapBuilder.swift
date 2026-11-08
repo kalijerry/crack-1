@@ -309,7 +309,7 @@ public enum RoomMapBuilder {
     }
 
     /// 凸包（Andrew 单调链），逆时针。
-    static func convexHull(_ pts: [Point2]) -> [Point2] {
+    public static func convexHull(_ pts: [Point2]) -> [Point2] {
         let p = pts.sorted { $0.x != $1.x ? $0.x < $1.x : $0.y < $1.y }
         guard p.count >= 3 else { return p }
         func cross(_ o: Point2, _ a: Point2, _ b: Point2) -> Double { (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x) }

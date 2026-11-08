@@ -63,6 +63,8 @@ public enum SessionEvaluator {
     public struct BuiltMaps {
         public var field: MagneticFieldMap
         public var ble: BLEFingerprintMap?
+        /// Wi-Fi 指纹（只有 buildMaps 传 withWiFi 才建；会话里没有 wifi.csv 时为 nil）
+        public var wifi: WiFiFingerprintMap?
         /// 进了磁场图的会话的建图说明（production：只有主体分量里合格的会话）
         public var reports: [SurveySessionReport]
         /// 合格会话分成几个连通分量（sequential 恒为 1）
@@ -80,9 +82,12 @@ public enum SessionEvaluator {
     /// 用建图会话生成磁场图 + 蓝牙指纹。默认和云端出图同一份流水线（见 MapBuild.production / .fusion 的区别），蓝牙指纹用合格会话
     /// （含和主体连不上的）对齐后的轨迹和筛过的读数，和 hpass-build 一样。
     /// - tagPositions: 标签位置表（hpass-build --tag-locations 同一份）；空 = 没有表
+    /// - withWiFi: 同时用各会话的 wifi.csv 建 Wi-Fi 指纹（位置取和蓝牙指纹同一条对齐好的轨迹）
     public static func buildMaps(sessions: [URL], map: StoreMap, mode: MapBuild = .fusion,
-                                 tagPositions: [String: Point2] = [:]) throws -> BuiltMaps {
+                                 tagPositions: [String: Point2] = [:], withWiFi: Bool = false) throws -> BuiltMaps {
         let bb = BLEFingerprintBuilder(widthCm: map.width, heightCm: map.height)
+        let wb = WiFiFingerprintBuilder()
+        func wifiMap() -> WiFiFingerprintMap? { withWiFi && wb.count > 0 ? wb.build() : nil }
         switch mode {
         case .sequential:
             let b = SurveyMapBuilder(widthCm: map.width, heightCm: map.height, crosses: map.crosses)
@@ -91,10 +96,11 @@ public enum SessionEvaluator {
                 let s = try SurveySessionLoader.load(u)
                 let r = b.add(s)
                 _ = bb.add(samples: SurveySessionLoader.loadBLE(u), track: r.track)
+                if withWiFi { wb.add(scans: WiFiScan.group(SurveySessionLoader.loadWiFi(u)), track: r.track) }
                 reps.append(r)
             }
             let ble = bb.build()
-            return BuiltMaps(field: b.build(), ble: ble.tags.count >= 20 ? ble : nil, reports: reps)
+            return BuiltMaps(field: b.build(), ble: ble.tags.count >= 20 ? ble : nil, wifi: wifiMap(), reports: reps)
         case .production, .fusion:
             var loaded: [SurveySession] = [], bles: [[BLESample]] = [], signs: [[SignSample]] = []
             for u in sessions {
@@ -108,8 +114,13 @@ public enum SessionEvaluator {
                 throw BuildError.noUsableSession
             }
             for (k, track) in pb.all.tracks.enumerated() where k < pb.keptBLE.count { _ = bb.add(samples: pb.keptBLE[k], track: track) }
+            if withWiFi {
+                for (k, track) in pb.all.tracks.enumerated() where k < pb.keptIndices.count {
+                    wb.add(scans: WiFiScan.group(SurveySessionLoader.loadWiFi(sessions[pb.keptIndices[k]])), track: track)
+                }
+            }
             let ble = bb.build()
-            return BuiltMaps(field: pb.magnetic.field, ble: ble.tags.count >= 20 ? ble : nil, reports: pb.magnetic.reports,
+            return BuiltMaps(field: pb.magnetic.field, ble: ble.tags.count >= 20 ? ble : nil, wifi: wifiMap(), reports: pb.magnetic.reports,
                              components: pb.components,
                              rejected: pb.quality.filter { !$0.kept }.map { ($0.name, $0.reason ?? "") },
                              magExcluded: pb.magExcluded, offMain: pb.offMain)
@@ -140,7 +151,7 @@ public enum SessionEvaluator {
                                 walkable: WalkableMap?, crossCheck: Bool = true,
                                 configure: ((inout MagneticConfig) -> Void)? = nil, seed: UInt64 = 1,
                                 refTagPositions: [String: Point2]? = nil, oracleStart: Bool = false,
-                                odometry: OdometrySource = .pdr) throws -> EvalReport {
+                                odometry: OdometrySource = .pdr, wifi: WiFiFingerprintMap? = nil) throws -> EvalReport {
         let s = try SurveySessionLoader.load(dir)
         // 参考轨迹：这个会话自己的对齐结果（只用它的锚点和贴通道，不用磁场）；给了标签位置时再用标签锚定修正一遍
         // （采集轨迹中途偏航时，不修正的参考本身就是错的）
@@ -181,13 +192,20 @@ public enum SessionEvaluator {
                 sh.localizer.reset(start: r0.p, spreadCm: TrackingProfile.startSpreadCm, headingUnknown: false)
             }
         }
+        // Wi-Fi 冷启动（--wifi，只有 Android 能扫）：和已知起点不同时用
+        var wifiScans: [WiFiScan] = []
+        if let w = wifi, !oracleStart {
+            sh.enableWiFi(w, odometry: odometry, configure: configure)
+            wifiScans = WiFiScan.group(SurveySessionLoader.loadWiFi(dir))
+        }
         let bleSamples = ble == nil ? [] : SurveySessionLoader.loadBLE(dir)
-        enum Ev { case imu(IMUSample), raw(Int64, (Double, Double, Double)), ble(BLESample), pose(SurveySession.Pose) }
+        enum Ev { case imu(IMUSample), raw(Int64, (Double, Double, Double)), ble(BLESample), wifi(WiFiScan), pose(SurveySession.Pose) }
         var evs: [(Int64, Int, Ev)] = []
-        evs.reserveCapacity(s.imu.count + s.raw.count + s.poses.count + bleSamples.count)
+        evs.reserveCapacity(s.imu.count + s.raw.count + s.poses.count + bleSamples.count + wifiScans.count)
         for x in s.imu { evs.append((x.tMs, 0, .imu(x))) }
         for x in s.raw { evs.append((x.tMs, 1, .raw(x.tMs, x.v))) }
         for x in bleSamples { evs.append((x.tMs, 2, .ble(x))) }
+        for x in wifiScans { evs.append((x.tMs, 2, .wifi(x))) }
         for x in s.poses { evs.append((x.tMs, 3, .pose(x))) }
         evs.sort { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1 < $1.1 }
         let ev = LocalizationEvaluator()
@@ -198,6 +216,7 @@ public enum SessionEvaluator {
             case .imu(let x): sh.imu(x)
             case .raw(let t, let v): sh.rawMag(tMs: t, v)
             case .ble(let b): sh.bleReading(tMs: b.tMs, id: b.id, rssi: b.rssi)
+            case .wifi(let w): sh.wifiScan(w)
             case .pose(let p):
                 let pa = Point2(p.a.x * poseRot.c - p.a.y * poseRot.s, p.a.x * poseRot.s + p.a.y * poseRot.c)
                 guard let est = sh.pose(a: pa, normal: p.normal, tMs: p.tMs), let r = refAt(p.tMs) else { continue }

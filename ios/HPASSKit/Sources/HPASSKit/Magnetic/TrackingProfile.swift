@@ -90,3 +90,44 @@ public extension MagneticConfig {
         }
     }
 }
+
+/// Wi-Fi 冷启动（只有 Android 能扫 Wi-Fi；评估 `--wifi`，场景 public/pdr/cold-wifi）：
+/// 第一次 Wi-Fi 指纹定位当起点，粒子按 N(定位, `seedSpreadCm`) 撒开、朝向整圆均匀；之后每次扫描给一个重尾（Student-t）
+/// 的位置观测；粒子的位置散布小于 `reportSpreadCm`、航向散布小于 `reportHeadingSpreadDeg` 才报位置
+/// （宁可不报，也不报一个没把握的），报了之后散布涨到 `holdSpreadCm` 以上才停（不在门限附近来回闪）。
+///
+/// 地磁：滤波器以跟踪档为底（只在局部，不在全图找），但地磁权重 `magneticWeight` 目前是 0。
+/// 公开数据集上量过：定到之后再按 0.02～1 的权重用地磁（混合偏移 / 只比起伏两种都试过），中位、P90、错定都变差——
+/// 单次 Wi-Fi 定位的误差在一段路上是成片偏的（同一段路连续十几次偏同一个方向），地磁跟踪从偏了几米的位置出发
+/// 会锁到旁边长得像的地方。所以现在是「Wi-Fi + 计步」，地磁这一路留着接口（权重调成正数就用上）。
+public enum WiFiColdStartProfile {
+    /// kNN 的 k
+    public static let neighbours = 5
+    /// 起点撒开的 1σ（cm）：单次 Wi-Fi 定位中位误差约 4.5 m、P90 约 9 m
+    public static let seedSpreadCm: Double = 800
+    /// 每次扫描的位置观测 σ（cm）和 Student-t 的自由度
+    public static let priorSigmaCm: Double = 500
+    public static let priorNu: Double = 3
+    /// 粒子位置散布（cm）小于这个、航向散布（度）小于这个才开始报位置
+    public static let reportSpreadCm: Double = 300
+    public static let reportHeadingSpreadDeg: Double = 20
+    /// 已经在报位置时，位置散布涨到这个（cm）以上才停
+    public static let holdSpreadCm: Double = 350
+    /// 定到之后地磁的权重（MagneticConfig.convergedMagWeight）。0 = 不用地磁，原因见上
+    public static let magneticWeight: Double = 0
+}
+
+public extension MagneticConfig {
+    /// Wi-Fi 冷启动配置档：跟踪档（不知道朝向）为底，Wi-Fi 一直在给全局位置，所以
+    /// - 自己不判丢（不做局部找回 / 全图找）：报不报位置只看粒子散布，Wi-Fi 会把跑偏的粒子拉回来；
+    /// - 重采样注入的粒子朝向也在整圆上均匀（位姿坐标系和地图的夹角完全不知道）；
+    /// - 地磁权重见 `WiFiColdStartProfile.magneticWeight`。
+    static func wifiColdStart(odometry: OdometrySource) -> MagneticConfig {
+        var c = MagneticConfig.tracking(odometry: odometry, headingKnown: false)
+        c.lostUpdates = Int.max
+        c.localRecovery = false
+        c.uniformHeadingForInjection = true
+        c.convergedMagWeight = WiFiColdStartProfile.magneticWeight
+        return c
+    }
+}

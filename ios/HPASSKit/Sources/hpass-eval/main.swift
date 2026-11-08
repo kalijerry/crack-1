@@ -46,7 +46,10 @@ do {
     // --map-build production = 和云端完全一样（磁场图只用主体分量）；sequential = 手机上按顺序逐个对齐的老办法
     let modes: [String: SessionEvaluator.MapBuild] = ["sequential": .sequential, "production": .production, "fusion": .fusion]
     let mapMode = modes[arg("--map-build") ?? "fusion"] ?? .fusion
-    let built = try SessionEvaluator.buildMaps(sessions: build, map: map, mode: mapMode, tagPositions: refTags ?? [:])
+    // --wifi：Wi-Fi 冷启动（只有 Android 能扫 Wi-Fi；见 WiFiColdStartProfile），用建图会话的 wifi.csv 建指纹
+    let useWiFi = CommandLine.arguments.contains("--wifi")
+    let built = try SessionEvaluator.buildMaps(sessions: build, map: map, mode: mapMode, tagPositions: refTags ?? [:],
+                                               withWiFi: useWiFi)
     let field = built.field, bleMap = built.ble
     for r in built.reports {
         let off = r.offsetUT.map { String(format: "，偏移 |B| %+.1f Bz %+.1f Bh %+.1f µT", $0.total, $0.vertical, $0.horizontal) } ?? ""
@@ -63,6 +66,10 @@ do {
     summary += "，磁场 \(field.coveredCells) 格"
     print(summary)
     print("磁场图：有数据 \(field.coveredCells) 格；蓝牙指纹：\(bleMap.map { "\($0.tags.count) 个标签" } ?? "无")")
+    if useWiFi {
+        guard let w = built.wifi else { print("--wifi：建图会话里没有 Wi-Fi 扫描（wifi.csv）"); exit(2) }
+        print("Wi-Fi 指纹：\(w.entries.count) 次扫描")
+    }
     if CommandLine.arguments.contains("--old-ble") { BLEAssist.defaultTagRanges = false }
     if CommandLine.arguments.contains("--no-pregate") { BLEAssist.defaultPreGate = false }
     if CommandLine.arguments.contains("--no-covgate") { BLEAssist.defaultCoverageGate = false }
@@ -94,7 +101,7 @@ do {
                 if CommandLine.arguments.contains("--adaptive") { cfg.adaptiveMagWeight = true }
             }, seed: UInt64(k + 1), refTagPositions: refTags,
                                                   oracleStart: CommandLine.arguments.contains("--oracle-start"),
-                                                  odometry: odometry)
+                                                  odometry: odometry, wifi: useWiFi ? built.wifi : nil)
             if runs == 1 { print(r.line) }
             rs.append(r)
         }

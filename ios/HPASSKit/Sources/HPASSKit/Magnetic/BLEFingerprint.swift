@@ -31,11 +31,61 @@ public struct BLEFingerprintMap: Codable {
         public var samples: Int
     }
 
+    /// 学到的「信号 → 人离标签最远多少」的一档：平均信号 ≥ minRssi（dBm）时，范围 rangeCm。
+    public struct RangeBin: Codable, Equatable {
+        public var minRssi: Double
+        public var rangeCm: Double
+        /// 这一档用了多少条读数
+        public var samples: Int
+        public init(minRssi: Double, rangeCm: Double, samples: Int) { self.minRssi = minRssi; self.rangeCm = rangeCm; self.samples = samples }
+    }
+
     public var cellCm: Double
     public var cells: [Cell]
     public var tags: [String: Tag]
+    /// 本场地学到的标签范围（建图数据：每档信号下，建图轨迹位置到学到的标签位置距离的 P90），按 minRssi 从强到弱排。
+    /// nil = 没学（用 BLEAssist 的固定表）。标签位置表（人工打点）合成的底图不带这个，照旧用固定表。
+    public var learnedRanges: [RangeBin]? = nil
 
     public var isEmpty: Bool { cells.isEmpty }
+
+    /// 平均信号 rssi（dBm）→ 人离标签最远多少（cm）。有学到的范围就用学到的，否则 nil（调用方用固定表）。
+    public func learnedRangeCm(_ rssi: Double) -> Double? {
+        guard let bins = learnedRanges, !bins.isEmpty else { return nil }
+        if let b = bins.first(where: { rssi >= $0.minRssi }) { return b.rangeCm }
+        return nil
+    }
+
+    /// 学标签范围：每条是「某格里某个标签的平均信号、格子中心到学到的标签位置的距离、读数条数」，
+    /// 按信号分档、按读数条数加权取分位。一档读数少于 minSamples 不单独成档（并进更弱的一档）；信号越弱范围不会越小。
+    /// - Parameters:
+    ///   - edges: 分档的下界（dBm，从强到弱）；比最后一个还弱的不学（用固定表）
+    ///   - quantile: 取哪个分位（默认 P90）
+    public static func learnRanges(_ obs: [(distanceCm: Double, rssi: Double, n: Int)],
+                                   edges: [Double] = [-60, -65, -70, -75, -80, -85, -90],
+                                   quantile: Double = 0.9, marginCm: Double = 0, minSamples: Int = 200) -> [RangeBin]? {
+        var perBin = [[(d: Double, n: Int)]](repeating: [], count: edges.count)
+        for o in obs where o.n > 0 {
+            guard let k = edges.firstIndex(where: { o.rssi >= $0 }) else { continue }
+            perBin[k].append((o.distanceCm, o.n))
+        }
+        var out: [RangeBin] = []
+        var pending: [(d: Double, n: Int)] = []
+        for (k, e) in edges.enumerated() {
+            pending += perBin[k]
+            let total = pending.reduce(0) { $0 + $1.n }
+            guard total >= minSamples else { continue }
+            let s = pending.sorted { $0.d < $1.d }
+            var acc = 0, q = s.last!.d
+            for x in s { acc += x.n; if Double(acc) >= quantile * Double(total) { q = x.d; break } }
+            out.append(RangeBin(minRssi: e, rangeCm: q + marginCm, samples: total))
+            pending = []
+        }
+        guard !out.isEmpty else { return nil }
+        // 弱信号的范围不小于强信号的
+        for i in out.indices.dropFirst() { out[i].rangeCm = max(out[i].rangeCm, out[i - 1].rangeCm) }
+        return out
+    }
 
     /// 用来匹配的观测：只取最强的 K 个、且强于 minRssi 的
     public static func strongest(_ obs: [String: Double], k: Int = 12, minRssi: Double = -95) -> [(String, Double)] {
@@ -112,6 +162,8 @@ public final class BLEFingerprintBuilder {
     public var whitelist: Set<String>?
     /// 听到范围（强信号位置的标准差）超过这个（cm）就认为不是固定设备
     public var maxSpreadCm = 1500.0
+    /// 生成时顺便学本场地的标签范围（BLEFingerprintMap.learnedRanges）
+    public var learnRanges = true
 
     /// 累积状态（增量建图时存盘，下次接着加）
     public struct State: Codable {
@@ -222,7 +274,18 @@ public final class BLEFingerprintBuilder {
             if let sp = spreadCm(id), sp > maxSpreadCm { continue }   // 到哪儿都听得到：多半是跟着人走的设备
             tags[id] = .init(x: a.x / a.w, y: a.y / a.w, maxRssi: a.maxR, samples: a.n)
         }
-        return BLEFingerprintMap(cellCm: cellCm, cells: cs, tags: tags)
+        var m = BLEFingerprintMap(cellCm: cellCm, cells: cs, tags: tags)
+        if learnRanges {
+            var obs: [(distanceCm: Double, rssi: Double, n: Int)] = []
+            for c in cells.values {
+                for (id, a) in c.tags {
+                    guard let t = tags[id], a.n > 0 else { continue }
+                    obs.append((Point2(c.x, c.y).distance(to: Point2(t.x, t.y)), a.sum / Double(a.n), a.n))
+                }
+            }
+            m.learnedRanges = BLEFingerprintMap.learnRanges(obs)
+        }
+        return m
     }
 }
 

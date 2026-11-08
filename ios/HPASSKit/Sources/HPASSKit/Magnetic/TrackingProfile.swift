@@ -20,13 +20,15 @@ public enum OdometrySource: String, CaseIterable {
 /// - 估计点落在没采过磁场的格子上不算「丢了」（`zeroConfidenceOffMap = false`）：那里本来就该纯推算；
 /// - 自己丢了（置信度持续低）先在最后一次可靠位置附近找回（`localRecovery`）：半径随丢了之后走过的路变大，
 ///   新粒子只撒在圆里，不罚没数据的粒子；走了 `localRecoveryGlobalAfterCm` 还没找回就改回全图找。
-///   外部判定定错（蓝牙 / 区域观测 declareLost）直接全图找，不围着被否定的位置找；
+///   外部判定定错（区域观测 declareLost）直接全图找，不围着被否定的位置找；
 /// - 运动来源中途变了（视觉里程计没对齐 / 跟丢时计步顶上），调用方用 `MagneticLocalizer.setOdometry` 换参数；
 /// - 整步撞墙时贴墙滑（`wallSlide`）：推算方向偏一点就顶到墙 / 店铺边的粒子不原地卡住；
 /// - 定到之后地磁只占一部分（`convergedMagWeight`），并按粒子落在有数据格子上的权重比例再打折
 ///   （`coverageGatedMagWeight`）：一段没采过的路上完全靠推算；
 /// - 地磁似然按实测残差标定（`TrackingProfile.observationSigmaFloorUT` / `magneticCorrelationCm`），
-///   整体偏移不用单次读数估，攒够一段再取中位数（`offsetWarmupUpdates`）。
+///   整体偏移不用单次读数估，攒够一段再取中位数（`offsetWarmupUpdates`）；
+/// - 蓝牙只做软约束（`bleSoftTracking`）：底图学过本场地标签范围时用有上限的软范围约束，没学过用宽的位置先验；
+///   不挡收敛，持续对不上只触发局部找回，不全图找。
 ///
 /// 数值在公开数据集的 Python 移植上挑的（见 PR 描述），不按单条测试轨迹调。
 public enum TrackingProfile {
@@ -81,6 +83,7 @@ public extension MagneticConfig {
         c.magneticCorrelationCm = TrackingProfile.magneticCorrelationCm
         c.offsetWarmupUpdates = TrackingProfile.offsetWarmupUpdates
         c.offsetMedianWindow = TrackingProfile.offsetMedianWindow
+        c.bleSoftTracking = true
         return c
     }
 

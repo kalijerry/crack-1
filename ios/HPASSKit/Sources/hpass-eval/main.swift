@@ -66,6 +66,10 @@ do {
     if CommandLine.arguments.contains("--old-ble") { BLEAssist.defaultTagRanges = false }
     if CommandLine.arguments.contains("--no-pregate") { BLEAssist.defaultPreGate = false }
     if CommandLine.arguments.contains("--no-covgate") { BLEAssist.defaultCoverageGate = false }
+    if CommandLine.arguments.contains("--fixed-ble-ranges") { BLEAssist.defaultLearnedRanges = false }
+    if let r = bleMap?.learnedRanges {
+        print("蓝牙标签范围（学到的，P90）：" + r.map { "≥\(Int($0.minRssi)) dBm \(Int($0.rangeCm / 100)) m" }.joined(separator: "，"))
+    }
     var ble = CommandLine.arguments.contains("--no-ble") ? nil : bleMap
     if ble != nil, let p = arg("--tag-locations") ?? arg("--esl-locations"), let t = try? String(contentsOfFile: p, encoding: .utf8) {
         ble = TagLocations.seededBLEMap(TagLocations.parse(t, map: map), learned: bleMap)
@@ -117,6 +121,11 @@ do {
                 if let v = arg("--lost-confidence").flatMap(Double.init) { cfg.lostConfidence = v }
                 if let v = arg("--confidence-scale").flatMap(Double.init) { cfg.confidenceScaleCm = v }
                 if let v = arg("--cluster-radius").flatMap(Double.init) { cfg.clusterRadiusCm = v }
+                if CommandLine.arguments.contains("--hard-ble-tracking") { cfg.bleSoftTracking = false }
+                if CommandLine.arguments.contains("--ble-soft-no-recover") { cfg.bleSoftLocalRecovery = false }
+                if let w = arg("--ble-soft-weight").flatMap(Double.init) { cfg.bleSoftPriorWeight = w }
+                if let w = arg("--ble-soft-sigma").flatMap(Double.init) { cfg.bleSoftPriorSigmaCm = w }
+                if let w = arg("--ble-soft-range-weight").flatMap(Double.init) { cfg.bleSoftRangeWeight = w }
             }, seed: UInt64(k + 1), refTagPositions: refTags,
                                                   oracleStart: CommandLine.arguments.contains("--oracle-start"),
                                                   odometry: odometry)

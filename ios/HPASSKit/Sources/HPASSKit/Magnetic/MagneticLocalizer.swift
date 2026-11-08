@@ -146,6 +146,29 @@ public struct MagneticConfig {
     public var localRecoveryMaxCm: Double = 3000
     /// nil = 一直局部找回
     public var localRecoveryGlobalAfterCm: Double?
+
+    // MARK: 冷启动收敛门（默认全是原有行为；`applyColdStartGate()` 打开）
+    //
+    // 只在冷启动（reset 没给起点）、还没收敛、并且还没用过任何外部位置先验（蓝牙粗定位 / 标签范围 / 区域观测）时生效。
+    // 只靠地磁找位置时，走了十几米的磁场序列在大楼层里往往能对上好几处，过早宣布定到就是「很自信地定错」；
+    // 这几道门让滤波器宁可先不报位置。已知起点（跟踪）从不受影响。
+
+    /// 找位置（冷启动或丢了之后重新找）至少走了这么远（cm）才允许宣布定到。0 = 不限制。
+    public var coldMinPathCm: Double = 0
+    /// 最重的簇的权重 ÷ 离它 `coldModeSeparationCm` 以外最重的另一个簇的权重，至少这么大才允许定到。0 = 不看。
+    public var coldModeRatio: Double = 0
+    public var coldModeSeparationCm: Double = 500
+    /// 冷启动时要连续几次更新都满足收敛条件（原有行为 3 次）。
+    public var coldMinStreak: Int = 3
+    /// 有效粒子数 / 总粒子数至少这么大才允许定到（粒子太少撑着的「峰」不可信）。0 = 不看。
+    public var coldMinEffectiveRatio: Double = 0
+    /// 收敛门起作用时地磁似然用的温度（0 = 同 `likelihoodTemperature`）。
+    public var coldSearchTemperature: Double = 0
+    /// 冷启动粒子密度下限（个 / m²，按 `coldStartParticleCount` ÷ 有磁场数据的面积）。0 = 不看。
+    /// 冷启动的假设是「位置 × 朝向」：朝向未知时，要在真实位置 1 m 内、朝向差 20° 内平均有一个粒子，
+    /// 大约要 9 个 / m²。粒子撒得比这稀，真实位置附近往往一个粒子都没有，这时「定到」的峰只是碰巧长得像的地方，
+    /// 只靠地磁就不报位置，等外部先验（蓝牙粗定位、用户指起点）把范围缩小。
+    public var coldMinParticlesPerM2: Double = 0
     /// 跟踪配置档的运动来源（nil = 不是跟踪档）。运动来源中途变了（视觉里程计没对齐 / 跟丢时计步顶上）
     /// 用 `MagneticLocalizer.setOdometry` 换成对应那一套参数。
     public var trackingOdometry: OdometrySource?
@@ -166,6 +189,45 @@ public struct MagneticConfig {
     public var bleSoftLocalRecovery = true
 
     public init() {}
+
+    /// 打开冷启动收敛门（推荐值见 `ColdStartGate`）：只用地磁冷启动时宁可不报位置，也不报错的。
+    public mutating func applyColdStartGate() {
+        coldMinPathCm = ColdStartGate.minPathCm
+        coldModeRatio = ColdStartGate.modeRatio
+        coldMinStreak = ColdStartGate.minStreak
+        coldMinEffectiveRatio = ColdStartGate.minEffectiveRatio
+        coldSearchTemperature = ColdStartGate.searchTemperature
+        coldMinParticlesPerM2 = ColdStartGate.minParticlesPerM2
+    }
+
+    /// 关掉冷启动收敛门（恢复原有行为）。
+    public mutating func clearColdStartGate() {
+        let d = MagneticConfig()
+        coldMinPathCm = d.coldMinPathCm
+        coldModeRatio = d.coldModeRatio
+        coldMinStreak = d.coldMinStreak
+        coldMinEffectiveRatio = d.coldMinEffectiveRatio
+        coldSearchTemperature = d.coldSearchTemperature
+        coldMinParticlesPerM2 = d.coldMinParticlesPerM2
+    }
+
+    /// 冷启动收敛门是否打开（任何一道门不是原有行为）
+    public var coldStartGateEnabled: Bool {
+        let d = MagneticConfig()
+        return coldMinPathCm != d.coldMinPathCm || coldModeRatio != d.coldModeRatio
+            || coldMinStreak != d.coldMinStreak || coldMinEffectiveRatio != d.coldMinEffectiveRatio
+            || coldSearchTemperature != d.coldSearchTemperature || coldMinParticlesPerM2 != d.coldMinParticlesPerM2
+    }
+}
+
+/// 冷启动收敛门的推荐值（见 `MagneticConfig.applyColdStartGate`）。
+public enum ColdStartGate {
+    public static let minPathCm: Double = 4000
+    public static let modeRatio: Double = 5
+    public static let minStreak = 10
+    public static let minEffectiveRatio: Double = 0.2
+    public static let searchTemperature: Double = 0
+    public static let minParticlesPerM2: Double = 10
 }
 
 public struct MagneticEstimate {
@@ -276,6 +338,14 @@ public final class MagneticLocalizer {
     public private(set) var globalFallbackCount = 0
     /// 正在为远处的簇做跳转确认（keepClusterRequiresNear），这次更新不算「走向丢失」
     private var holdingAgainstFar = false
+    /// reset 之后用过外部位置先验（蓝牙粗定位、标签范围、区域观测）。冷启动收敛门只在没用过时生效
+    public private(set) var externalPriorApplied = false
+    /// 这一轮找位置（冷启动或丢了之后）走过的路（cm），冷启动收敛门的「至少走多远」用
+    public private(set) var searchPathCm = 0.0
+    /// 冷启动收敛门现在是否在起作用（冷启动、没收敛、没用过外部先验、配置打开了）
+    public var coldStartGateActive: Bool {
+        coldStart && !hasConverged && !externalPriorApplied && config.coldStartGateEnabled
+    }
 
     public init(field: MagneticFieldMap, walkable: WalkableMap? = nil,
                 config: MagneticConfig = .init(), seed: UInt64 = 1) {
@@ -296,6 +366,8 @@ public final class MagneticLocalizer {
 
     /// 有磁场数据的面积（m²），冷启动只在这里面找。
     public var mappedAreaM2: Double { Double(mappedCells.count) * field.cellCm * field.cellCm / 10_000 }
+    /// 冷启动时粒子撒得有多密（个 / m²）
+    public var coldStartParticleDensity: Double { Double(config.coldStartParticleCount) / max(mappedAreaM2, 1e-9) }
 
     private func randomPosition() -> Point2 { randomPositionWithAnchor().point }
 
@@ -370,6 +442,8 @@ public final class MagneticLocalizer {
         lastEffectiveRatio = 1
         convergedStreak = 0
         hasConverged = !coldStart
+        externalPriorApplied = false
+        searchPathCm = 0
     }
 
     /// 是否已经收敛（有把握）
@@ -405,6 +479,7 @@ public final class MagneticLocalizer {
 
     public func declareLost() {
         pathSinceResetCm = 0
+        searchPathCm = 0
         recentTotals = []
         hasConverged = false
         convergedStreak = 0
@@ -433,6 +508,7 @@ public final class MagneticLocalizer {
     /// - Parameter weight: 0...1，收敛后应该给小一点（只当约束，不抢地磁的主导）。
     public func applyPositionPrior(_ center: Point2, sigmaCm: Double, weight: Double, injectFraction: Double = 0) {
         guard !xs.isEmpty, sigmaCm > 0, weight > 0 else { return }
+        externalPriorApplied = true
         let s2 = 2 * sigmaCm * sigmaCm
         for i in 0..<xs.count {
             let dx = xs[i] - center.x, dy = ys[i] - center.y
@@ -463,6 +539,7 @@ public final class MagneticLocalizer {
     public func applyTagRanges(_ tags: [(position: Point2, rangeCm: Double)], sigmaCm: Double = 150, capLog: Double = 3,
                                weight: Double = 1, injectFraction: Double = 0) {
         guard !xs.isEmpty, !tags.isEmpty, weight > 0 else { return }
+        externalPriorApplied = true
         let s2 = 2 * sigmaCm * sigmaCm
         for i in 0..<xs.count {
             var pen = 0.0
@@ -500,6 +577,7 @@ public final class MagneticLocalizer {
     public func applyRegion(distance: (Point2) -> Double, sample: () -> Point2, sigmaCm: Double = 80, capLog: Double = 12,
                             injectFraction: Double = 0.3, relocateCm: Double = 300) -> Bool {
         guard !xs.isEmpty else { return false }
+        externalPriorApplied = true
         var wsum = 0.0, mx = 0.0, my = 0.0
         let mw = logw.max() ?? 0
         for i in xs.indices { let w = exp(logw[i] - mw); wsum += w; mx += w * xs[i]; my += w * ys[i] }
@@ -638,6 +716,7 @@ public final class MagneticLocalizer {
 
     private func predict(delta: Point2, dist: Double) {
         pathSinceResetCm += dist
+        if !hasConverged { searchPathCm += dist }
         var mx = 0.0, my = 0.0, mw = 0.0
         let distM = dist / 100
         let frac = hasConverged ? (config.convergedPositionNoiseFraction ?? config.positionNoiseFraction) : config.positionNoiseFraction
@@ -729,7 +808,10 @@ public final class MagneticLocalizer {
         let rel = config.hybridOffset ? offsetEst == nil : config.offsetInvariant
         let fAbs = offsetEst.map { f - $0 } ?? f
         let slack2 = config.offsetSlackUT * config.offsetSlackUT
-        let temp = config.likelihoodTemperature * max(config.magneticCorrelationCm / max(config.updateDistanceCm, 1), 1)
+        // 冷启动收敛门起作用时（只靠地磁找位置）可以用更高的温度：相邻几次读数高度相关，按独立算会过度自信，
+        // 峰的权重比就量不准。再按残差相关长度折算（跟踪档；0 = 原有行为）
+        let baseTemp = coldStartGateActive && config.coldSearchTemperature > 0 ? config.coldSearchTemperature : config.likelihoodTemperature
+        let temp = baseTemp * max(config.magneticCorrelationCm / max(config.updateDistanceCm, 1), 1)
         for i in 0..<xs.count {
             guard let m = field.sample(at: Point2(xs[i], ys[i])) else { continue }
             let v0 = m.sigma.total * m.sigma.total + floor2
@@ -856,8 +938,10 @@ public final class MagneticLocalizer {
         let good = e.uncertaintyCm <= config.convergedUncertaintyCm && e.confidence >= config.convergedConfidence
             && !convergenceBlocked
         if !hasConverged {
-            convergedStreak = (good && consistent) ? convergedStreak + 1 : 0
-            if convergedStreak >= 3 {
+            let gated = coldStartGateActive
+            let pass = good && consistent && (!gated || coldGatePasses(e))
+            convergedStreak = pass ? convergedStreak + 1 : 0
+            if convergedStreak >= (gated ? max(config.coldMinStreak, 1) : 3) {
                 hasConverged = true
                 lowStreak = 0
                 if coldStart && xs.count > config.particleCount { resample(to: config.particleCount) }
@@ -870,8 +954,45 @@ public final class MagneticLocalizer {
         if lowStreak >= config.lostUpdates { loseTrack() }
     }
 
+    /// 冷启动收敛门（只在 `coldStartGateActive` 时调用）：走够了路、粒子不是少数几个撑着、
+    /// 最重的簇明显压过远处的第二个簇。
+    private func coldGatePasses(_ e: MagneticEstimate) -> Bool {
+        if config.coldMinParticlesPerM2 > 0 && coldStartParticleDensity < config.coldMinParticlesPerM2 { return false }
+        if searchPathCm < config.coldMinPathCm { return false }
+        if lastEffectiveRatio < config.coldMinEffectiveRatio { return false }
+        if config.coldModeRatio > 0 {
+            let best = cluster(from: nil)
+            let other = secondModeMass(awayFrom: best.center, separationCm: config.coldModeSeparationCm)
+            if best.mass < config.coldModeRatio * other { return false }
+        }
+        return true
+    }
+
+    /// 离 `c` 超过 separationCm 的最重的 2 m 方块为种子做均值漂移，返回那个簇的权重占比（没有返回 0）。
+    func secondModeMass(awayFrom c: Point2, separationCm: Double) -> Double {
+        let n = xs.count
+        let mx = logw.max() ?? 0
+        var mass: [Int: Double] = [:], sumX: [Int: Double] = [:], sumY: [Int: Double] = [:]
+        let bin = 200.0
+        for i in 0..<n {
+            let w = exp(logw[i] - mx)
+            let k = Int(ys[i] / bin) * 100_000 + Int(xs[i] / bin)
+            mass[k, default: 0] += w
+            sumX[k, default: 0] += w * xs[i]
+            sumY[k, default: 0] += w * ys[i]
+        }
+        // 按权重从大到小，取第一个中心离 c 够远的方块（权重相同时按键排序，结果不依赖字典顺序）
+        let order = mass.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+        for (k, m) in order where m > 0 {
+            let p = Point2(sumX[k]! / m, sumY[k]! / m)
+            if p.distance(to: c) > separationCm { return cluster(from: p).mass }
+        }
+        return 0
+    }
+
     /// 自己判定丢了（置信度持续低）：退回没把握的状态；已知起点开始时保留最后一次可靠位置做局部找回。
     func loseTrack() {
+        searchPathCm = 0
         hasConverged = false
         convergedStreak = 0
         lowStreak = 0

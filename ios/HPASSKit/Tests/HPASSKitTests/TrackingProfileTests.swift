@@ -296,4 +296,19 @@ final class TrackingProfileTests: XCTestCase {
         XCTAssertGreaterThan(correlated, independent + 0.1, "相关长度没有让更新变软：\(independent) → \(correlated)")
         XCTAssertEqual(ratio(25), independent, accuracy: 1e-9, "相关长度短于一次更新的距离时等于原有行为")
     }
+
+    /// --oracle-start（已知起点）跟踪从不用冷启动收敛门：就算命令行覆盖打开了它也关掉，其余覆盖照样生效。
+    func testOracleTrackingConfigNeverUsesColdStartGate() {
+        for odo in [OdometrySource.pdr, .vio] {
+            let cfg = SessionEvaluator.oracleTrackingConfig(odometry: odo) { c in
+                c.applyColdStartGate()
+                c.coldMinPathCm = 9000
+                c.jumpConfirmUpdates = 7
+            }
+            XCTAssertFalse(cfg.coldStartGateEnabled)
+            XCTAssertEqual(cfg.coldMinStreak, MagneticConfig().coldMinStreak)
+            XCTAssertEqual(cfg.jumpConfirmUpdates, 7)
+            XCTAssertEqual(cfg.trackingOdometry, odo)
+        }
+    }
 }

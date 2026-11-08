@@ -136,11 +136,21 @@ public enum SessionEvaluator {
     }
 
     /// 回放一个测试会话：按时间顺序送 IMU、原始磁力计、蓝牙、ARKit 位姿，和参考轨迹比
+    /// 已知起点（`oracleStart`）跟踪用的配置：产品的跟踪配置档 + 命令行覆盖。冷启动收敛门只属于冷启动，
+    /// 这里总是关掉（就算命令行的覆盖打开了它）。
+    public static func oracleTrackingConfig(odometry: OdometrySource,
+                                            configure: ((inout MagneticConfig) -> Void)? = nil) -> MagneticConfig {
+        var cfg = MagneticConfig.tracking(odometry: odometry, headingKnown: true)
+        configure?(&cfg)
+        cfg.clearColdStartGate()
+        return cfg
+    }
+
     public static func evaluate(dir: URL, map: StoreMap, field: MagneticFieldMap, ble: BLEFingerprintMap?,
                                 walkable: WalkableMap?, crossCheck: Bool = true,
                                 configure: ((inout MagneticConfig) -> Void)? = nil, seed: UInt64 = 1,
                                 refTagPositions: [String: Point2]? = nil, oracleStart: Bool = false,
-                                odometry: OdometrySource = .pdr) throws -> EvalReport {
+                                odometry: OdometrySource = .pdr, coldStartGate: Bool = false) throws -> EvalReport {
         let s = try SurveySessionLoader.load(dir)
         // 参考轨迹：这个会话自己的对齐结果（只用它的锚点和贴通道，不用磁场）；给了标签位置时再用标签锚定修正一遍
         // （采集轨迹中途偏航时，不修正的参考本身就是错的）
@@ -160,7 +170,8 @@ public enum SessionEvaluator {
             while hi - lo > 1 { let m = (lo + hi) / 2; if ref[m].tMs <= t { lo = m } else { hi = m } }
             return t - ref[lo].tMs > 300 ? nil : ref[lo].p  // 参考点比查询时刻旧 300 ms 以上就不算
         }
-        let sh = ShadowLocalizer(field: field, walkable: walkable, useRawMag: !s.raw.isEmpty, configure: configure, seed: seed)
+        let sh = ShadowLocalizer(field: field, walkable: walkable, useRawMag: !s.raw.isEmpty, configure: configure, seed: seed,
+                                coldStartGate: coldStartGate)
         sh.bleMap = ble
         sh.crossCheckEnabled = crossCheck
         // 已知起点 + 已知朝向的「跟踪」模式（基准用，不含冷启动）：
@@ -175,9 +186,7 @@ public enum SessionEvaluator {
                 let da = s.poses[pj].a - a0, dm = rj.p - r0.p
                 let phi = atan2(dm.y, dm.x) - atan2(da.y, da.x)
                 poseRot = (cos(phi), sin(phi))
-                var cfg = MagneticConfig.tracking(odometry: odometry, headingKnown: true)
-                configure?(&cfg)
-                sh.localizer.config = cfg
+                sh.localizer.config = oracleTrackingConfig(odometry: odometry, configure: configure)
                 sh.localizer.reset(start: r0.p, spreadCm: TrackingProfile.startSpreadCm, headingUnknown: false)
             }
         }

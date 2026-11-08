@@ -126,9 +126,19 @@ do {
                 if let w = arg("--ble-soft-weight").flatMap(Double.init) { cfg.bleSoftPriorWeight = w }
                 if let w = arg("--ble-soft-sigma").flatMap(Double.init) { cfg.bleSoftPriorSigmaCm = w }
                 if let w = arg("--ble-soft-range-weight").flatMap(Double.init) { cfg.bleSoftRangeWeight = w }
+                // 冷启动收敛门的单项覆盖（实验用；--cold-gate 打开推荐值，这几项再改其中一项）
+                if let v = arg("--cold-min-path").flatMap(Double.init) { cfg.coldMinPathCm = v }
+                if let v = arg("--cold-mode-ratio").flatMap(Double.init) { cfg.coldModeRatio = v }
+                if let v = arg("--cold-streak").flatMap(Int.init) { cfg.coldMinStreak = v }
+                if let v = arg("--cold-ess").flatMap(Double.init) { cfg.coldMinEffectiveRatio = v }
+                if let v = arg("--cold-temp").flatMap(Double.init) { cfg.coldSearchTemperature = v }
+                if let v = arg("--cold-density").flatMap(Double.init) { cfg.coldMinParticlesPerM2 = v }
+                if let v = arg("--uniform-inject").flatMap(Int.init) { cfg.uniformHeadingForInjection = v != 0 }
             }, seed: UInt64(k + 1), refTagPositions: refTags,
                                                   oracleStart: CommandLine.arguments.contains("--oracle-start"),
-                                                  odometry: odometry)
+                                                  odometry: odometry,
+                                                  // 冷启动收敛门：只在冷启动、还没用过蓝牙先验时起作用；--oracle-start 的跟踪从不用
+                                                  coldStartGate: CommandLine.arguments.contains("--cold-gate"))
             if runs == 1 { print(r.line) }
             rs.append(r)
         }

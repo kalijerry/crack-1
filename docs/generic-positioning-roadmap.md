@@ -192,7 +192,8 @@
 | IMDF 导入：level → 每层 `map.json`（`floorPolygons` 可走区、障碍、开口、连接体、地标）+ `venue.json`（楼层表、跨楼层连接体组） | ✅ `tools/venue/imdf_convert.py`。`floorPolygons` 和带坐标的元素现有 `StoreDataLoader` 已能读；`obstaclePolygons`、`connectors` 还要在 Swift 侧接上 |
 | `StoreMap` 增加多楼层容器（`VenueModel`：楼层列表 + 连接体），单层门店是一层的特例 | 待做 |
 | 由可走多边形自动生成导航图（栅格骨架化或可视图），替代手画的 `MapCross` | 待做 |
-| 地图编辑器（web/map-editor）支持多边形和楼层 | 待做 |
+| 地图编辑器（web/map-editor）支持多边形和楼层 | 部分：已有「地理对齐」（两点对准修正 geoRef）；多边形编辑待做 |
+| 没有 CAD / IMDF 的场馆：iPhone RoomPlan 多房间扫描 → 单元类别 / 名称 → 经纬度（入口 GPS + 朝向）→ 楼层（气压）→ 导出 IMDF | ✅ 见 [用 iPhone 扫描自己生成 IMDF 场馆地图](roomplan-imdf-authoring.md)：`IMDFExporter`（Swift）/ `tools/venue/imdf_export.py`，导出后 imdf_convert 读回一致 |
 
 **门槛 G0**：一个公开 IMDF 场馆导入后，每层可走面积与原始数据一致（误差 < 1%），任意两点路径规划成功率 ≥ 99%。
 

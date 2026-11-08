@@ -58,7 +58,7 @@ final class AccuracyReports: ObservableObject {
 
     /// 取这张地图最近几次云端报告（新的在前）
     func load(mapId: String, limit: Int = 5) async {
-        guard Telemetry.shared.enabled else { message = "先在「门店数据 → 云端后台」填地址和口令并打开连接。"; return }
+        guard Telemetry.shared.enabled else { message = "先在「设置 → 云端连接」填地址和口令并打开连接。"; return }
         loading = true
         defer { loading = false }
         do {
@@ -163,7 +163,7 @@ struct AccuracyTestView: View {
     @ViewBuilder private var checklistSection: some View {
         Section {
             if let e = lib.active {
-                check(e.isRoom, "房间已扫描", e.isRoom ? e.name : "当前是「\(e.name)」（门店地图），也可以测，只是下面按房间来写")
+                check(e.isRoom, "房间已扫描", e.isRoom ? e.name : "当前是「\(e.name)」（场地地图），也可以测，只是下面按房间来写")
             } else {
                 check(false, "房间已扫描", "还没有地图：先到「房间扫描」页扫一遍")
             }

@@ -347,7 +347,7 @@ final class RoomScanModel: ObservableObject {
                 let e = try lib.importAndActivate(data: d, name: n, kind: "room", extraFiles: extra)
                 try? Data(e.id.utf8).write(to: it.dir.appendingPathComponent("library_id.txt"))
             }
-            libraryMessage = "已加入地图库并切换到这里。到「地磁定位」页建图采集、定位。"
+            libraryMessage = "已加入地图库并切换到这里。到「建图」页采集、到「导航」页定位。"
         } catch {
             libraryMessage = "加入地图库失败：\(error.localizedDescription)"
         }

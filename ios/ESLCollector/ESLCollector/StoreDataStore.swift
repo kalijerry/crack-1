@@ -40,7 +40,7 @@ final class StoreDataStore: ObservableObject {
             switch self {
             case .map: return "地图"
             case .fingerprint: return "指纹库"
-            case .esl: return "价签/商品"
+            case .esl: return "标签/物品"
             }
         }
     }
@@ -90,7 +90,7 @@ final class StoreDataStore: ObservableObject {
     /// 装上从后台拿到的价签位置表（正常模式），不再往回传
     func installEslLocations(_ data: Data) throws {
         guard let text = String(data: data, encoding: .utf8), !EslLocations.parse(text, map: map).isEmpty else {
-            throw StoreDataError.unsupportedFormat("后台的价签位置表读不出来")
+            throw StoreDataError.unsupportedFormat("后台的标签位置表读不出来")
         }
         try FileManager.default.createDirectory(at: Self.rootURL, withIntermediateDirectories: true)
         try data.write(to: eslLocURL, options: .atomic)
@@ -99,7 +99,7 @@ final class StoreDataStore: ObservableObject {
         eslLocCache = nil
         eslLocCount = locs.count
         loadEslIds()
-        AppLog.i("门店数据", "从后台装上价签位置表：\(locs.count) 个")
+        AppLog.i("场地数据", "从后台装上标签位置表：\(locs.count) 个")
     }
 
     /// 导入价签位置表：同时当价签名单用，连着后台就传上去（云端融合用它当蓝牙底图）
@@ -117,7 +117,7 @@ final class StoreDataStore: ObservableObject {
         eslLocCount = locs.count
         loadEslIds()
         let onShelf = locs.filter { $0.position != nil }.count
-        AppLog.i("门店数据", "导入价签位置表：\(locs.count) 个，对上地图货架 \(onShelf) 个")
+        AppLog.i("场地数据", "导入标签位置表：\(locs.count) 个，对上地图障碍物 \(onShelf) 个")
         Task { await Telemetry.shared.uploadEslLocations(data) }
         return (locs.count, onShelf)
     }
@@ -142,11 +142,11 @@ final class StoreDataStore: ObservableObject {
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
         let text = try String(contentsOf: source, encoding: .utf8)
         let ids = BLEFingerprintBuilder.parseIdList(text)
-        guard !ids.isEmpty else { throw StoreDataError.unsupportedFormat("文件里没找到价签 ID（格式 XX-XX-XX-XX）") }
+        guard !ids.isEmpty else { throw StoreDataError.unsupportedFormat("文件里没找到标签 ID（格式 XX-XX-XX-XX）") }
         try FileManager.default.createDirectory(at: Self.rootURL, withIntermediateDirectories: true)
         try ids.sorted().joined(separator: "\n").write(to: eslIdsURL, atomically: true, encoding: .utf8)
         loadEslIds()
-        AppLog.i("门店数据", "导入价签名单：\(ids.count) 个")
+        AppLog.i("场地数据", "导入标签名单：\(ids.count) 个")
         return ids.count
     }
 
@@ -189,7 +189,7 @@ final class StoreDataStore: ObservableObject {
 
     /// 偏移调完之后记一条日志（调的过程中不记，避免刷屏）。
     func logShelfOffset() {
-        AppLog.i("门店数据", "货架偏移：x \(Int(shelfOffset.x)) cm，y \(Int(shelfOffset.y)) cm")
+        AppLog.i("场地数据", "障碍物偏移：x \(Int(shelfOffset.x)) cm，y \(Int(shelfOffset.y)) cm")
     }
 
     // MARK: 写入
@@ -199,7 +199,7 @@ final class StoreDataStore: ObservableObject {
         try FileManager.default.createDirectory(at: Self.rootURL, withIntermediateDirectories: true)
         try data.write(to: url(for: kind), options: .atomic)
         if kind == .map { MapLibrary.shared.syncActive(data) }
-        AppLog.i("门店数据", "已保存 \(kind.title)：\(ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file))")
+        AppLog.i("场地数据", "已保存 \(kind.title)：\(ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file))")
         reload()
     }
 
@@ -221,13 +221,13 @@ final class StoreDataStore: ObservableObject {
 
     func delete(_ kind: FileKind) {
         try? FileManager.default.removeItem(at: url(for: kind))
-        AppLog.w("门店数据", "已删除 \(kind.title)")
+        AppLog.w("场地数据", "已删除 \(kind.title)")
         reload()
     }
 
     func deleteAll() {
         for k in FileKind.allCases { try? FileManager.default.removeItem(at: url(for: k)) }
-        AppLog.w("门店数据", "已清空全部门店数据")
+        AppLog.w("场地数据", "已清空全部场地数据")
         reload()
     }
 
@@ -242,7 +242,7 @@ final class StoreDataStore: ObservableObject {
             let m = try StoreDataLoader.loadMap(data)
             self.rawMap = m
             self.map = m.withShelfOffset(self.shelfOffset)
-            return "\(m.shelves.count) 个货架 / \(m.crosses.count) 条通道" +
+            return "\(m.shelves.count) 个障碍物 / \(m.crosses.count) 条通道" +
                 (m.floorName.map { " / 楼层 \($0)" } ?? "")
         } onMissing: {
             self.rawMap = nil
@@ -255,7 +255,7 @@ final class StoreDataStore: ObservableObject {
             self.fingerprints = pts
             let ranges = pts.reduce(0) { $0 + $1.ranges.count }
             let avg = pts.isEmpty ? 0 : ranges / pts.count
-            return "\(pts.count) 个指纹点 / 平均 \(avg) 条货架区间"
+            return "\(pts.count) 个指纹点 / 平均 \(avg) 条障碍物区间"
         } onMissing: {
             self.fingerprints = []
         }
@@ -266,7 +266,7 @@ final class StoreDataStore: ObservableObject {
             self.goods = g
             self.eslItems = g.flatMap(\.positions)
             let skus = g.filter { !$0.sku.isEmpty }.count
-            return "\(self.eslItems.count) 个价签" + (skus > 0 ? " / \(skus) 个商品" : "")
+            return "\(self.eslItems.count) 个标签" + (skus > 0 ? " / \(skus) 个物品" : "")
         } onMissing: {
             self.goods = []
             self.eslItems = []
@@ -294,7 +294,7 @@ final class StoreDataStore: ObservableObject {
         } catch {
             onMissing()
             let msg = (error as? StoreDataError).map(String.init(describing:)) ?? error.localizedDescription
-            AppLog.e("门店数据", "\(kind.title) 解析失败：\(msg)")
+            AppLog.e("场地数据", "\(kind.title) 解析失败：\(msg)")
             return StoreFileInfo(exists: true, bytes: bytes, modified: modified, summary: "解析失败", error: msg)
         }
     }
@@ -308,9 +308,9 @@ final class StoreDataStore: ObservableObject {
         let positioner = FingerprintPositioner(points: fingerprints, eslToShelf: eslToShelf)
         issues = positioner.validate()
         if issues.isEmpty {
-            AppLog.i("门店数据", "自检通过：\(fingerprints.count) 个指纹点，\(eslItems.count) 个价签")
+            AppLog.i("场地数据", "自检通过：\(fingerprints.count) 个指纹点，\(eslItems.count) 个标签")
         } else {
-            AppLog.w("门店数据", "自检发现 \(issues.count) 个问题，详见门店数据页")
+            AppLog.w("场地数据", "自检发现 \(issues.count) 个问题，详见场地数据页")
         }
     }
 }

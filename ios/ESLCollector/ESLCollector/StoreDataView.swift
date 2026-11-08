@@ -51,7 +51,7 @@ struct StoreDataView: View {
                 importSection
             }
         }
-        .navigationTitle("门店数据")
+        .navigationTitle("场地数据")
         .scrollDismissesKeyboard(.interactively)
         .onAppear(perform: loadOnce)
         .onChange(of: config) { newValue in
@@ -66,7 +66,7 @@ struct StoreDataView: View {
         .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
             handleImport(result)
         }
-        .confirmationDialog("确定清空全部门店数据？", isPresented: $confirmClearAll, titleVisibility: .visible) {
+        .confirmationDialog("确定清空全部场地数据？", isPresented: $confirmClearAll, titleVisibility: .visible) {
             LoggedButton("清空全部", role: .destructive) {
                 store.deleteAll()
                 results = [:]
@@ -170,7 +170,7 @@ struct StoreDataView: View {
             Toggle("允许自签名证书（不校验 TLS）", isOn: $config.allowInsecureTLS)
                 .onChange(of: config.allowInsecureTLS) { on in
                     AppLog.tap("允许自签名证书", on ? "开" : "关")
-                    if on { AppLog.w("门店下载", "已开启跳过 TLS 校验，仅限内网自建服务器") }
+                    if on { AppLog.w("场地下载", "已开启跳过 TLS 校验，仅限内网自建服务器") }
                 }
             downloadControls
         } header: {
@@ -196,11 +196,11 @@ struct StoreDataView: View {
                 .keyboardType(.URL)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-            TextField("价签/商品接口路径", text: $config.eslPath)
+            TextField("标签/物品接口路径", text: $config.eslPath)
                 .keyboardType(.URL)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-            TextField("门店编码（{store}）", text: $config.storeCode)
+            TextField("场地编号（{store}）", text: $config.storeCode)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
             TextField("楼层 ID（{floor}）", text: $config.floorId)
@@ -352,7 +352,7 @@ struct StoreDataView: View {
         if remember {
             username = Keychain.get(Self.userKey) ?? ""
             credential = Keychain.get(Self.credKey) ?? ""
-            AppLog.i("门店数据", "已从钥匙串恢复凭据：\(credential.isEmpty ? "未设置" : "已设置")")
+            AppLog.i("场地数据", "已从钥匙串恢复凭据：\(credential.isEmpty ? "未设置" : "已设置")")
         }
         store.reload()
     }
@@ -362,11 +362,11 @@ struct StoreDataView: View {
         if on {
             Keychain.set(username, for: Self.userKey)
             Keychain.set(credential, for: Self.credKey)
-            AppLog.i("门店数据", "凭据已写入钥匙串（仅本机、解锁后可读）")
+            AppLog.i("场地数据", "凭据已写入钥匙串（仅本机、解锁后可读）")
         } else {
             Keychain.remove(Self.userKey)
             Keychain.remove(Self.credKey)
-            AppLog.i("门店数据", "已从钥匙串移除凭据，凭据仅保留在内存")
+            AppLog.i("场地数据", "已从钥匙串移除凭据，凭据仅保留在内存")
         }
     }
 
@@ -375,14 +375,14 @@ struct StoreDataView: View {
         credential = ""
         Keychain.remove(Self.userKey)
         Keychain.remove(Self.credKey)
-        AppLog.i("门店数据", "已清空内存与钥匙串中的凭据")
+        AppLog.i("场地数据", "已清空内存与钥匙串中的凭据")
     }
 
     private func download(_ kinds: [StoreDataStore.FileKind]) {
         let issues = StoreDataClient.validationIssues(for: kinds, config: config)
         formErrors = issues
         guard issues.isEmpty else {
-            AppLog.w("门店下载", "配置自检未通过：\(issues.count) 项")
+            AppLog.w("场地下载", "配置自检未通过：\(issues.count) 项")
             return
         }
         for kind in kinds { results[kind.rawValue] = nil }
@@ -404,7 +404,7 @@ struct StoreDataView: View {
                     } catch {
                         results[kind.rawValue] = DownloadResult(
                             ok: false, text: "保存失败：\(error.localizedDescription)")
-                        AppLog.e("门店下载", "\(kind.title) 保存失败：\(error.localizedDescription)")
+                        AppLog.e("场地下载", "\(kind.title) 保存失败：\(error.localizedDescription)")
                     }
                 case .failure(let err):
                     results[kind.rawValue] = DownloadResult(ok: false, text: err.localizedDescription)
@@ -423,7 +423,7 @@ struct StoreDataView: View {
                 results[importKind.rawValue] = DownloadResult(ok: true, text: "已从文件导入")
             } catch {
                 importError = "\(importKind.title) 导入失败：\(error.localizedDescription)"
-                AppLog.e("门店数据", "导入失败：\(error.localizedDescription)")
+                AppLog.e("场地数据", "导入失败：\(error.localizedDescription)")
             }
         case .failure(let err):
             importError = "选择文件失败：\(err.localizedDescription)"
@@ -487,29 +487,29 @@ struct EslListSection: View {
     var body: some View {
         Section {
             HStack {
-                Text("价签位置表")
+                Text("标签位置表")
                 Spacer()
-                Text(store.eslLocCount > 0 ? "\(store.eslLocCount) 个（对上货架 \(store.eslLocations.filter { $0.position != nil }.count) 个）" : "未导入")
+                Text(store.eslLocCount > 0 ? "\(store.eslLocCount) 个（对上障碍物 \(store.eslLocations.filter { $0.position != nil }.count) 个）" : "未导入")
                     .foregroundStyle(.secondary).font(.footnote)
             }
-            Button("导入价签位置表（esl_locations_*.csv）") { importingLoc = true }
+            Button("导入标签位置表（esl_locations_*.csv）") { importingLoc = true }
             HStack {
-                Text("价签名单")
+                Text("标签名单")
                 Spacer()
                 Text(store.eslIdCount > 0 ? "\(store.eslIdCount) 个" : "未导入").foregroundStyle(.secondary)
             }
-            Button("导入价签名单（CSV / TXT）") { importing = true }
+            Button("导入标签名单（CSV / TXT）") { importing = true }
             if store.eslIdCount > 0 {
                 Button("清除名单", role: .destructive) { store.clearEslIds() }
             }
             if let m = message { Text(m).font(.footnote).foregroundStyle(.secondary) }
         } header: { Text("蓝牙") } footer: {
-            Text("价签位置表（门店系统导出的 esl_locations_*.csv）：每个价签在哪个通道、段、层，对上地图货架后当蓝牙定位的底图（全店不用采集也有粗定位，实测中位 1.6～3.4 m），也能在「定位 → 找价签」里找具体价签；导入时自动当价签名单，并传到后台给云端融合用。价签广播用厂商 ID 0x000D、内容是 4 字节价签编号，App 只收这种广播。")
+            Text("标签位置表（esl_locations_*.csv）：每个标签所在的位置，对上地图后当蓝牙粗定位的底图（不用采集也有粗定位），也能在「高级控制台 → 找标签」里找具体标签；导入时自动当标签名单，并传到后台给云端生成地图用。")
         }
         .fileImporter(isPresented: $importingLoc, allowedContentTypes: [.commaSeparatedText, .plainText, .text]) { r in
             switch r {
             case .success(let u):
-                do { let (n, s) = try store.importEslLocations(from: u); message = "已导入 \(n) 个价签，\(s) 个对上了地图货架" }
+                do { let (n, s) = try store.importEslLocations(from: u); message = "已导入 \(n) 个标签，\(s) 个对上了地图障碍物" }
                 catch { message = "导入失败：\(error)" }
             case .failure(let e): message = "导入失败：\(e.localizedDescription)"
             }
@@ -517,7 +517,7 @@ struct EslListSection: View {
         .fileImporter(isPresented: $importing, allowedContentTypes: [.commaSeparatedText, .plainText, .text, .json]) { r in
             switch r {
             case .success(let u):
-                do { message = "已导入 \(try store.importEslIds(from: u)) 个价签" } catch { message = "导入失败：\(error)" }
+                do { message = "已导入 \(try store.importEslIds(from: u)) 个标签" } catch { message = "导入失败：\(error)" }
             case .failure(let e): message = "导入失败：\(e.localizedDescription)"
             }
         }
@@ -534,15 +534,15 @@ struct ModeSection: View {
             Toggle("开发模式", isOn: $mode.developer)
             if !mode.developer {
                 HStack {
-                    Text("价签位置表")
+                    Text("标签位置表")
                     Spacer()
                     Text(store.eslLocCount > 0 ? "\(store.eslLocCount) 个（来自后台）" : "还没有：连上后台后自动下载").font(.footnote).foregroundStyle(.secondary)
                 }
             }
         } header: { Text("模式") } footer: {
             Text(mode.developer
-                 ? "开发模式：本机生成磁场图、选会话、导入地图和价签数据、扫房间、实验功能、上传本机版本都能用。"
-                 : "正常模式：只用云端融合（GitHub Actions）出来的地图，带版本号；可以采集（结束后自动上传）、定位、找价签。地图在下面「云端地图」下载 / 更新。")
+                 ? "开发模式：本机生成磁场图、选会话、导入地图和标签数据、扫房间、实验功能、上传本机版本都能用。"
+                 : "正常模式：只用云端融合（GitHub Actions）出来的地图，带版本号；可以采集（结束后自动上传）、定位、找标签。地图在下面「云端地图」下载 / 更新。")
         }
     }
 }

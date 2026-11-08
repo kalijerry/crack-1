@@ -98,7 +98,7 @@ final class MagMapStore: ObservableObject {
         points = points.filter { $0.x <= widthCm && $0.y <= heightCm }
         refreshField()
         save()
-        AppLog.i("地磁", "采用门店地图：\(Int(widthCm)) × \(Int(heightCm)) cm，\(crosses.count) 条通道")
+        AppLog.i("地磁", "采用场地地图：\(Int(widthCm)) × \(Int(heightCm)) cm，\(crosses.count) 条通道")
     }
 
     /// 可走区域（由通道栅格化，首次使用时生成并缓存）。没有通道时为 nil。
@@ -123,7 +123,7 @@ final class MagMapStore: ObservableObject {
         guard !shelves.isEmpty else { return nil }
         let r = ShelfRaycaster(shelves: shelves, widthCm: widthCm, heightCm: heightCm)
         raycasterCache = r
-        AppLog.i("地磁", "货架射线投射：\(r.shelfCount) 个货架")
+        AppLog.i("地磁", "障碍物射线投射：\(r.shelfCount) 个障碍物")
         return r
     }
 

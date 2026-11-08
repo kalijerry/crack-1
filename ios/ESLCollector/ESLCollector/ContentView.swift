@@ -1,85 +1,81 @@
 import SwiftUI
 
-/// 功能开关。现在只做地磁定位，蓝牙相关的页面（蓝牙采集、蓝牙定位、指纹库 / 价签数据）先藏起来；
-/// 代码都还在，改成 true 就回来。
+/// 功能开关。现在只做地磁定位，蓝牙相关的页面（蓝牙采集、蓝牙定位、指纹库 / 标签数据）先藏起来；
+/// 代码都还在，改成 true 就回来（入口在「设置 → 开发者」）。
 enum Features {
     static let bluetooth = false
 }
 
 /// 两种模式：
-/// - 正常模式（默认）：只用云端（GitHub Actions）融合出来的地图（带版本号），能采集（自动上传）、定位、找价签；
-/// - 开发模式：全部功能——本机生成磁场图、选会话、导入各种数据、扫房间、实验功能、上传本机版本。
+/// - 普通模式（默认）：只用云端（GitHub Actions）生成的地图（带版本号），能采集（自动上传）、定位、导航；
+/// - 开发者模式：全部功能——本机生成地图、选采集记录、导入各种数据、扫房间、实验功能、上传本机版本。
 @MainActor
 final class AppMode: ObservableObject {
     static let shared = AppMode()
     @Published var developer: Bool = UserDefaults.standard.bool(forKey: "developerMode") {
         didSet {
             UserDefaults.standard.set(developer, forKey: "developerMode")
-            AppLog.i("应用", developer ? "切到开发模式" : "切到正常模式")
+            AppLog.i("应用", developer ? "切到开发者模式" : "切到普通模式")
             if !developer { MapLibrary.shared.ensureCloudActive() }
         }
     }
 }
 
-struct ContentView: View {
-    @State private var tab = Features.bluetooth ? Tab.collect : Tab.magnetic
-    @ObservedObject private var mode = AppMode.shared
+/// 一级页面。顺序见 docs/uiux-redesign.md：导航 → 建图 → 地图库 → 设置（开发者区域在设置里）。
+enum AppTab: String, Hashable {
+    case navigate, mapping, library, settings
 
-    enum Tab: Hashable {
-        case collect, storeData, live, magnetic, scan, log
+    var title: String {
+        switch self {
+        case .navigate: return "导航"
+        case .mapping: return "建图"
+        case .library: return "地图库"
+        case .settings: return "设置"
+        }
     }
+}
+
+struct ContentView: View {
+    @State private var tab: AppTab = DemoMode.initialTab.flatMap(AppTab.init(rawValue:)) ?? .navigate
+    @ObservedObject private var storeData = StoreDataStore.shared
+    @ObservedObject private var store = MagMapStore.shared
 
     var body: some View {
         TabView(selection: $tab) {
-            if Features.bluetooth {
-                CollectView()
-                    .tabItem { Label("采集", systemImage: "antenna.radiowaves.left.and.right") }
-                    .tag(Tab.collect)
-            }
+            NavigateView(tab: $tab)
+                .tabItem { Label(AppTab.navigate.title, systemImage: "location.north.circle.fill") }
+                .tag(AppTab.navigate)
 
-            StoreDataView()
-                .tabItem { Label("门店数据", systemImage: "square.and.arrow.down") }
-                .tag(Tab.storeData)
+            MappingView(tab: $tab)
+                .tabItem { Label(AppTab.mapping.title, systemImage: "figure.walk.motion") }
+                .tag(AppTab.mapping)
 
-            if Features.bluetooth {
-                LiveLocationView()
-                    .tabItem { Label("蓝牙定位", systemImage: "location.viewfinder") }
-                    .tag(Tab.live)
-            }
+            LibraryView(tab: $tab)
+                .tabItem { Label(AppTab.library.title, systemImage: "map") }
+                .tag(AppTab.library)
 
-            MagneticView()
-                .tabItem { Label("地磁定位", systemImage: "scope") }
-                .tag(Tab.magnetic)
-
-            if mode.developer {
-                RoomScanView()
-                    .tabItem { Label("房间扫描", systemImage: "cube.transparent") }
-                    .tag(Tab.scan)
-            }
-
-            LogView()
-                .tabItem { Label("日志", systemImage: "list.bullet.rectangle") }
-                .tag(Tab.log)
+            SettingsView(tab: $tab)
+                .tabItem { Label(AppTab.settings.title, systemImage: "gearshape") }
+                .tag(AppTab.settings)
         }
         .onChange(of: tab) { newValue in
-            AppLog.tap("切换页面", Self.name(of: newValue))
+            Haptics.selection()
+            AppLog.tap("切换页面", newValue.title)
         }
         .onAppear {
             AppLog.i("应用", "启动")
             _ = MapLibrary.shared          // 第一次用：把现在的地图收进地图库
+            AppEngines.shared.prepareIfNeeded()
         }
-        // 启动时拉一次云端：正常模式自动装上云端正式地图（含已采涂色、价签表），重装 App 后打开就有
-        .task { await CloudMaps.shared.refresh() }
-    }
-
-    private static func name(of tab: Tab) -> String {
-        switch tab {
-        case .collect: return "采集"
-        case .storeData: return "门店数据"
-        case .live: return "蓝牙定位"
-        case .magnetic: return "地磁定位"
-        case .scan: return "房间扫描"
-        case .log: return "日志"
+        // 换地图 / 地图内容更新：所有页面共用的引擎一起刷新
+        .onChange(of: storeData.mapSignature) { _ in
+            Telemetry.shared.mapChanged()
+            AppEngines.shared.survey.coverage.invalidate()
+            AppEngines.shared.refreshForMap()
         }
+        // 通道变了（装上云端新版本）：重建覆盖网格
+        .onChange(of: store.crosses.count) { _ in AppEngines.shared.configureCoverage() }
+        // 启动时拉一次云端：普通模式自动装上云端正式地图，重装 App 后打开就有
+        .task { if !DemoMode.isOn { await CloudMaps.shared.refresh() } }
     }
 }

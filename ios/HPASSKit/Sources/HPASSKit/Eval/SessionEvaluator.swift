@@ -100,7 +100,7 @@ public enum SessionEvaluator {
             var lo = 0, hi = ref.count - 1
             guard hi > 0, t >= ref[0].tMs, t <= ref[hi].tMs else { return nil }
             while hi - lo > 1 { let m = (lo + hi) / 2; if ref[m].tMs <= t { lo = m } else { hi = m } }
-            return ref[lo].tMs - t > 300 ? nil : ref[lo].p
+            return t - ref[lo].tMs > 300 ? nil : ref[lo].p  // 参考点比查询时刻旧 300 ms 以上就不算
         }
         let sh = ShadowLocalizer(field: field, walkable: walkable, useRawMag: !s.raw.isEmpty, configure: configure, seed: seed)
         sh.bleMap = ble

@@ -763,6 +763,7 @@ public final class MagneticLocalizer {
         var u = rng.uniform() * step
         var nx = [Double](repeating: 0, count: m), ny = nx, nb = nx, ns = nx
         var e0 = [Double](repeating: .nan, count: m), e1 = e0, e2 = e0
+        var src = [Int](repeating: 0, count: m)  // 每个新粒子的重采样来源下标
         var j = 0
         for i in 0..<m {
             while j < n - 1 && cum[j] < u { j += 1 }
@@ -771,6 +772,7 @@ public final class MagneticLocalizer {
             nb[i] = bias[j]
             ns[i] = scale[j]
             if j < ema0.count { e0[i] = ema0[j]; e1[i] = ema1[j]; e2[i] = ema2[j] }
+            src[i] = j
             u += step
         }
         let inject = Int(Double(m) * (hasConverged ? config.randomInjectionConverged : config.randomInjection))
@@ -779,13 +781,14 @@ public final class MagneticLocalizer {
             let p = randomPosition()
             nx[i] = p.x
             ny[i] = p.y
-            nb[i] = rng.normal() * config.initialHeadingBiasSigmaDeg * Double.pi / 180
+            nb[i] = headingUnknown ? (rng.uniform() * 2 - 1) * Double.pi : rng.normal() * config.initialHeadingBiasSigmaDeg * Double.pi / 180
             ns[i] = 1 + rng.normal() * config.initialScaleSigma
             e0[i] = .nan; e1[i] = .nan; e2[i] = .nan
         }
         for i in 0..<m {
             var p = Point2(min(max(nx[i], 0), field.widthCm), min(max(ny[i], 0), field.heightCm))
-            if let w = walkable, !w.isWalkable(p) { p = Point2(xs[min(i, n - 1)], ys[min(i, n - 1)]) }
+            // 抖动后落到不可走区域：退回它的重采样来源粒子的位置（不是旧数组里同下标的无关粒子）
+            if let w = walkable, !w.isWalkable(p) { p = Point2(xs[src[i]], ys[src[i]]) }
             nx[i] = p.x
             ny[i] = p.y
         }

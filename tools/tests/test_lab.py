@@ -87,6 +87,60 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(lbl, lab.site_label("site-alpha-secret"))
 
 
+class PreparePublicCacheTests(unittest.TestCase):
+    """转换结果按「转换脚本内容 + 参数」缓存：没变就跳过，变了就重转。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.conv = self.tmp / "conv.py"
+        self.conv.write_text("# v1\n")
+        self.work = self.tmp / "work"
+        self.suite = {"datasets": {"d": {"kind": "ilc", "drift": "pdr"}, "x": {"kind": "private"}}}
+        self.calls = []
+
+    def fake_run(self, cmd, check):
+        self.calls.append(cmd)
+        dst = Path(cmd[3])
+        dst.mkdir(parents=True, exist_ok=True)
+        (dst / "manifest.json").write_text("{}")
+
+    def prep(self):
+        lab.prepare_public(self.suite, self.tmp / "ilc", self.work, conv=self.conv, run=self.fake_run)
+
+    def test_skips_when_unchanged_and_reconverts_on_change(self):
+        self.prep()
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0][4:], ["--drift", "pdr"])
+        self.prep()
+        self.assertEqual(len(self.calls), 1)
+        self.conv.write_text("# v2\n")
+        self.prep()
+        self.assertEqual(len(self.calls), 2)
+        self.suite["datasets"]["d"]["build_max"] = 5
+        self.prep()
+        self.assertEqual(len(self.calls), 3)
+        self.assertEqual(self.calls[2][4:], ["--drift", "pdr", "--build-max", "5"])
+        self.prep()
+        self.assertEqual(len(self.calls), 3)
+
+    def test_old_cache_without_key_is_rebuilt(self):
+        dst = self.work / "public" / "d"
+        dst.mkdir(parents=True)
+        (dst / "manifest.json").write_text("{}")
+        (dst / "stale.txt").write_text("old")
+        self.prep()
+        self.assertEqual(len(self.calls), 1)
+        self.assertFalse((dst / "stale.txt").exists())
+        self.assertTrue((dst / lab.CONVERT_KEY_FILE).exists())
+
+    def test_key_depends_on_script_and_args(self):
+        k1 = lab.convert_key(self.conv, ["--drift", "pdr"])
+        self.assertEqual(k1, lab.convert_key(self.conv, ["--drift", "pdr"]))
+        self.assertNotEqual(k1, lab.convert_key(self.conv, ["--drift", "arkit"]))
+        self.conv.write_text("# changed\n")
+        self.assertNotEqual(k1, lab.convert_key(self.conv, ["--drift", "pdr"]))
+
+
 FAKE_EVAL = textwrap.dedent("""
     import json, sys
     a = sys.argv

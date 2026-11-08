@@ -158,20 +158,40 @@ def site_label(map_id: str) -> str:
 
 # ───────────────────────── 准备数据 ─────────────────────────
 
-def prepare_public(suite: dict, ilc_floor: Path, work: Path):
-    conv = ROOT / "tools" / "bench" / "ilc_convert.py"
+CONVERT_KEY_FILE = ".convert-key"
+
+
+def convert_key(conv: Path, args: list[str]) -> str:
+    """转换缓存键：转换脚本内容 + 转换参数（不含输入 / 输出路径）。脚本或参数一变，缓存的转换结果就作废。"""
+    h = hashlib.sha256(conv.read_bytes())
+    h.update(b"\n" + json.dumps(args).encode())
+    return h.hexdigest()[:16]
+
+
+def prepare_public(suite: dict, ilc_floor: Path, work: Path, conv: Path | None = None, run=subprocess.run):
+    conv = conv or ROOT / "tools" / "bench" / "ilc_convert.py"
     for name, ds in suite["datasets"].items():
         if ds.get("kind") != "ilc":
             continue
         dst = work / "public" / name
-        if (dst / "manifest.json").exists():
-            print(f"[lab] {name} 已转换，跳过")
-            continue
-        cmd = [sys.executable, str(conv), str(ilc_floor), str(dst), "--drift", ds["drift"]]
+        args = ["--drift", ds["drift"]]
         if ds.get("build_max"):
-            cmd += ["--build-max", str(ds["build_max"])]
+            args += ["--build-max", str(ds["build_max"])]
+        key = convert_key(conv, args)
+        key_file = dst / CONVERT_KEY_FILE
+        if (dst / "manifest.json").exists():
+            old = key_file.read_text().strip() if key_file.exists() else ""
+            if old == key:
+                print(f"[lab] {name} 已转换（{key}），跳过")
+                continue
+            print(f"[lab] {name} 的转换脚本或参数变了（{old or '无记录'} → {key}），重新转换")
+        if dst.exists():
+            shutil.rmtree(dst)
+        cmd = [sys.executable, str(conv), str(ilc_floor), str(dst)] + args
         print("[lab] " + " ".join(cmd[1:]))
-        subprocess.run(cmd, check=True)
+        run(cmd, check=True)
+        dst.mkdir(parents=True, exist_ok=True)
+        key_file.write_text(key + "\n")
 
 
 def _req(url, token, path):

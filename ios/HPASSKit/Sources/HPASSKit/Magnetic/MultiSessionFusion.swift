@@ -34,6 +34,8 @@ public final class MultiSessionFusion {
         public var tracks: [[(tMs: Int64, p: Point2)]]
         /// 每个会话的样本（时间、位置、减掉偏移后的磁场），质量筛选用
         public var samples: [[(tMs: Int64, p: Point2, f: MagneticFeature)]]
+        /// 每个会话的建图说明（对齐、丢样本原因、累积进图的样本数、减掉的偏移、警告），和单会话 SurveyMapBuilder.add 的报告同一种
+        public var reports: [SurveySessionReport] = []
     }
 
     public let map: StoreMap
@@ -142,14 +144,21 @@ public final class MultiSessionFusion {
         // 4. 减偏移累积
         let builder = MagneticFieldBuilder(widthCm: map.width, heightCm: map.height, cellCm: cellCm)
         var infos: [SessionInfo] = []
+        var reports: [SurveySessionReport] = []
         for (s, p) in prepared.enumerated() {
             let o = MagneticFeature(total: offsets[s][0], vertical: offsets[s][1], horizontal: offsets[s][2])
-            for (pt, f) in p.samples { _ = builder.add(position: pt, feature: f - o) }
+            var used = 0
+            for (pt, f) in p.samples where builder.add(position: pt, feature: f - o) { used += 1 }
             var ov: [String: Int] = [:]
             for e in edges where e.i == s || e.j == s { ov[prepared[e.i == s ? e.j : e.i].rep.name] = e.common }
             var w = p.rep.warnings
             if p.samples.isEmpty { w.append("没有可用样本（检查起点和朝向）") }
             else if ov.isEmpty && n > 1 { w.append("和别的会话都没有足够重叠（< \(minCommonCells) 个共同格子），整体偏移没法对齐：补采一段和相邻分片重叠的通道") }
+            var rp = p.rep
+            rp.samplesUsed = used
+            rp.offsetUT = comps[comp[s]].count > 1 ? o : nil
+            rp.warnings = w
+            reports.append(rp)
             infos.append(SessionInfo(name: p.rep.name, samples: p.samples.count,
                                      cells: p.snap.counts.filter { $0 >= 5 }.count,
                                      offset: offsets[s].map { ($0 * 100).rounded() / 100 },
@@ -160,6 +169,7 @@ public final class MultiSessionFusion {
                       samples: prepared.enumerated().map { s, p in
                           let o = MagneticFeature(total: offsets[s][0], vertical: offsets[s][1], horizontal: offsets[s][2])
                           return zip(p.rep.sampleTimes, p.samples).map { ($0, $1.0, $1.1 - o) }
-                      })
+                      },
+                      reports: reports)
     }
 }

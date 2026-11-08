@@ -44,19 +44,41 @@ private func pct(_ a: [Double], _ q: Double) -> Double? {
 }
 
 public enum SessionEvaluator {
-    /// 用建图会话生成磁场图 + 蓝牙指纹（和手机上「生成磁场图」同一套）
-    public static func buildMaps(sessions: [URL], map: StoreMap) throws -> (field: MagneticFieldMap, ble: BLEFingerprintMap?, reports: [SurveySessionReport]) {
-        let b = SurveyMapBuilder(widthCm: map.width, heightCm: map.height, crosses: map.crosses)
+    /// 建图方式
+    public enum MapBuild {
+        /// 和云端出图（hpass-build）同一套：MultiSessionFusion 各会话单独统计，再一次性解所有会话的整体偏移（加权最小二乘），
+        /// 和会话顺序无关
+        case fusion
+        /// 手机上「生成磁场图」那套：会话按顺序一个个加，每个只和已经加进去的数据对齐偏移（结果和顺序有关）
+        case sequential
+    }
+
+    /// 用建图会话生成磁场图 + 蓝牙指纹。默认和云端出图同一套磁场融合（见 MapBuild）；蓝牙指纹两种方式一样，
+    /// 用各会话对齐后的轨迹
+    public static func buildMaps(sessions: [URL], map: StoreMap, mode: MapBuild = .fusion) throws -> (field: MagneticFieldMap, ble: BLEFingerprintMap?, reports: [SurveySessionReport]) {
         let bb = BLEFingerprintBuilder(widthCm: map.width, heightCm: map.height)
-        var reps: [SurveySessionReport] = []
-        for u in sessions {
-            let s = try SurveySessionLoader.load(u)
-            let r = b.add(s)
-            _ = bb.add(samples: SurveySessionLoader.loadBLE(u), track: r.track)
-            reps.append(r)
+        switch mode {
+        case .sequential:
+            let b = SurveyMapBuilder(widthCm: map.width, heightCm: map.height, crosses: map.crosses)
+            var reps: [SurveySessionReport] = []
+            for u in sessions {
+                let s = try SurveySessionLoader.load(u)
+                let r = b.add(s)
+                _ = bb.add(samples: SurveySessionLoader.loadBLE(u), track: r.track)
+                reps.append(r)
+            }
+            let ble = bb.build()
+            return (b.build(), ble.tags.count >= 20 ? ble : nil, reps)
+        case .fusion:
+            var loaded: [SurveySession] = []
+            for u in sessions { loaded.append(try SurveySessionLoader.load(u)) }
+            let r = MultiSessionFusion(map: map).fuse(loaded)
+            for (k, u) in sessions.enumerated() where k < r.tracks.count {
+                _ = bb.add(samples: SurveySessionLoader.loadBLE(u), track: r.tracks[k])
+            }
+            let ble = bb.build()
+            return (r.field, ble.tags.count >= 20 ? ble : nil, r.reports)
         }
-        let ble = bb.build()
-        return (b.build(), ble.tags.count >= 20 ? ble : nil, reps)
     }
 
     public static func walkable(_ map: StoreMap) -> WalkableMap? {

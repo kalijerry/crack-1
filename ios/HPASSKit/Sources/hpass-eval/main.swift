@@ -32,8 +32,13 @@ do {
     guard !build.isEmpty, !test.isEmpty else { print("--build 和 --test 都要给"); exit(2) }
     let overlap = Set(build.map(\.standardizedFileURL)).intersection(test.map(\.standardizedFileURL))
     if !overlap.isEmpty { print("⚠️ 有会话同时在建图和测试里：\(overlap.map(\.lastPathComponent))，结果会偏乐观") }
-    let (field, bleMap, reps) = try SessionEvaluator.buildMaps(sessions: build, map: map)
-    for r in reps { print("建图 \(r.name)：样本 \(r.samplesUsed)" + (r.warnings.isEmpty ? "" : "，⚠️ \(r.warnings.joined(separator: "；"))")) }
+    // 磁场图默认和云端出图同一套（各会话偏移一起解）；--map-build sequential = 手机上按顺序逐个对齐的老办法
+    let mapMode: SessionEvaluator.MapBuild = arg("--map-build") == "sequential" ? .sequential : .fusion
+    let (field, bleMap, reps) = try SessionEvaluator.buildMaps(sessions: build, map: map, mode: mapMode)
+    for r in reps {
+        let off = r.offsetUT.map { String(format: "，偏移 |B| %+.1f Bz %+.1f Bh %+.1f µT", $0.total, $0.vertical, $0.horizontal) } ?? ""
+        print("建图 \(r.name)：样本 \(r.samplesUsed)" + off + (r.warnings.isEmpty ? "" : "，⚠️ \(r.warnings.joined(separator: "；"))"))
+    }
     print("磁场图：有数据 \(field.coveredCells) 格；蓝牙指纹：\(bleMap.map { "\($0.tags.count) 个标签" } ?? "无")")
     if CommandLine.arguments.contains("--old-ble") { BLEAssist.defaultTagRanges = false }
     if CommandLine.arguments.contains("--no-pregate") { BLEAssist.defaultPreGate = false }

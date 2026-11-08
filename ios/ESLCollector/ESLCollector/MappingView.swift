@@ -140,6 +140,21 @@ struct MappingView: View {
         }
     }
 
+    /// 准备页的小地图：当前覆盖情况和本次区域，不能操作
+    private var previewMap: some View {
+        MapCanvas(map: AppEngines.shared.canvasMap,
+                  fingerprints: [],
+                  showFingerprints: false,
+                  paintLayer: survey.coverage.paintLayer,
+                  zoneSegments: survey.coverage.zoneSegments,
+                  zoneEntry: survey.coverage.zoneEntry,
+                  zoneLabels: survey.coverage.zoneLabels,
+                  productStyle: true,
+                  showsResetButton: false,
+                  accessibilitySummary: "建图进度预览，已覆盖 \(Int(paintFraction * 100))%")
+            .allowsHitTesting(false)
+    }
+
     private var legend: some View {
         HStack(spacing: DS.Spacing.l) {
             legendDot(DS.Palette.success, "已覆盖")

@@ -172,6 +172,9 @@ jobs:
           python-version: "3.12"
       - name: Tests
         run: python -m unittest discover -s tools/tests -v
+      # 单独列出来：RoomPlan 扫描 map.json → imdf_export → imdf_convert 读回，可走面积 / 门 / 连接体 / 名称一致
+      - name: IMDF 导出往返校验
+        run: python -m unittest tools.tests.test_imdf_export -v
 
   telemetry:
     name: Telemetry worker (syntax)

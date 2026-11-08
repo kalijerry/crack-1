@@ -155,6 +155,28 @@ textarea { width: 100%; min-height: 160px; font: 12px/1.4 var(--font-mono); colo
       <textarea id="json" readonly spellcheck="false" aria-label="地图 JSON"></textarea>
     </details>
   </section>
+
+  <section class="card" id="geoCard">
+    <h2>地理对齐（geoRef）</h2>
+    <p class="hint" style="margin-top:0">载入扫描生成的 map.json，在平面图上点两个认得出的位置（大门、楼角），各填上它的真实经纬度，就能算出地图和经纬度的对应关系，修正入口 GPS 的误差。导出 IMDF 需要它。</p>
+    <div class="row">
+      <label class="btn" for="gImp" style="display:inline-flex;align-items:center">载入地图 JSON</label>
+      <input type="file" id="gImp" accept=".json,application/json" hidden>
+      <span id="gInfo" class="empty">还没有载入地图。</span>
+    </div>
+    <canvas id="gcv" role="img" aria-label="地图平面图，点两下放 A、B 两个对准点，按住拖动可以移动" style="aspect-ratio:auto;height:320px;margin-top:10px;cursor:crosshair"></canvas>
+    <p class="hint">第一下放 A，第二下放 B；之后按住 A 或 B 拖动。坐标可以从地图 App 里长按复制（「纬度, 经度」）。</p>
+    <div class="row">
+      <label class="f" for="gA" style="flex-basis:220px">A 点的纬度, 经度<input type="text" id="gA" placeholder="31.230400, 121.473700" autocomplete="off" inputmode="decimal"></label>
+      <label class="f" for="gB" style="flex-basis:220px">B 点的纬度, 经度<input type="text" id="gB" placeholder="31.230500, 121.473900" autocomplete="off" inputmode="decimal"></label>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button type="button" class="primary" id="gSolve">计算 geoRef</button>
+      <button type="button" id="gSave">保存修正后的 JSON</button>
+      <button type="button" id="gCopy">复制 JSON</button>
+    </div>
+    <p id="gOut" class="hint" aria-live="polite"></p>
+  </section>
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
@@ -544,6 +566,212 @@ textarea { width: 100%; min-height: 160px; font: 12px/1.4 var(--font-mono); colo
   new MutationObserver(draw).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
   resize();
   refresh();
+})();
+</script>
+<script>
+// 地理对齐：两点对准求 geoRef。公式与 tools/venue/georef.py、HPASSKit GeoRef.swift 一致：
+//   dx, dy = (x − marginCm)/100, (y − marginCm)/100；e = dx·cos r − dy·sin r；s = dx·sin r + dy·cos r
+//   lon = lon0 + e/mPerDegLon；lat = lat0 − s/mPerDegLat；r = rotationDeg（地图 +x 的方位角 = 90° + r）
+(function () {
+  "use strict";
+  var M_LAT = Math.PI * 6378137 / 180;
+  var $ = function (id) { return document.getElementById(id); };
+  var cv = $("gcv"), ctx = cv.getContext("2d");
+  var doc = null, fileName = "map.json";
+  var pts = { A: null, B: null }, drag = null;
+  var view = { s: 1, ox: 0, oy: 0 };
+
+  function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+  function toast(msg) { var t = $("toast"); if (!t) return; t.textContent = msg; t.classList.add("on"); setTimeout(function () { t.classList.remove("on"); }, 2600); }
+  function wrap(d) { while (d <= -180) d += 360; while (d > 180) d -= 360; return d; }
+  function rad(d) { return d * Math.PI / 180; }
+
+  function toLonLat(g, x, y) {
+    var m = g.marginCm || 0, r = rad(g.rotationDeg || 0);
+    var dx = (x - m) / 100, dy = (y - m) / 100;
+    var e = dx * Math.cos(r) - dy * Math.sin(r), s = dx * Math.sin(r) + dy * Math.cos(r);
+    return [g.lon0 + e / g.mPerDegLon, g.lat0 - s / g.mPerDegLat];
+  }
+
+  // p1/p2：地图 cm；ll1/ll2：[lon, lat]。返回 {geoRef, scale}
+  function fromTwoPoints(p1, ll1, p2, ll2, margin) {
+    var latRef = (ll1[1] + ll2[1]) / 2;
+    var g = { lon0: 0, lat0: 0, marginCm: margin, mPerDegLon: M_LAT * Math.cos(rad(latRef)), mPerDegLat: M_LAT, rotationDeg: 0 };
+    var e = (ll2[0] - ll1[0]) * g.mPerDegLon, s = (ll1[1] - ll2[1]) * g.mPerDegLat;
+    var mx = (p2.x - p1.x) / 100, my = (p2.y - p1.y) / 100, dm = Math.hypot(mx, my);
+    if (dm < 1e-6) throw new Error("两个点在地图上重合");
+    g.rotationDeg = wrap((Math.atan2(s, e) - Math.atan2(my, mx)) * 180 / Math.PI);
+    var base = toLonLat(g, p1.x, p1.y);
+    g.lon0 = ll1[0] - base[0];
+    g.lat0 = ll1[1] - base[1];
+    return { geoRef: g, scale: Math.hypot(e, s) / dm };
+  }
+
+  // 「纬度, 经度」（地图 App 复制出来的顺序）→ [lon, lat]
+  function parseLatLon(text) {
+    var v = (text.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+    if (v.length < 2) return null;
+    var lat = v[0], lon = v[1];
+    if (Math.abs(lat) > 90 && Math.abs(lon) <= 90) { var t = lat; lat = lon; lon = t; }
+    if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+    return [lon, lat];
+  }
+
+  function flatPolys(list) {
+    return (list || []).map(function (f) { var p = []; for (var i = 0; i + 1 < f.length; i += 2) p.push({ x: f[i], y: f[i + 1] }); return p; })
+      .filter(function (p) { return p.length >= 3; });
+  }
+
+  function shapes() {
+    if (!doc) return { walk: [], obst: [], lines: [] };
+    var walk = flatPolys(doc.floorPolygons), obst = flatPolys(doc.obstaclePolygons), lines = [];
+    (doc.mapElementList || []).forEach(function (e) {
+      if (["MapWall", "MapDoor", "MapOpening", "MapWindow"].indexOf(e.shapeType) < 0) return;
+      var r = rad(e.rotation || 0), w = (e.width || 0) / 2;
+      lines.push({ t: e.shapeType, a: { x: e.x - Math.cos(r) * w, y: e.y - Math.sin(r) * w }, b: { x: e.x + Math.cos(r) * w, y: e.y + Math.sin(r) * w } });
+    });
+    return { walk: walk, obst: obst, lines: lines };
+  }
+
+  function resize() {
+    var dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    var W = doc ? (doc.width || 1000) : 1000, H = doc ? (doc.height || 1000) : 1000;
+    view.s = Math.min((w - 16) / W, (h - 16) / H);
+    view.ox = (w - W * view.s) / 2; view.oy = (h - H * view.s) / 2;
+    draw();
+  }
+  function px(p) { return { x: view.ox + p.x * view.s, y: view.oy + p.y * view.s }; }
+  function cm(x, y) { return { x: (x - view.ox) / view.s, y: (y - view.oy) / view.s }; }
+
+  function draw() {
+    var w = cv.clientWidth, h = cv.clientHeight;
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = cssVar("--bg"); ctx.fillRect(0, 0, w, h);
+    var sh = shapes();
+    function poly(p, fill) { ctx.beginPath(); p.forEach(function (q, i) { var v = px(q); i ? ctx.lineTo(v.x, v.y) : ctx.moveTo(v.x, v.y); }); ctx.closePath(); ctx.fillStyle = fill; ctx.fill(); }
+    ctx.globalAlpha = 0.35; sh.walk.forEach(function (p) { poly(p, cssVar("--sel")); });
+    ctx.globalAlpha = 0.5; sh.obst.forEach(function (p) { poly(p, cssVar("--muted")); });
+    ctx.globalAlpha = 1;
+    sh.lines.forEach(function (l) {
+      var a = px(l.a), b = px(l.b);
+      ctx.strokeStyle = l.t === "MapWall" ? cssVar("--ink") : cssVar("--accent");
+      ctx.lineWidth = l.t === "MapWall" ? 2 : 3;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    });
+    ["A", "B"].forEach(function (k) {
+      if (!pts[k]) return;
+      var v = px(pts[k]);
+      ctx.fillStyle = cssVar("--accent"); ctx.beginPath(); ctx.arc(v.x, v.y, 9, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = cssVar("--accent-ink"); ctx.font = "600 11px " + cssVar("--font-body");
+      ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(k, v.x, v.y);
+    });
+    if (doc && doc.geoRef) {      // 北箭头（按当前 geoRef）
+      var r = rad(doc.geoRef.rotationDeg || 0), cx = w - 24, cy = 28, nx = -Math.sin(r), ny = -Math.cos(r);
+      ctx.strokeStyle = cssVar("--ink"); ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(cx - nx * 12, cy - ny * 12); ctx.lineTo(cx + nx * 12, cy + ny * 12); ctx.stroke();
+      ctx.fillStyle = cssVar("--ink"); ctx.font = "600 11px " + cssVar("--font-body"); ctx.textAlign = "center"; ctx.fillText("N", cx + nx * 20, cy + ny * 20);
+    }
+  }
+
+  function local(e) { var r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+  function near(p) {
+    var best = null, bd = 22;
+    ["A", "B"].forEach(function (k) { if (!pts[k]) return; var v = px(pts[k]), d = Math.hypot(v.x - p.x, v.y - p.y); if (d < bd) { bd = d; best = k; } });
+    return best;
+  }
+  function prefill(k) {
+    if (!doc || !doc.geoRef || !pts[k]) return;
+    var ll = toLonLat(doc.geoRef, pts[k].x, pts[k].y);
+    $("g" + k).placeholder = ll[1].toFixed(7) + ", " + ll[0].toFixed(7) + "（按现在的 geoRef）";
+  }
+
+  cv.addEventListener("pointerdown", function (e) {
+    if (!doc) { toast("先载入地图 JSON"); return; }
+    var p = local(e), k = near(p);
+    if (!k) { k = !pts.A ? "A" : (!pts.B ? "B" : null); if (k) { pts[k] = cm(p.x, p.y); prefill(k); draw(); } }
+    if (k) { drag = k; cv.setPointerCapture(e.pointerId); e.preventDefault(); }
+  });
+  cv.addEventListener("pointermove", function (e) { if (!drag) return; var p = local(e); pts[drag] = cm(p.x, p.y); draw(); });
+  cv.addEventListener("pointerup", function () { if (drag) prefill(drag); drag = null; });
+  cv.addEventListener("pointercancel", function () { drag = null; });
+
+  $("gImp").addEventListener("change", function (e) {
+    var f = e.target.files && e.target.files[0];
+    if (!f) return;
+    f.text().then(function (t) {
+      var d = JSON.parse(t);
+      if (!d || typeof d !== "object" || (!d.floorPolygons && !d.units && !d.mapElementList)) throw new Error("不是地图 JSON");
+      doc = d; fileName = f.name || "map.json"; pts = { A: null, B: null };
+      $("gA").placeholder = $("gB").placeholder = "";
+      $("gInfo").textContent = (d.floorName || fileName) + "：" + Math.round((d.width || 0) / 100) + " × " + Math.round((d.height || 0) / 100) + " m，"
+        + (d.geoRef ? "已有 geoRef（旋转 " + (d.geoRef.rotationDeg || 0).toFixed(1) + "°）" : "还没有 geoRef");
+      $("gOut").textContent = "";
+      resize();
+    }).catch(function (err) { toast("读不了这个文件：" + err.message); });
+    e.target.value = "";
+  });
+
+  $("gSolve").addEventListener("click", function () {
+    if (!doc) { toast("先载入地图 JSON"); return; }
+    if (!pts.A || !pts.B) { toast("先在图上放 A、B 两个点"); return; }
+    var a = parseLatLon($("gA").value), b = parseLatLon($("gB").value);
+    $("gA").classList.toggle("bad", !a); $("gB").classList.toggle("bad", !b);
+    if (!a || !b) { toast("经纬度格式：纬度, 经度"); return; }
+    try {
+      var res = fromTwoPoints(pts.A, a, pts.B, b, 0);
+      var g = res.geoRef;
+      ["lon0", "lat0"].forEach(function (k) { g[k] = Math.round(g[k] * 1e9) / 1e9; });
+      g.rotationDeg = Math.round(g.rotationDeg * 1000) / 1000;
+      var old = doc.geoRef;
+      doc.geoRef = g;
+      doc.geoRefSource = "two-point";
+      var msg = "旋转 " + g.rotationDeg.toFixed(1) + "°，尺度比 " + res.scale.toFixed(3);
+      if (old) {
+        var o = toLonLat(old, pts.A.x, pts.A.y);
+        msg += "；A 点比原来的 geoRef 移动了 " + Math.hypot((o[0] - a[0]) * g.mPerDegLon, (o[1] - a[1]) * g.mPerDegLat).toFixed(1) + " m";
+      }
+      if (Math.abs(res.scale - 1) > 0.05) msg += "。尺度差了 " + Math.round(Math.abs(res.scale - 1) * 100) + "%，多半是点放错了或经纬度填反了，检查一下";
+      $("gOut").textContent = msg;
+      draw();
+    } catch (err) { toast(err.message); }
+  });
+
+  function text() { return JSON.stringify(doc, null, 1); }
+  function outName() { return fileName.replace(/\.json$/i, "") + ".geo.json"; }
+
+  $("gSave").addEventListener("click", function () {
+    if (!doc) { toast("先载入地图 JSON"); return; }
+    var t = text(), name = outName();
+    var blobDownload = function () {
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([t], { type: "application/json" }));
+      a.download = name; document.body.appendChild(a); a.click();
+      setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+      toast("已下载 " + name);
+    };
+    if (window.claude && window.claude.use) {
+      window.claude.use("downloads").then(function (d) {
+        if (!d) throw { code: "unavailable" };
+        return d.save({ filename: name, data: t });
+      }).then(function () { toast("已交给系统保存，文件名 " + name); })
+        .catch(function (err) { if (err && err.code === "declined") toast("已取消保存"); else blobDownload(); });
+    } else {
+      try { blobDownload(); } catch (e) { toast("下载失败，请用「复制 JSON」"); }
+    }
+  });
+
+  $("gCopy").addEventListener("click", function () {
+    if (!doc) { toast("先载入地图 JSON"); return; }
+    var t = text();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(t).then(function () { toast("已复制修正后的 JSON"); }, function () { toast("复制失败"); });
+    } else { toast("这个浏览器不支持复制"); }
+  });
+
+  window.addEventListener("resize", resize);
+  if (window.matchMedia) window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
+  resize();
 })();
 </script>
 

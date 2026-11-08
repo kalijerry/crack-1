@@ -19,15 +19,16 @@ def square(x0, y0, x1, y1):
     return [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]
 
 
-# 外轮廓：经纬度式的坐标（外包框 [100, 110] × [50, 55]），映射到 20 m × 10 m；中间一个单元（店铺）
+# 外轮廓：经纬度式的坐标（外包框 [100, 110] × [50, 55]），映射到 20 m × 10 m；一个偏在左下角的单元（店铺），
+# 这样 x 或 y 翻转了都会把它挪到别处（单元放在正中间时翻不翻转结果一样，测不出方向）
 GEO = {
     "type": "FeatureCollection",
     "features": [
         {"type": "Feature", "properties": {"type": "floor", "name": "F1"},
          "geometry": {"type": "MultiPolygon", "coordinates": [[square(100, 50, 110, 55)]]}},
-        # 单元：外包框里 x 4～6、y 1～4 → 地图 x 8～12 m、y 2～8 m
+        # 单元：外包框里 x 1～3、y 1～2 → 地图 x 2～6 m、y 2～4 m（y 翻转会落到 y 6～8 m，x 翻转会落到 x 14～18 m）
         {"type": "Feature", "properties": {"name": "shop"},
-         "geometry": {"type": "Polygon", "coordinates": [square(104, 51, 106, 54)]}},
+         "geometry": {"type": "Polygon", "coordinates": [square(101, 51, 103, 52)]}},
     ],
 }
 W, H = 2000, 1000
@@ -42,17 +43,31 @@ class GeojsonWalkableTests(unittest.TestCase):
         occ, outline = conv.geojson_walkable(GEO, W, H, cell=50, dilate_cm=0)
         self.assertEqual((len(occ), len(occ[0])), (20, 40))
         self.assertTrue(all(all(r) for r in outline))           # 外轮廓 = 整个外包框
-        self.assertTrue(walk(occ, 50, 300, 500))                  # 店铺左边的走廊
-        self.assertTrue(walk(occ, 50, 1000, 100))                 # 店铺下方（y 小）的走廊：y 不翻转
-        self.assertFalse(walk(occ, 50, 1000, 500))                # 店铺里
-        self.assertFalse(walk(occ, 50, 825, 225))
+        self.assertFalse(walk(occ, 50, 400, 300))                 # 店铺里（地图 x 2～6 m、y 2～4 m）
+        self.assertFalse(walk(occ, 50, 225, 225))
+        self.assertTrue(walk(occ, 50, 1000, 500))                 # 中间的走廊
+        # 方向：y 翻转时店铺在 y 6～8 m、x 翻转时在 x 14～18 m，这两处都必须能走
+        self.assertTrue(walk(occ, 50, 400, 700))
+        self.assertTrue(walk(occ, 50, 1600, 300))
         area = sum(map(sum, occ)) * 0.25
-        self.assertAlmostEqual(area, 200 - 4 * 6, delta=1)        # 20×10 m 减去 4×6 m 的店铺
+        self.assertAlmostEqual(area, 200 - 4 * 2, delta=1)        # 20×10 m 减去 4×2 m 的店铺
+
+    def test_flipped_mapping_would_be_caught(self):
+        """对照：把单元的 y（或 x）在外包框里镜像后再栅格化，上面「必须能走」的点就落进店铺了"""
+        def mirrored(fx, fy):
+            g = json.loads(json.dumps(GEO))
+            ring = g["features"][1]["geometry"]["coordinates"][0]
+            g["features"][1]["geometry"]["coordinates"][0] = [[210 - x if fx else x, 105 - y if fy else y] for x, y in ring]
+            return conv.geojson_walkable(g, W, H, cell=50, dilate_cm=0)[0]
+        self.assertFalse(walk(mirrored(False, True), 50, 400, 700))
+        self.assertFalse(walk(mirrored(True, False), 50, 1600, 300))
 
     def test_dilation_reaches_into_units_by_the_given_distance(self):
+        before, _ = conv.geojson_walkable(GEO, W, H, cell=50, dilate_cm=0)
         occ, _ = conv.geojson_walkable(GEO, W, H, cell=50, dilate_cm=75)
-        self.assertTrue(walk(occ, 50, 825, 500))                  # 店铺边往里 0.25 m：放宽后能走
-        self.assertFalse(walk(occ, 50, 1000, 500))                # 店铺中央仍然不能走
+        self.assertFalse(walk(before, 50, 225, 300))
+        self.assertTrue(walk(occ, 50, 225, 300))                  # 店铺边往里 0.25 m：放宽后能走
+        self.assertFalse(walk(occ, 50, 400, 300))                 # 店铺中央仍然不能走
 
     def test_merged_rectangles_cover_exactly_the_walkable_cells(self):
         occ, _ = conv.geojson_walkable(GEO, W, H, cell=50, dilate_cm=75)
@@ -69,7 +84,7 @@ class GeojsonWalkableTests(unittest.TestCase):
 
     def test_inside_share(self):
         occ, _ = conv.geojson_walkable(GEO, W, H, cell=50, dilate_cm=0)
-        self.assertAlmostEqual(conv.inside_share(occ, 50, [(300, 500), (1000, 500), (-10, 5), (5000, 5)]), 0.25)
+        self.assertAlmostEqual(conv.inside_share(occ, 50, [(300, 500), (400, 300), (-10, 5), (5000, 5)]), 0.25)
 
     def test_missing_floor_outline_is_an_error(self):
         with self.assertRaises(ValueError):

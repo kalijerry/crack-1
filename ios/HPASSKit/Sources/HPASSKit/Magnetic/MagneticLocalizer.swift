@@ -84,7 +84,9 @@ public struct MagneticConfig {
 
     /// 通道约束：新位置不在可走区域、或中途穿过货架时的对数惩罚。
     public var blockedPenalty: Double = -4
-    /// 整步撞墙时贴墙滑（先只走 x，再只走 y），滑得过去就不原地不动。false = 原有行为。跟踪配置档打开。
+    /// 整步撞墙时贴墙滑（先只走 x，再只走 y，按地图坐标轴），滑得过去就不原地不动。false = 原有行为。
+    /// 产品（跟踪配置档）不打开：只在公开基准上量过（和不滑差不多），斜的货架 / 走廊上按坐标轴滑不合适，自采数据也没量过；
+    /// 评估用 hpass-eval --wall-slide 打开对比。
     public var wallSlide = false
     /// 贴墙滑过去的粒子的对数惩罚（比原地不动轻：方向偏了一点，但不是穿墙）。
     public var wallSlidePenalty: Double = -1

@@ -22,7 +22,6 @@ public enum OdometrySource: String, CaseIterable {
 ///   新粒子只撒在圆里，不罚没数据的粒子；走了 `localRecoveryGlobalAfterCm` 还没找回就改回全图找。
 ///   外部判定定错（区域观测 declareLost）直接全图找，不围着被否定的位置找；
 /// - 运动来源中途变了（视觉里程计没对齐 / 跟丢时计步顶上），调用方用 `MagneticLocalizer.setOdometry` 换参数；
-/// - 整步撞墙时贴墙滑（`wallSlide`）：推算方向偏一点就顶到墙 / 店铺边的粒子不原地卡住；
 /// - 定到之后地磁只占一部分（`convergedMagWeight`），并按粒子落在有数据格子上的权重比例再打折
 ///   （`coverageGatedMagWeight`）：一段没采过的路上完全靠推算；
 /// - 地磁似然按实测残差标定（`TrackingProfile.observationSigmaFloorUT` / `magneticCorrelationCm`），
@@ -76,8 +75,6 @@ public extension MagneticConfig {
         c.localRecovery = true
         c.localRecoveryGlobalAfterCm = TrackingProfile.localRecoveryGlobalAfterCm
         c.coverageGatedMagWeight = true
-        // 推算方向偏一点就会顶到墙 / 店铺边：贴墙滑过去，不原地卡住（只影响有可走区域的地图）
-        c.wallSlide = true
         // 似然标定（只在跟踪档里；冷启动和全局默认值不变）
         c.observationSigmaFloorUT = TrackingProfile.observationSigmaFloorUT
         c.magneticCorrelationCm = TrackingProfile.magneticCorrelationCm

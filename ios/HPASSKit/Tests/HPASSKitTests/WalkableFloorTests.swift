@@ -57,7 +57,7 @@ final class WalkableFloorTests: XCTestCase {
             return est.position
         }
         XCTAssertFalse(MagneticConfig().wallSlide)                 // 默认是原有行为
-        XCTAssertTrue(MagneticConfig.tracking(odometry: .pdr).wallSlide)
+        XCTAssertFalse(MagneticConfig.tracking(odometry: .pdr).wallSlide)      // 产品跟踪档也不打开（只评估时 --wall-slide）
         let stuck = run(slide: false), slid = run(slide: true)
         XCTAssertLessThan(stuck.x, slid.x - 600, "不滑 \(stuck.x)，滑 \(slid.x)")
         XCTAssertGreaterThan(slid.x, 2600)                          // 30 m × cos 12° ≈ 29 m 的 x 分量，起点 2 m

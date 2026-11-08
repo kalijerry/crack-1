@@ -118,6 +118,7 @@ do {
                 if let w = arg("--win").flatMap(Double.init) { cfg.offsetWindowUpdates = w }
                 if let w = arg("--missing").flatMap(Double.init) { cfg.missingDataPenalty = w }
                 if CommandLine.arguments.contains("--adaptive") { cfg.adaptiveMagWeight = true }
+                if CommandLine.arguments.contains("--wall-slide") { cfg.wallSlide = true }
                 // 似然标定的试验开关（默认不给 = 用配置档里的值）
                 if let v = arg("--obs-sigma-floor").flatMap(Double.init) { cfg.observationSigmaFloorUT = v }
                 if let v = arg("--mag-corr-cm").flatMap(Double.init) { cfg.magneticCorrelationCm = v }

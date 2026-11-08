@@ -4,7 +4,7 @@ import Foundation
 
 /// 一条 BLE 广播读数。
 public struct BLEReading {
-    /// 价签 ID（与 eslToShelf 的 key 一致）
+    /// 标签 ID（与 tagToShelf 的 key 一致）
     public var tagId: String
     /// 原始 RSSI（dBm，未做跨机型校正）
     public var rssi: Int
@@ -73,7 +73,7 @@ public struct PositioningConfig {
 /// 一次定位结果。
 public struct PositionEstimate {
     public var tMs: Int64
-    /// 厘米，门店地图坐标系
+    /// 厘米，场地地图坐标系
     public var position: Point2
     /// 后验最大的指纹点
     public var pointId: String?
@@ -177,15 +177,15 @@ struct FPPointIndex {
 
     var models: [PointModel] = []
     var idToIndex: [String: Int] = [:]
-    var eslToShelf: [String: String] = [:]
+    var tagToShelf: [String: String] = [:]
 
     // 建索引时顺手记下的数据问题，供 validate() 使用
     private(set) var duplicateIds: [String] = []
     private(set) var danglingNeighbours: [(point: String, neighbour: String)] = []
     private(set) var rawPoints: [FingerprintPoint] = []
 
-    init(points: [FingerprintPoint], eslToShelf: [String: String], missExpectThreshold: Double) {
-        self.eslToShelf = eslToShelf
+    init(points: [FingerprintPoint], tagToShelf: [String: String], missExpectThreshold: Double) {
+        self.tagToShelf = tagToShelf
         self.rawPoints = points
 
         // 1) 去重：同一个 id 只保留第一条（后面的记入 duplicateIds）
@@ -255,10 +255,10 @@ struct FPPointIndex {
     /// 窗口内读数 → 每 (货架, type) 一条观测。
     ///
     /// 聚合策略（两级）：
-    /// 1. 同一个价签的多条读数取**均值** —— 压掉毫秒级的快衰落（Rayleigh fading）；
-    /// 2. 同一个货架上的多个价签取**最大值** —— 一个货架往往挂几十个价签，
+    /// 1. 同一个标签的多条读数取**均值** —— 压掉毫秒级的快衰落（Rayleigh fading）；
+    /// 2. 同一个货架上的多个标签取**最大值** —— 一个货架往往挂几十个标签，
     ///    最强的那个代表「离该货架最近、遮挡最少」的路径，和「货架级指纹」的物理含义一致；
-    ///    取均值会被货架另一端的远价签拉低，而且结果强依赖该货架在本窗口被扫到几个价签，
+    ///    取均值会被货架另一端的远标签拉低，而且结果强依赖该货架在本窗口被扫到几个标签，
     ///    不同机型/不同扫描占空比下不稳定。
     ///    代价：max 对噪声有正偏（约 +0.5~1 dB），由 sigma 下限吸收。
     ///
@@ -275,7 +275,7 @@ struct FPPointIndex {
         for r in readings {
             // iOS 上 127 表示 RSSI 不可用；顺手挡掉明显非法值
             if r.rssi >= 0 || r.rssi < -127 { continue }
-            guard let shelf = eslToShelf[r.tagId], !shelf.isEmpty else { continue }  // 未知价签直接忽略
+            guard let shelf = tagToShelf[r.tagId], !shelf.isEmpty else { continue }  // 未知标签直接忽略
             let corrected = scale * Double(r.rssi) + offset
             if corrected < minRSSI { continue }
             let key = "\(r.tagId)|\(shelf)|\(r.type)"
@@ -319,8 +319,8 @@ struct FPPointIndex {
     ///
     /// - 匹配上的货架：截断高斯 -0.5*min(z,maxZ)²
     /// - 该点强烈期望、却没扫到的货架：-missPenalty（**漏检证据**，不能忽略：
-    ///   「站在 A 货架前却收不到 A 的价签」本身就是强烈的反对证据。
-    ///   -2 nat ≈ 漏检概率 0.135，和实测里「强信号价签在 1.5 s 窗口内被漏掉」的量级相当；
+    ///   「站在 A 货架前却收不到 A 的标签」本身就是强烈的反对证据。
+    ///   -2 nat ≈ 漏检概率 0.135，和实测里「强信号标签在 1.5 s 窗口内被漏掉」的量级相当；
     ///   用固定小惩罚而不是真正的漏检似然，是因为库里没有样本数/检测率可估。）
     /// - 扫到了、该点库里却没有的强货架：-unexpectedPenalty（更轻，因为库的覆盖本身可能不全）
     ///

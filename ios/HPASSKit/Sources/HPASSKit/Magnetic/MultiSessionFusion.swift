@@ -2,7 +2,7 @@ import Foundation
 
 /// 多会话（分片采集）融合成一张磁场图：云端（GitHub Actions 上的 hpass-build）用。
 ///
-/// 每个会话的位置已经对齐到同一张门店地图（起点 + 贴通道），难点是**磁场整体水平每次不一样**
+/// 每个会话的位置已经对齐到同一张场地地图（起点 + 贴通道），难点是**磁场整体水平每次不一样**
 /// （实测同一处两次差 10～16 µT）。手机上是「新会话对齐到已有数据」，会话一多误差会一路传下去；
 /// 这里一次性解：
 ///
@@ -46,7 +46,7 @@ public final class MultiSessionFusion {
     public init(map: StoreMap) { self.map = map }
 
     /// - filters: 每个会话只用哪些时刻的样本（质量筛选的结果；nil = 都用）
-    /// - corrections: 每个会话的价签锚定轨迹修正（EslTrajectoryCorrector；nil = 不修正）
+    /// - corrections: 每个会话的标签锚定轨迹修正（TagTrajectoryCorrector；nil = 不修正）
     public func fuse(_ sessions: [SurveySession], filters: [((Int64) -> Bool)?]? = nil,
                      corrections: [((Int64) -> Point2)?]? = nil) -> Result {
         // 1. 每个会话：对齐、算样本、单独统计

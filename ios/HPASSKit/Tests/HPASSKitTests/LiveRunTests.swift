@@ -4,7 +4,7 @@ import XCTest
 
 /// 地图自愈：实时定位记录的可信度筛选、磁力计样本定位、低权重并入磁场图（合成数据）
 final class LiveRunTests: XCTestCase {
-    // 一条沿 y = 2000 往 +x 走的轨迹，1 m/s、10 Hz，价签每 3 m 一片（在 y = 2200）
+    // 一条沿 y = 2000 往 +x 走的轨迹，1 m/s、10 Hz，标签每 3 m 一片（在 y = 2200）
     private let tags: [String: Point2] = Dictionary(uniqueKeysWithValues: (0..<60).map { ("t\($0)", Point2(Double($0) * 300, 2200)) })
 
     private func truth(_ sec: Double) -> Point2 { Point2(sec * 100, 2000) }
@@ -18,7 +18,7 @@ final class LiveRunTests: XCTestCase {
         }
     }
 
-    /// 人真实走到的位置附近的价签（距离 ≤ 6 m）按距离给信号
+    /// 人真实走到的位置附近的标签（距离 ≤ 6 m）按距离给信号
     private func ble(seconds: Int) -> [BLESample] {
         var out: [BLESample] = []
         for i in 0..<(seconds * 2) {
@@ -39,7 +39,7 @@ final class LiveRunTests: XCTestCase {
     }
 
     func testShiftedStretchIsDroppedWithNeighbours() throws {
-        // 40–60 秒整体平移 10 m：价签对不上 + 两头位置跳变
+        // 40–60 秒整体平移 10 m：标签对不上 + 两头位置跳变
         let t = try XCTUnwrap(LiveRunLoader.trust(track: track(seconds: 120, shift: (40, 60, 1000)), ble: ble(seconds: 120), tagPositions: tags))
         XCTAssertGreaterThan(t.badCount, 0)
         for w in 3...7 { XCTAssertFalse(t.trusted[w], "窗 \(w) 应该被丢") }       // 40–60 秒（含两头的跳变）及前后各一段
@@ -48,7 +48,7 @@ final class LiveRunTests: XCTestCase {
     }
 
     func testSmoothShiftCaughtByTags() throws {
-        // 没有跳变（慢慢漂走），只有价签能发现：整段平移 12 m 但从头到尾一致
+        // 没有跳变（慢慢漂走），只有标签能发现：整段平移 12 m 但从头到尾一致
         let t = try XCTUnwrap(LiveRunLoader.trust(track: track(seconds: 60, shift: (0, 60, 1200)), ble: ble(seconds: 60), tagPositions: tags))
         XCTAssertEqual(t.trusted.filter { $0 }.count, 0)
     }
@@ -60,13 +60,13 @@ final class LiveRunTests: XCTestCase {
     }
 
     func testNoEvidenceNotTrusted() throws {
-        // 定位自己有把握，但没有价签 / 标签可以佐证：不用
+        // 定位自己有把握，但没有蓝牙标签 / 货架标签可以佐证：不用
         let t = try XCTUnwrap(LiveRunLoader.trust(track: track(seconds: 60), ble: [], tagPositions: tags))
         XCTAssertEqual(t.trusted.filter { $0 }.count, 0)
     }
 
     func testUnverifiedStretchBridgedOnlyNextToGood() throws {
-        // 前 40 秒有价签，后 40 秒没有：紧挨着的 2 段（20 秒）算可信，更远的不算
+        // 前 40 秒有标签，后 40 秒没有：紧挨着的 2 段（20 秒）算可信，更远的不算
         let b = ble(seconds: 80).filter { $0.tMs < 1_040_000 }
         let t = try XCTUnwrap(LiveRunLoader.trust(track: track(seconds: 80), ble: b, tagPositions: tags))
         XCTAssertTrue(t.trusted[3])

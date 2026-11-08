@@ -81,10 +81,10 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(pairs, [("s_20261006_a", ["s_20261006_b"])])
 
     def test_site_label_hides_id(self):
-        lbl = lab.site_label("1266-secret-store")
+        lbl = lab.site_label("site-alpha-secret")
         self.assertTrue(lbl.startswith("site-"))
-        self.assertNotIn("1266", lbl)
-        self.assertEqual(lbl, lab.site_label("1266-secret-store"))
+        self.assertNotIn("alpha", lbl)
+        self.assertEqual(lbl, lab.site_label("site-alpha-secret"))
 
 
 FAKE_EVAL = textwrap.dedent("""

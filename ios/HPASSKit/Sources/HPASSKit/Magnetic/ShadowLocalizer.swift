@@ -28,7 +28,7 @@ public final class ShadowLocalizer {
 
     /// 每走这么远（cm）送一次滤波器
     public var stepCm = 20.0
-    /// 蓝牙指纹（有就每秒用最近 2.5 秒的价签读数当粗定位，和实时定位页一样）
+    /// 蓝牙指纹（有就每秒用最近 2.5 秒的标签读数当粗定位，和实时定位页一样）
     public var bleMap: BLEFingerprintMap?
     private var bleWindow: [(t: Int64, id: String, rssi: Double)] = []
     private var lastBle: Int64 = 0

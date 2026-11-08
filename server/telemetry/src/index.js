@@ -185,7 +185,7 @@ export default {
       }
     }
 
-    // 价签位置表（云端融合用：价签位置当蓝牙底图）
+    // 标签位置表（云端融合用：标签位置当蓝牙底图）
     m = path.match(/^\/api\/esl\/([^/]+)$/);
     if (m) {
       const name = decodeURIComponent(m[1]);

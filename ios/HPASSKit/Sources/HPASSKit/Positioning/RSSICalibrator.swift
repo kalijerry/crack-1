@@ -32,7 +32,7 @@ public struct RSSICalibration {
 /// 还会把曲线整体压低、不便于判断极值是否显著。
 /// z 截断也放宽到 6σ，否则大偏差区段会饱和成平台、梯度消失。
 ///
-/// 实现上有一个关键简化：聚合（同价签取均值 → 同货架取最大）对正仿射变换是可交换的，
+/// 实现上有一个关键简化：聚合（同标签取均值 → 同货架取最大）对正仿射变换是可交换的，
 /// 所以只需在 (1,0) 下聚合一次，之后对聚合值做 scale/offset 变换即可，和逐次重聚合完全等价。
 public enum RSSICalibrator {
 
@@ -59,8 +59,8 @@ public enum RSSICalibrator {
 
     /// 在已知指纹点上静止录制的数据（pointId → 读数）。
     public static func fit(readingsByPoint: [String: [BLEReading]], points: [FingerprintPoint],
-                           eslToShelf: [String: String], fitScale: Bool = false) -> RSSICalibration {
-        let index = FPPointIndex(points: points, eslToShelf: eslToShelf, missExpectThreshold: -80)
+                           tagToShelf: [String: String], fitScale: Bool = false) -> RSSICalibration {
+        let index = FPPointIndex(points: points, tagToShelf: tagToShelf, missExpectThreshold: -80)
         var units: [Unit] = []
         for pid in readingsByPoint.keys.sorted() {
             guard let i = index.idToIndex[pid], let rs = readingsByPoint[pid] else { continue }
@@ -79,8 +79,8 @@ public enum RSSICalibrator {
     /// 这是 profile likelihood（把未知位置当作每窗的 nuisance 参数取极大）的做法，
     /// 前提是走过的区域确实被指纹库覆盖。
     public static func fitBlind(readings: [BLEReading], points: [FingerprintPoint],
-                                eslToShelf: [String: String], windowMs: Int64 = 1500) -> RSSICalibration {
-        let index = FPPointIndex(points: points, eslToShelf: eslToShelf, missExpectThreshold: -80)
+                                tagToShelf: [String: String], windowMs: Int64 = 1500) -> RSSICalibration {
+        let index = FPPointIndex(points: points, tagToShelf: tagToShelf, missExpectThreshold: -80)
         var units: [Unit] = []
         for w in splitWindows(readings, windowMs: Swift.max(windowMs, 200)) {
             let agg = index.aggregate(w, scale: 1.0, offset: 0.0, minRSSI: -115)

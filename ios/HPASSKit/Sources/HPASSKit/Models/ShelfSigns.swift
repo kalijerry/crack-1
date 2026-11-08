@@ -2,9 +2,9 @@ import Foundation
 
 /// 货架立柱上的黄色位置标签（如「082-20」= 通道 082、第 20 段，下面一条条码）：摄像头读到就知道人在哪个货架段前面。
 ///
-/// 门店地图里每段货架是单面的矩形 Shelf-082-20（长约 2.8 m），只有一个长边朝通道。标签贴在这段两端的立柱上，
-/// 所以读到标签 = 人在这段货架朝通道一侧、沿货架方向 ±半段长 + 余量 以内，离货架面 0.3～2.5 m。
-/// 比价签蓝牙（2 m 左右、靠信号强弱猜）确定得多，而且不会认错。
+/// 场地地图里每段货架是单面的矩形 Shelf-082-20（长约 2.8 m），只有一个长边朝通道。位置标签贴在这段两端的立柱上，
+/// 所以读到位置标签 = 人在这段货架朝通道一侧、沿货架方向 ±半段长 + 余量 以内，离货架面 0.3～2.5 m。
+/// 比蓝牙标签（2 m 左右、靠信号强弱猜）确定得多，而且不会认错。
 public struct ShelfSigns {
     public struct Sign: Equatable {
         public var text: String
@@ -52,7 +52,7 @@ public struct ShelfSigns {
         return nil
     }
 
-    /// 按地图货架编号（Shelf-082-20）找；EslLocation.shelfCode 用
+    /// 按地图货架编号（Shelf-082-20）找；TagLocation.shelfCode 用
     public func sign(forShelfCode code: String) -> Sign? {
         guard let s = byCode[code] else { return nil }
         return face(s, text: String(code.dropFirst("Shelf-".count)))

@@ -1,4 +1,4 @@
-package com.example.eslcollector
+package com.example.hpasscollector
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothManager
@@ -46,7 +46,7 @@ class Recorder(private val ctx: Context) : SensorEventListener {
     private var sensorThread: HandlerThread? = null
     private val mainHandler = Handler(ctx.mainLooper)
 
-    var onlyEsl = true
+    var onlyTags = true
     var isRecording = false
         private set
     var sessionDir: File? = null
@@ -82,7 +82,7 @@ class Recorder(private val ctx: Context) : SensorEventListener {
 
     private val restartScan = object : Runnable {
         override fun run() {
-            // 与 Handy+ 一致：每 20 分钟重启扫描，避免系统把长时间无过滤扫描降级
+            // 每 20 分钟重启扫描，避免系统把长时间无过滤扫描降级
             stopScan()
             startScan()
             mainHandler.postDelayed(this, 20 * 60 * 1000L)
@@ -225,9 +225,9 @@ class Recorder(private val ctx: Context) : SensorEventListener {
     @SuppressLint("MissingPermission")
     private fun handle(r: ScanResult) {
         val w = bleWriter ?: return
-        val id = EslParser.eslId(r.scanRecord)
-        if (onlyEsl && id == null) return
-        val mfg = EslParser.manufacturerHex(r.scanRecord)
+        val id = TagParser.tagId(r.scanRecord)
+        if (onlyTags && id == null) return
+        val mfg = TagParser.manufacturerHex(r.scanRecord)
         if (id == null && mfg.isEmpty()) return
         val t = wallOffsetMs + r.timestampNanos / 1_000_000
         val src = r.device?.address ?: ""
@@ -284,7 +284,7 @@ class Recorder(private val ctx: Context) : SensorEventListener {
             put("os_version", "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
             put("app_version", "0.1.0")
             put("start_ms", startMs)
-            put("only_esl", onlyEsl)
+            put("only_esl", onlyTags)
             put("imu_target_hz", 50)
             put("imu_convention", "android: acc m/s^2 incl. gravity (+z up when flat), gyro rad/s, mag uT calibrated")
             endMs?.let { put("end_ms", it) }
@@ -292,19 +292,19 @@ class Recorder(private val ctx: Context) : SensorEventListener {
         File(dir, "meta.json").writeText(meta.toString(2))
     }
 
-    /** 打包会话目录为 zip，保存到 下载/ESLCollector/。返回可读的保存位置描述。 */
+    /** 打包会话目录为 zip，保存到 下载/HPassCollector/。返回可读的保存位置描述。 */
     fun exportToDownloads(dir: File): String {
         val name = dir.name + ".zip"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, name)
                 put(MediaStore.Downloads.MIME_TYPE, "application/zip")
-                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/ESLCollector")
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/HPassCollector")
             }
             val uri = ctx.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                 ?: throw IllegalStateException("无法创建下载文件")
             ctx.contentResolver.openOutputStream(uri)!!.use { zipDir(dir, it) }
-            return "下载/ESLCollector/$name"
+            return "下载/HPassCollector/$name"
         } else {
             val out = File(ctx.getExternalFilesDir(null), "exports/$name").apply { parentFile?.mkdirs() }
             out.outputStream().use { zipDir(dir, it) }

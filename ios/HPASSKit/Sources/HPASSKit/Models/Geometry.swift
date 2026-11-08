@@ -1,6 +1,6 @@
 import Foundation
 
-/// 二维点。地图 / 指纹 / 导航相关一律用厘米（门店地图坐标，y 轴向下）；融合引擎内部用米。
+/// 二维点。地图 / 指纹 / 导航相关一律用厘米（场地地图坐标，y 轴向下）；融合引擎内部用米。
 public struct Point2: Hashable, Codable, CustomStringConvertible {
     public var x: Double
     public var y: Double

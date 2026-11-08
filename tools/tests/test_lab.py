@@ -71,12 +71,18 @@ class CompareTests(unittest.TestCase):
 class ScenarioTargetTests(unittest.TestCase):
     """场景自己的目标（suite.json 场景里的 "target"）：只按列出的指标判达标、判退步。"""
     tol = SUITE["tolerance"]
-    target = {"wrong_fix": 0.2}
+    target = {"wrong_fix": 0.2, "no_fix_ok": True}
 
     def test_suite_cold_mag_scenarios_judge_wrong_fix_only(self):
         by_id = {s["id"]: s for s in SUITE["scenarios"]}
         for sid in ("public/pdr/cold-mag", "public/vio/cold-mag"):
-            self.assertEqual(by_id[sid].get("target"), {"wrong_fix": 0.2})
+            self.assertEqual(by_id[sid].get("target"), {"wrong_fix": 0.2, "no_fix_ok": True})
+            # 「不报位置」是明说的产品开关，不是藏在收敛门里的
+            self.assertIn("--no-mag-only-cold-fix", by_id[sid]["flags"])
+        # 冷启动搜索本身还有一个照常报位置、只监看的场景（不拦），共用的冷启动代码坏了能看出来
+        mon = by_id["public/pdr/cold-mag-search"]
+        self.assertFalse(mon["gate"])
+        self.assertNotIn("--no-mag-only-cold-fix", mon["flags"])
         # 跟踪场景没有场景目标，照旧用完整档位
         self.assertIsNone(by_id["public/pdr/track-mag"].get("target"))
 
@@ -87,10 +93,14 @@ class ScenarioTargetTests(unittest.TestCase):
         self.assertTrue(lab.meets_target({"coverage": 0.6, "median_cm": 250}, {"coverage": 0.5, "median_cm": 300}))
         self.assertFalse(lab.meets_target({"coverage": 0.4, "median_cm": 250}, {"coverage": 0.5, "median_cm": 300}))
 
-    def test_no_fix_at_all_counts_as_zero_wrong(self):
+    def test_no_fix_at_all_counts_as_zero_wrong_only_when_target_says_so(self):
         m = lab.metrics([rep([], ref=50, first_fix=None)])
         self.assertIsNone(m["wrong_fix"])
         self.assertTrue(lab.meets_target(m, self.target))
+        # 目标没说 no_fix_ok：一个位置都没报 = 没量到，不算达标
+        self.assertFalse(lab.meets_target(m, {"wrong_fix": 0.2}))
+        self.assertIn("不报位置也算", lab.target_text(self.target))
+        self.assertNotIn("no_fix_ok", lab.target_text(self.target))
         # 一次回放都没有（跑失败）不算达标
         self.assertFalse(lab.meets_target({"wrong_fix": None, "points": 0, "replays": 0}, self.target))
         # 没有场景目标时仍按完整档位：没报位置 = 未达「可用」
@@ -100,21 +110,24 @@ class ScenarioTargetTests(unittest.TestCase):
         base = {"median_cm": 7000, "p90_cm": 13000, "wrong_fix": 0.98, "coverage": 0.65, "fixed_share": 1.0,
                 "points": 1000, "replays": 5}
         cur = dict(base, median_cm=None, p90_cm=None, wrong_fix=None, coverage=0.0, fixed_share=0.0, points=0)
-        c = lab.compare(cur, base, self.tol, keys=set(self.target))
+        c = lab.compare(cur, base, self.tol, keys={"wrong_fix"}, no_fix_ok=True)
         self.assertFalse(c["regressions"])
         self.assertIn("wrong_fix", {k for k, _, _ in c["improvements"]})
         self.assertEqual({k for k, _, _ in c["changes"]}, {"median_cm", "p90_cm", "coverage", "fixed_share"})
         # 同样的变化，没有场景目标时就是退步
         self.assertTrue(lab.compare(cur, base, self.tol)["regressions"])
+        # 目标只看错定、但没说 no_fix_ok：从有定位变成一个都不报，错定「没量到」= 退步
+        c = lab.compare(cur, base, self.tol, keys={"wrong_fix"})
+        self.assertEqual([k for k, _, _ in c["regressions"]], ["wrong_fix"])
 
     def test_wrong_fix_rising_is_still_a_regression(self):
         base = {"wrong_fix": 0.1, "coverage": 0.1, "points": 100, "replays": 5}
-        c = lab.compare(dict(base, wrong_fix=0.3), base, self.tol, keys=set(self.target))
+        c = lab.compare(dict(base, wrong_fix=0.3), base, self.tol, keys={"wrong_fix"}, no_fix_ok=True)
         self.assertEqual([k for k, _, _ in c["regressions"]], ["wrong_fix"])
 
     def test_report_uses_scenario_target(self):
         res = {"tier": "nightly", "runs": 5, "results": [
-            {"id": "public/pdr/cold-mag", "title": "冷启动", "gate": True, "target": {"wrong_fix": 0.2},
+            {"id": "public/pdr/cold-mag", "title": "冷启动", "gate": True, "target": {"wrong_fix": 0.2, "no_fix_ok": True},
              "metrics": lab.metrics([rep([], ref=50, first_fix=None)])},
             {"id": "public/pdr/track-mag", "title": "跟踪", "gate": True,
              "metrics": lab.metrics([rep([100] * 10)])}]}

@@ -166,11 +166,11 @@ public struct MagneticConfig {
     public var coldMinEffectiveRatio: Double = 0
     /// 收敛门起作用时地磁似然用的温度（0 = 同 `likelihoodTemperature`）。
     public var coldSearchTemperature: Double = 0
-    /// 冷启动粒子密度下限（个 / m²，按 `coldStartParticleCount` ÷ 有磁场数据的面积）。0 = 不看。
-    /// 冷启动的假设是「位置 × 朝向」：朝向未知时，要在真实位置 1 m 内、朝向差 20° 内平均有一个粒子，
-    /// 大约要 9 个 / m²。粒子撒得比这稀，真实位置附近往往一个粒子都没有，这时「定到」的峰只是碰巧长得像的地方，
-    /// 只靠地磁就不报位置，等外部先验（蓝牙粗定位、用户指起点）把范围缩小。
-    public var coldMinParticlesPerM2: Double = 0
+    /// 只靠地磁的冷启动报不报位置（产品决定，不是收敛判据）。false：冷启动（reset 没给起点）之后、还没用过任何外部位置先验
+    /// （蓝牙粗定位 / 标签范围 / 区域观测）之前，一律不宣布定到，等外部先验或用户指起点。默认 true（原有行为）。
+    /// 公开商场楼层上量过：只靠地磁冷启动，各种收敛门（走够路、峰够突出、连续更多次、有效粒子）组合下错定都还有 91～100%，
+    /// 十几米的磁场序列在八千多平米的楼层里能对上很多处。hpass-eval `--no-mag-only-cold-fix`。
+    public var magOnlyColdStartReports = true
     /// 跟踪配置档的运动来源（nil = 不是跟踪档）。运动来源中途变了（视觉里程计没对齐 / 跟丢时计步顶上）
     /// 用 `MagneticLocalizer.setOdometry` 换成对应那一套参数。
     public var trackingOdometry: OdometrySource?
@@ -202,7 +202,6 @@ public struct MagneticConfig {
         coldMinStreak = ColdStartGate.minStreak
         coldMinEffectiveRatio = ColdStartGate.minEffectiveRatio
         coldSearchTemperature = ColdStartGate.searchTemperature
-        coldMinParticlesPerM2 = ColdStartGate.minParticlesPerM2
     }
 
     /// 关掉冷启动收敛门（恢复原有行为）。
@@ -213,7 +212,6 @@ public struct MagneticConfig {
         coldMinStreak = d.coldMinStreak
         coldMinEffectiveRatio = d.coldMinEffectiveRatio
         coldSearchTemperature = d.coldSearchTemperature
-        coldMinParticlesPerM2 = d.coldMinParticlesPerM2
     }
 
     /// 冷启动收敛门是否打开（任何一道门不是原有行为）
@@ -221,7 +219,7 @@ public struct MagneticConfig {
         let d = MagneticConfig()
         return coldMinPathCm != d.coldMinPathCm || coldModeRatio != d.coldModeRatio
             || coldMinStreak != d.coldMinStreak || coldMinEffectiveRatio != d.coldMinEffectiveRatio
-            || coldSearchTemperature != d.coldSearchTemperature || coldMinParticlesPerM2 != d.coldMinParticlesPerM2
+            || coldSearchTemperature != d.coldSearchTemperature
     }
 }
 
@@ -232,7 +230,6 @@ public enum ColdStartGate {
     public static let minStreak = 10
     public static let minEffectiveRatio: Double = 0.2
     public static let searchTemperature: Double = 0
-    public static let minParticlesPerM2: Double = 10
 }
 
 public struct MagneticEstimate {
@@ -351,6 +348,10 @@ public final class MagneticLocalizer {
     public var coldStartGateActive: Bool {
         coldStart && !hasConverged && !externalPriorApplied && config.coldStartGateEnabled
     }
+    /// 现在是「只靠地磁的冷启动、按配置不报位置」（`MagneticConfig.magOnlyColdStartReports = false`）
+    public var magOnlyColdStartSuppressed: Bool {
+        !config.magOnlyColdStartReports && coldStart && !hasConverged && !externalPriorApplied
+    }
 
     public init(field: MagneticFieldMap, walkable: WalkableMap? = nil,
                 config: MagneticConfig = .init(), seed: UInt64 = 1) {
@@ -371,8 +372,6 @@ public final class MagneticLocalizer {
 
     /// 有磁场数据的面积（m²），冷启动只在这里面找。
     public var mappedAreaM2: Double { Double(mappedCells.count) * field.cellCm * field.cellCm / 10_000 }
-    /// 冷启动时粒子撒得有多密（个 / m²）
-    public var coldStartParticleDensity: Double { Double(config.coldStartParticleCount) / max(mappedAreaM2, 1e-9) }
 
     private func randomPosition() -> Point2 { randomPositionWithAnchor().point }
 
@@ -991,6 +990,7 @@ public final class MagneticLocalizer {
         let good = e.uncertaintyCm <= config.convergedUncertaintyCm && e.confidence >= config.convergedConfidence
             && !convergenceBlocked
         if !hasConverged {
+            if magOnlyColdStartSuppressed { convergedStreak = 0; return }
             let gated = coldStartGateActive
             let pass = good && consistent && (!gated || coldGatePasses(e))
             convergedStreak = pass ? convergedStreak + 1 : 0
@@ -1010,7 +1010,6 @@ public final class MagneticLocalizer {
     /// 冷启动收敛门（只在 `coldStartGateActive` 时调用）：走够了路、粒子不是少数几个撑着、
     /// 最重的簇明显压过远处的第二个簇。
     private func coldGatePasses(_ e: MagneticEstimate) -> Bool {
-        if config.coldMinParticlesPerM2 > 0 && coldStartParticleDensity < config.coldMinParticlesPerM2 { return false }
         if searchPathCm < config.coldMinPathCm { return false }
         if lastEffectiveRatio < config.coldMinEffectiveRatio { return false }
         if config.coldModeRatio > 0 {

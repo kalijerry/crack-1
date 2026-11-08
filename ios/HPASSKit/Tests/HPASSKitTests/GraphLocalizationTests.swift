@@ -147,13 +147,22 @@ final class GraphLocalizationTests: XCTestCase {
         XCTAssertLessThanOrEqual(Double(r.wrongAisle) / Double(max(r.total, 1)), 0.1)
     }
 
-    /// 冷启动粒子撒得太稀（相对有磁场数据的面积）时，只靠地磁不宣布定到。
-    func testColdStartGateHoldsBackWhenParticlesTooSparse() {
-        var cfg = MagneticConfig()
-        cfg.applyColdStartGate()
-        cfg.coldMinParticlesPerM2 = 1000
-        let r = run(cold: true, useWalkable: true, seed: 21, config: cfg)
-        XCTAssertNil(r.convergedAt)
+    /// magOnlyColdStartReports = false：只靠地磁的冷启动一律不宣布定到（同样的走法，默认能定到）；
+    /// 用过外部位置先验之后照常收敛；已知起点不受影响。
+    func testMagOnlyColdStartCanBeSwitchedOff() {
+        var off = MagneticConfig()
+        off.magOnlyColdStartReports = false
+        XCTAssertNotNil(run(cold: true, useWalkable: true, seed: 21).convergedAt)
+        XCTAssertNil(run(cold: true, useWalkable: true, seed: 21, config: off).convergedAt)
+        let a = run(cold: false, useWalkable: true, seed: 11)
+        let b = run(cold: false, useWalkable: true, seed: 11, config: off)
+        XCTAssertEqual(a.errors, b.errors)
+        XCTAssertFalse(off.coldStartGateEnabled)                 // 和收敛门是两回事
+        let loc = MagneticLocalizer(field: surveyMap(noise: 0.4, seed: 2), config: off, seed: 2)
+        loc.reset(start: nil)
+        XCTAssertTrue(loc.magOnlyColdStartSuppressed)
+        loc.applyPositionPrior(Point2(aisleXs[2], 1500), sigmaCm: 400, weight: 1)
+        XCTAssertFalse(loc.magOnlyColdStartSuppressed)
     }
 
     /// 冷启动收敛门对已知起点（跟踪）没有任何影响：同样的随机种子结果完全一样。

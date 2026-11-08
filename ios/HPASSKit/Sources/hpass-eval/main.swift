@@ -140,7 +140,8 @@ do {
                 if let v = arg("--cold-streak").flatMap(Int.init) { cfg.coldMinStreak = v }
                 if let v = arg("--cold-ess").flatMap(Double.init) { cfg.coldMinEffectiveRatio = v }
                 if let v = arg("--cold-temp").flatMap(Double.init) { cfg.coldSearchTemperature = v }
-                if let v = arg("--cold-density").flatMap(Double.init) { cfg.coldMinParticlesPerM2 = v }
+                // 只靠地磁的冷启动不报位置（产品决定，见 MagneticConfig.magOnlyColdStartReports）
+                if CommandLine.arguments.contains("--no-mag-only-cold-fix") { cfg.magOnlyColdStartReports = false }
                 if let v = arg("--uniform-inject").flatMap(Int.init) { cfg.uniformHeadingForInjection = v != 0 }
             }, seed: UInt64(k + 1), refTagPositions: refTags,
                                                   oracleStart: CommandLine.arguments.contains("--oracle-start"),

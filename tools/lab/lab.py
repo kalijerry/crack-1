@@ -98,19 +98,29 @@ def ladder_level(m: dict, ladder: list[dict]) -> str | None:
 LOWER_IS_BETTER = ("median_cm", "p75_cm", "p90_cm", "wrong_fix", "first_fix_m")
 
 
-def target_metric(m: dict, k: str):
-    """场景目标里用的指标值。一个位置都没报时错定率没有定义，按 0 算（没报出任何错的位置）——
-    只看错定的场景（只靠地磁冷启动）要的就是「宁可不报」。"""
+# 场景目标里不是指标的选项
+TARGET_OPTIONS = ("no_fix_ok",)
+
+
+def target_thresholds(target: dict) -> dict:
+    """场景目标里的指标门槛（去掉 no_fix_ok 这类选项）"""
+    return {k: v for k, v in target.items() if k not in TARGET_OPTIONS}
+
+
+def target_metric(m: dict, k: str, no_fix_ok: bool = False):
+    """场景目标里用的指标值。一个位置都没报时错定率没有定义：只有场景目标明说 "no_fix_ok": true
+    （产品决定「宁可不报」，例如只靠地磁冷启动不报位置）才按 0 算；否则是 None，算没达标 / 退步。"""
     v = m.get(k)
-    if v is None and k == "wrong_fix" and m.get("points") == 0 and m.get("replays"):
+    if v is None and no_fix_ok and k == "wrong_fix" and m.get("points") == 0 and m.get("replays"):
         return 0.0
     return v
 
 
 def meets_target(m: dict, target: dict) -> bool:
     """场景自己的目标（suite.json 里场景的 "target"）：列出的门槛同时满足才算达标，没列的不看。"""
-    for k, thr in target.items():
-        v = target_metric(m, k)
+    ok0 = bool(target.get("no_fix_ok"))
+    for k, thr in target_thresholds(target).items():
+        v = target_metric(m, k, ok0)
         if v is None:
             return False
         if (v > thr) if k in LOWER_IS_BETTER else (v < thr):
@@ -126,17 +136,17 @@ def scenario_target(r: dict, suite: dict) -> dict | None:
     return (s or {}).get("target")
 
 
-def compare(cur: dict, base: dict | None, tolerance: dict, keys=None) -> dict:
+def compare(cur: dict, base: dict | None, tolerance: dict, keys=None, no_fix_ok: bool = False) -> dict:
     """逐项和基线比：regressions / improvements / changes 是 [(指标, 基线, 现在)]。
     keys 不是 None 时只有这些指标变差算退步，其余指标变差只记进 changes（只显示，不拦）——
-    场景目标不看的指标（例如只看错定的冷启动场景的覆盖）按设计就会变。"""
+    场景目标不看的指标（例如只看错定的冷启动场景的覆盖）按设计就会变。no_fix_ok 见 target_metric。"""
     res = {"regressions": [], "improvements": [], "changes": [], "new": base is None}
     if base is None:
         return res
     for k, rule in tolerance.items():
         b, c = base.get(k), cur.get(k)
         if keys is not None:
-            b, c = target_metric(base, k), target_metric(cur, k)
+            b, c = target_metric(base, k, no_fix_ok), target_metric(cur, k, no_fix_ok)
         if b is None:
             continue
         bad = res["regressions"] if keys is None or k in keys else res["changes"]
@@ -382,7 +392,8 @@ def _fmt(k, v):
 
 
 def target_text(target: dict) -> str:
-    return "、".join(f"{NAMES[k]} {'≤' if k in LOWER_IS_BETTER else '≥'} {_fmt(k, v)}" for k, v in target.items())
+    s = "、".join(f"{NAMES[k]} {'≤' if k in LOWER_IS_BETTER else '≥'} {_fmt(k, v)}" for k, v in target_thresholds(target).items())
+    return s + ("；不报位置也算" if target.get("no_fix_ok") else "")
 
 
 NAMES = {"median_cm": "中位", "p75_cm": "P75", "p90_cm": "P90", "wrong_fix": "错定", "coverage": "覆盖",
@@ -405,7 +416,8 @@ def build_report(res: dict, baseline: dict | None, suite: dict) -> tuple[str, bo
             continue
         target = scenario_target(r, suite)
         if r["id"] in base_map:
-            cmp_ = compare(m, base_map[r["id"]], suite["tolerance"], keys=set(target) if target else None)
+            cmp_ = compare(m, base_map[r["id"]], suite["tolerance"], keys=set(target_thresholds(target)) if target else None,
+                           no_fix_ok=bool((target or {}).get("no_fix_ok")))
         else:
             cmp_ = {"new": True, "regressions": [], "improvements": [], "changes": []}
         if r.get("gate") and cmp_["regressions"]:
@@ -426,8 +438,8 @@ def build_report(res: dict, baseline: dict | None, suite: dict) -> tuple[str, bo
             level = ("✅ 达标" if meets_target(m, target) else "未达标") + f"（场景目标：{target_text(target)}）"
             if m.get("points") == 0:
                 level += "，没有报位置"
-            for k, thr in target.items():
-                v = target_metric(m, k)
+            for k, thr in target_thresholds(target).items():
+                v = target_metric(m, k, bool(target.get("no_fix_ok")))
                 if v is not None and ((v > thr) if k in LOWER_IS_BETTER else (v < thr)):
                     gap.append(f"{NAMES[k]} {_fmt(k, v)}")
         else:

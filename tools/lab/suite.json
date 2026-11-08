@@ -9,8 +9,11 @@
   "scenarios": [
     {"id": "public/pdr/track-mag", "dataset": "ilc-pdr", "flags": ["--oracle-start", "--no-ble"],
      "title": "已知起点 · 只地磁 · 无摄像头", "tiers": ["pr", "nightly"], "gate": true},
-    {"id": "public/pdr/cold-mag", "dataset": "ilc-pdr", "flags": ["--no-ble", "--cold-gate"],
-     "title": "冷启动 · 只地磁 · 无摄像头", "tiers": ["pr", "nightly"], "gate": true, "target": {"wrong_fix": 0.2}},
+    {"id": "public/pdr/cold-mag", "dataset": "ilc-pdr", "flags": ["--no-ble", "--no-mag-only-cold-fix"],
+     "title": "冷启动 · 只地磁 · 无摄像头（产品决定：只靠地磁不报位置）", "tiers": ["pr", "nightly"], "gate": true,
+     "target": {"wrong_fix": 0.2, "no_fix_ok": true}},
+    {"id": "public/pdr/cold-mag-search", "dataset": "ilc-pdr", "flags": ["--no-ble"],
+     "title": "冷启动 · 只地磁 · 无摄像头（照常报位置：只监看冷启动搜索，不拦）", "tiers": ["nightly"], "gate": false},
     {"id": "public/pdr/cold-mag-radio", "dataset": "ilc-pdr", "flags": [],
      "title": "冷启动 · 地磁 + 蓝牙 · 无摄像头", "tiers": ["pr", "nightly"], "gate": true},
     {"id": "public/pdr/cold-wifi", "dataset": "ilc-pdr", "flags": ["--wifi", "--no-ble"],
@@ -21,8 +24,9 @@
      "title": "已知起点 · 地磁 + 蓝牙 · 无摄像头", "tiers": ["nightly"], "gate": true},
     {"id": "public/vio/track-mag", "dataset": "ilc-arkit", "flags": ["--oracle-start", "--no-ble", "--odometry", "vio"],
      "title": "已知起点 · 只地磁 · 视觉里程计", "tiers": ["nightly"], "gate": true},
-    {"id": "public/vio/cold-mag", "dataset": "ilc-arkit", "flags": ["--no-ble", "--odometry", "vio", "--cold-gate"],
-     "title": "冷启动 · 只地磁 · 视觉里程计", "tiers": ["nightly"], "gate": true, "target": {"wrong_fix": 0.2}}
+    {"id": "public/vio/cold-mag", "dataset": "ilc-arkit", "flags": ["--no-ble", "--odometry", "vio", "--no-mag-only-cold-fix"],
+     "title": "冷启动 · 只地磁 · 视觉里程计（产品决定：只靠地磁不报位置）", "tiers": ["nightly"], "gate": true,
+     "target": {"wrong_fix": 0.2, "no_fix_ok": true}}
   ],
   "private": {
     "note": "自采数据（后台的建图 / 测试会话）。站点名只用哈希代号，公开仓库的报告里不出现任何站点信息",

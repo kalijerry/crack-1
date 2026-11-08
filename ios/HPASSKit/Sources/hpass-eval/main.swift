@@ -71,6 +71,21 @@ do {
         ble = TagLocations.seededBLEMap(TagLocations.parse(t, map: map), learned: bleMap)
         print("蓝牙底图：标签位置表 + 学到的，\(ble!.tags.count) 个标签")
     }
+    // 诊断：只导出测试会话「实测特征 vs 地图在参考位置」的残差（每 50 cm 一条），不跑定位
+    if let rp = arg("--residuals") {
+        var csv = "session,t_ms,path_cm,f_total,f_vertical,f_horizontal,m_total,m_vertical,m_horizontal,s_total,s_vertical,s_horizontal" + "\n"
+        func f3(_ v: MagneticFeature?) -> String {
+            v.map { String(format: "%.3f,%.3f,%.3f", $0.total, $0.vertical, $0.horizontal) } ?? ",,"
+        }
+        for t in test {
+            for r in try SessionEvaluator.residualSamples(dir: t, field: field) {
+                csv += "\(t.lastPathComponent),\(r.tMs),\(String(format: "%.1f", r.pathCm)),\(f3(r.feature)),\(f3(r.mean)),\(f3(r.sigma))" + "\n"
+            }
+        }
+        try csv.write(toFile: rp, atomically: true, encoding: .utf8)
+        print("残差已写到 \(rp)")
+        exit(0)
+    }
     let walk = SessionEvaluator.walkable(map)
     var out: [EvalReport] = []
     // 粒子滤波有随机性（加上字典遍历顺序每次不同），单次结果波动很大：--runs N 跑 N 次（不同随机种子），报中位和范围
@@ -92,6 +107,16 @@ do {
                 if let w = arg("--win").flatMap(Double.init) { cfg.offsetWindowUpdates = w }
                 if let w = arg("--missing").flatMap(Double.init) { cfg.missingDataPenalty = w }
                 if CommandLine.arguments.contains("--adaptive") { cfg.adaptiveMagWeight = true }
+                // 似然标定的试验开关（默认不给 = 用配置档里的值）
+                if let v = arg("--obs-sigma-floor").flatMap(Double.init) { cfg.observationSigmaFloorUT = v }
+                if let v = arg("--mag-corr-cm").flatMap(Double.init) { cfg.magneticCorrelationCm = v }
+                if let v = arg("--converged-mag-weight").flatMap(Double.init) { cfg.convergedMagWeight = v }
+                if let v = arg("--offset-warmup").flatMap(Int.init) { cfg.offsetWarmupUpdates = v }
+                if let v = arg("--offset-window").flatMap(Int.init) { cfg.offsetMedianWindow = v }
+                if let v = arg("--lost-updates").flatMap(Int.init) { cfg.lostUpdates = v }
+                if let v = arg("--lost-confidence").flatMap(Double.init) { cfg.lostConfidence = v }
+                if let v = arg("--confidence-scale").flatMap(Double.init) { cfg.confidenceScaleCm = v }
+                if let v = arg("--cluster-radius").flatMap(Double.init) { cfg.clusterRadiusCm = v }
             }, seed: UInt64(k + 1), refTagPositions: refTags,
                                                   oracleStart: CommandLine.arguments.contains("--oracle-start"),
                                                   odometry: odometry)

@@ -220,4 +220,51 @@ public enum SessionEvaluator {
         rep.refPoints = refTotal
         return rep
     }
+
+    /// 诊断：测试会话里每走 `everyCm` 取一次实测特征（和定位用的同一条流水线），和地图在参考位置的值比。
+    /// 用来按「实际残差」标定跟踪档的观测噪声（见 MagneticConfig.trackingLikelihood）。只用有 truth.csv 的会话。
+    public struct ResidualSample {
+        public var tMs: Int64
+        public var pathCm: Double
+        public var feature: MagneticFeature
+        /// 地图在参考位置的均值 / 标准差；nil = 那里没数据
+        public var mean: MagneticFeature?
+        public var sigma: MagneticFeature?
+    }
+
+    public static func residualSamples(dir: URL, field: MagneticFieldMap, everyCm: Double = 50) throws -> [ResidualSample] {
+        let s = try SurveySessionLoader.load(dir)
+        guard let ref = Self.loadTruth(dir) else { return [] }
+        func refAt(_ t: Int64) -> Point2? {
+            var lo = 0, hi = ref.count - 1
+            guard hi > 0, t >= ref[0].tMs, t <= ref[hi].tMs else { return nil }
+            while hi - lo > 1 { let m = (lo + hi) / 2; if ref[m].tMs <= t { lo = m } else { hi = m } }
+            return t - ref[lo].tMs > 300 ? nil : ref[lo].p
+        }
+        let sh = ShadowLocalizer(field: field, walkable: nil, useRawMag: !s.raw.isEmpty)
+        enum Ev { case imu(IMUSample), raw(Int64, (Double, Double, Double)), pose(SurveySession.Pose) }
+        var evs: [(Int64, Int, Ev)] = []
+        for x in s.imu { evs.append((x.tMs, 0, .imu(x))) }
+        for x in s.raw { evs.append((x.tMs, 1, .raw(x.tMs, x.v))) }
+        for x in s.poses { evs.append((x.tMs, 3, .pose(x))) }
+        evs.sort { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1 < $1.1 }
+        var out: [ResidualSample] = []
+        var lastA: Point2?, path = 0.0, nextAt = everyCm
+        for (_, _, e) in evs {
+            switch e {
+            case .imu(let x): sh.imu(x)
+            case .raw(let t, let v): sh.rawMag(tMs: t, v)
+            case .pose(let p):
+                guard p.normal else { lastA = nil; continue }
+                if let l = lastA, p.a.distance(to: l) < 300 { path += p.a.distance(to: l) }
+                lastA = p.a
+                guard path >= nextAt else { continue }
+                nextAt = path + everyCm
+                guard let f = sh.latestFeature, let r = refAt(p.tMs) else { continue }
+                let m = field.sample(at: r)
+                out.append(ResidualSample(tMs: p.tMs, pathCm: path, feature: f, mean: m?.mean, sigma: m?.sigma))
+            }
+        }
+        return out
+    }
 }

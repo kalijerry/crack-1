@@ -58,6 +58,11 @@ public struct MagneticConfig {
     public var hybridOffset = false
     /// 定到之后偏移跟踪的速度（每次更新）
     public var offsetTrackRate = 0.03
+    /// 稳健偏移估计（混合模式）：定到之后先继续按「起伏」比，攒够这么多次更新的残差（读数 − 认定位置的地图值）
+    /// 再取各分量的中位数当偏移；之后偏移 = 最近 `offsetMedianWindow` 次残差的中位数（慢、且不怕个别离群）。
+    /// 0 = 原有行为（刚定到时用一次读数估偏移，之后按 `offsetTrackRate` 指数跟踪）。
+    public var offsetWarmupUpdates = 0
+    public var offsetMedianWindow = 60
     /// 「最近一段路」有多长：按观测更新次数算的指数平均（每次约 20 cm，40 次约 8 m）
     public var offsetWindowUpdates: Double = 40
     /// 起伏模式下绝对值还占多少分量（0 = 完全不看绝对值）；绝对值那一项的标准差加上 offsetSlackUT
@@ -67,6 +72,10 @@ public struct MagneticConfig {
     public var featureWeights: (Double, Double, Double) = (1.0, 1.0, 0.5)
     /// 对数似然除以这个温度，抵消特征之间的相关性造成的过度自信。
     public var likelihoodTemperature: Double = 1.5
+    /// 地磁残差的相关长度（cm）：相邻观测更新（每 `updateDistanceCm` 一次）的「读数 − 地图」残差高度相关
+    /// （地图误差、偏移误差都是成片的），走这么远才算一次独立观测。地磁似然再除以 max(1, 相关长度 / updateDistanceCm)。
+    /// 只作用于地磁，不影响横向距离等其他观测。0 = 原有行为（每次更新都当独立的）。
+    public var magneticCorrelationCm: Double = 0
     /// 粒子所在位置没有地图数据时的对数似然惩罚。要比「在对的地方但读数有点对不上」重得多，
     /// 否则粒子会跑到没采集过的地方去（实测：−4 时估计会跳到一百多米外）。
     public var missingDataPenalty: Double = -20
@@ -201,6 +210,8 @@ public final class MagneticLocalizer {
     private var obsEma: (Double, Double, Double)?
     /// 混合模式：这次读数相对地图的整体偏移（定到之后才有）
     private var offsetEst: MagneticFeature?
+    /// 稳健偏移估计攒的残差（offsetWarmupUpdates > 0 时）
+    private var offsetResiduals: [MagneticFeature] = []
     public var currentOffset: MagneticFeature? { offsetEst }
 
     private var travelledCm = 0.0
@@ -304,6 +315,7 @@ public final class MagneticLocalizer {
         ema0 = [Double](repeating: .nan, count: n); ema1 = ema0; ema2 = ema0
         obsEma = nil
         offsetEst = nil
+        offsetResiduals.removeAll()
         logw = [Double](repeating: 0, count: n)
         for i in 0..<n {
             var p: Point2
@@ -671,7 +683,8 @@ public final class MagneticLocalizer {
         if config.hybridOffset {
             if !hasConverged {
                 offsetEst = nil
-            } else if offsetEst == nil, let o = obsEma {
+                offsetResiduals.removeAll()
+            } else if offsetEst == nil, config.offsetWarmupUpdates <= 0, let o = obsEma {
                 var w0 = 0.0, s0 = 0.0, s1 = 0.0, s2 = 0.0
                 let mx = logw.max() ?? 0
                 for i in 0..<xs.count where !ema0[i].isNaN {
@@ -685,6 +698,7 @@ public final class MagneticLocalizer {
         let rel = config.hybridOffset ? offsetEst == nil : config.offsetInvariant
         let fAbs = offsetEst.map { f - $0 } ?? f
         let slack2 = config.offsetSlackUT * config.offsetSlackUT
+        let temp = config.likelihoodTemperature * max(config.magneticCorrelationCm / max(config.updateDistanceCm, 1), 1)
         for i in 0..<xs.count {
             guard let m = field.sample(at: Point2(xs[i], ys[i])) else { continue }
             let v0 = m.sigma.total * m.sigma.total + floor2
@@ -707,10 +721,10 @@ public final class MagneticLocalizer {
                     let d0 = f.total - m.mean.total, d1 = f.vertical - m.mean.vertical, d2 = f.horizontal - m.mean.horizontal
                     ll += config.absoluteWeight * (w.0 * t(d0 * d0 / (v0 + slack2)) + w.1 * t(d1 * d1 / (v1 + slack2)) + w.2 * t(d2 * d2 / (v2 + slack2)))
                 }
-                ll *= mw * trust / config.likelihoodTemperature
+                ll *= mw * trust / temp
             } else {
                 let d0 = fAbs.total - m.mean.total, d1 = fAbs.vertical - m.mean.vertical, d2 = fAbs.horizontal - m.mean.horizontal
-                ll = mw * trust * (w.0 * t(d0 * d0 / v0) + w.1 * t(d1 * d1 / v1) + w.2 * t(d2 * d2 / v2)) / config.likelihoodTemperature
+                ll = mw * trust * (w.0 * t(d0 * d0 / v0) + w.1 * t(d1 * d1 / v1) + w.2 * t(d2 * d2 / v2)) / temp
             }
             lls[i] = ll
             let pw = exp(logw[i])
@@ -738,7 +752,9 @@ public final class MagneticLocalizer {
         }
         normalize()
         // 混合模式：定到之后慢慢跟踪偏移（读数 − 地图在当前位置的值）
-        if config.hybridOffset, let off = offsetEst, let c = committed ?? lastCenter, let m = field.sample(at: c) {
+        if config.hybridOffset, config.offsetWarmupUpdates > 0 {
+            updateRobustOffset(f)
+        } else if config.hybridOffset, let off = offsetEst, let c = committed ?? lastCenter, let m = field.sample(at: c) {
             let r = config.offsetTrackRate
             offsetEst = MagneticFeature(total: off.total + r * ((f.total - m.mean.total) - off.total),
                                         vertical: off.vertical + r * ((f.vertical - m.mean.vertical) - off.vertical),
@@ -750,6 +766,22 @@ public final class MagneticLocalizer {
         if lastEffectiveRatio < config.resampleThreshold { resample(to: xs.count) }
         decideCluster()
         checkConvergence()
+    }
+
+    /// 稳健偏移估计：定到之后每次更新记一条残差（读数 − 认定位置的地图值），攒够 `offsetWarmupUpdates` 条再给偏移，
+    /// 偏移取最近 `offsetMedianWindow` 条的逐分量中位数。没定到 / 丢了时清空（回到按起伏找）。
+    private func updateRobustOffset(_ f: MagneticFeature) {
+        guard hasConverged else { offsetResiduals.removeAll(); offsetEst = nil; return }
+        guard let c = committed ?? lastCenter, let m = field.sample(at: c) else { return }
+        offsetResiduals.append(f - m.mean)
+        let win = max(config.offsetMedianWindow, config.offsetWarmupUpdates, 1)
+        if offsetResiduals.count > win { offsetResiduals.removeFirst(offsetResiduals.count - win) }
+        guard offsetResiduals.count >= config.offsetWarmupUpdates else { return }
+        func med(_ k: KeyPath<MagneticFeature, Double>) -> Double {
+            let v = offsetResiduals.map { $0[keyPath: k] }.sorted()
+            return v.count % 2 == 1 ? v[v.count / 2] : (v[v.count / 2 - 1] + v[v.count / 2]) / 2
+        }
+        offsetEst = MagneticFeature(total: med(\.total), vertical: med(\.vertical), horizontal: med(\.horizontal))
     }
 
     /// 决定认定哪个簇：离当前认定位置近就直接跟；远的另一个簇要连续确认几次才切过去。

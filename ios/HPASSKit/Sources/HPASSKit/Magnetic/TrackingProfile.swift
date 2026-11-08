@@ -24,7 +24,9 @@ public enum OdometrySource: String, CaseIterable {
 /// - 运动来源中途变了（视觉里程计没对齐 / 跟丢时计步顶上），调用方用 `MagneticLocalizer.setOdometry` 换参数；
 /// - 整步撞墙时贴墙滑（`wallSlide`）：推算方向偏一点就顶到墙 / 店铺边的粒子不原地卡住；
 /// - 定到之后地磁只占一部分（`convergedMagWeight`），并按粒子落在有数据格子上的权重比例再打折
-///   （`coverageGatedMagWeight`）：一段没采过的路上完全靠推算。
+///   （`coverageGatedMagWeight`）：一段没采过的路上完全靠推算；
+/// - 地磁似然按实测残差标定（`TrackingProfile.observationSigmaFloorUT` / `magneticCorrelationCm`），
+///   整体偏移不用单次读数估，攒够一段再取中位数（`offsetWarmupUpdates`）。
 ///
 /// 数值在公开数据集的 Python 移植上挑的（见 PR 描述），不按单条测试轨迹调。
 public enum TrackingProfile {
@@ -32,6 +34,20 @@ public enum TrackingProfile {
     public static let startSpreadCm: Double = 50
     /// 自己丢了之后走了这么远（cm）还没在附近找回，就改回全图找
     public static let localRecoveryGlobalAfterCm: Double = 6000
+
+    // 地磁似然标定。数值来自公开数据集的实测残差（hpass-eval --residuals：测试会话每 50 cm 的读数和
+    // 「全局解偏移的融合图」在参考位置的值比，扣掉每条会话的整体偏移），不是按定位结果调的：
+    // - 残差按 Student-t（ν = 4）拟合的尺度三个分量都是 5 µT 左右，而地图格子自己的标准差中位才 1 µT，
+    //   原来的 1.5 µT 下限让 1/3 的读数落在 3σ 以外（t 分布应该是 5%）；
+    // - 残差沿路的积分相关长度约 12～17 次更新（6～8 m）：地图误差、偏移误差都是成片的，每 50 cm 一次的更新远不是独立的；
+    // - 用开头一次读数估整体偏移，误差中位 5～7 µT、P90 11～25 µT；攒 20 次（10 m）取中位数，降到中位 2.5～4.5 µT。
+    /// 观测噪声下限（µT），和地图格子的标准差合成
+    public static let observationSigmaFloorUT: Double = 5
+    /// 地磁残差的相关长度（cm）：走这么远才算一次独立的地磁观测
+    public static let magneticCorrelationCm: Double = 600
+    /// 定到之后攒这么多次更新的残差再估整体偏移（中位数），之后用最近 `offsetMedianWindow` 次的中位数慢慢跟
+    public static let offsetWarmupUpdates = 20
+    public static let offsetMedianWindow = 60
 }
 
 public extension MagneticConfig {
@@ -60,6 +76,11 @@ public extension MagneticConfig {
         c.coverageGatedMagWeight = true
         // 推算方向偏一点就会顶到墙 / 店铺边：贴墙滑过去，不原地卡住（只影响有可走区域的地图）
         c.wallSlide = true
+        // 似然标定（只在跟踪档里；冷启动和全局默认值不变）
+        c.observationSigmaFloorUT = TrackingProfile.observationSigmaFloorUT
+        c.magneticCorrelationCm = TrackingProfile.magneticCorrelationCm
+        c.offsetWarmupUpdates = TrackingProfile.offsetWarmupUpdates
+        c.offsetMedianWindow = TrackingProfile.offsetMedianWindow
         return c
     }
 

@@ -41,9 +41,11 @@ do {
         refTags = tp
         print("参考轨迹：用标签锚定修正")
     }
-    // 磁场图默认和云端出图同一份流水线（MultiSessionFusion.buildProduction：三遍融合、质量筛选、只用主体连通分量）；
-    // --map-build sequential = 手机上按顺序逐个对齐的老办法
-    let mapMode: SessionEvaluator.MapBuild = arg("--map-build") == "sequential" ? .sequential : .fusion
+    // 磁场图默认和云端出图同一份流水线（MultiSessionFusion.buildProduction：三遍融合、标签修正、质量筛选），
+    // 只是和主体连不上的分量也留在图里（见 SessionEvaluator.MapBuild.fusion）；
+    // --map-build production = 和云端完全一样（磁场图只用主体分量）；sequential = 手机上按顺序逐个对齐的老办法
+    let modes: [String: SessionEvaluator.MapBuild] = ["sequential": .sequential, "production": .production, "fusion": .fusion]
+    let mapMode = modes[arg("--map-build") ?? "fusion"] ?? .fusion
     let built = try SessionEvaluator.buildMaps(sessions: build, map: map, mode: mapMode, tagPositions: refTags ?? [:])
     let field = built.field, bleMap = built.ble
     for r in built.reports {
@@ -52,7 +54,8 @@ do {
     }
     for x in built.rejected { print("建图不用 \(x.name)：\(x.reason)") }
     print("建图：\(build.count) 个会话，合格 \(build.count - built.rejected.count) 个，\(built.components) 个连通分量"
-          + (built.magExcluded.isEmpty ? "" : "，磁场图不用（和主体连不上）：\(built.magExcluded.joined(separator: "、"))"))
+          + (built.offMain.isEmpty ? "" : "，不在主体里 \(built.offMain.count) 个" + (built.magExcluded.isEmpty ? "（仍在磁场图里；云端出图会排除）" : "（磁场图没用）"))
+          + "，磁场 \(field.coveredCells) 格")
     print("磁场图：有数据 \(field.coveredCells) 格；蓝牙指纹：\(bleMap.map { "\($0.tags.count) 个标签" } ?? "无")")
     if CommandLine.arguments.contains("--old-ble") { BLEAssist.defaultTagRanges = false }
     if CommandLine.arguments.contains("--no-pregate") { BLEAssist.defaultPreGate = false }

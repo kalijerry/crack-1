@@ -260,6 +260,10 @@ def run_eval(eval_cmd: list[str], cwd: Path, build: str, test: str, runs: int, f
         if p.returncode != 0 or not out.exists():
             tail = (p.stdout or "")[-1500:] + (p.stderr or "")[-1500:]
             raise RuntimeError(f"hpass-eval 失败（退出码 {p.returncode}）：{tail}")
+        # 建图摘要（会话数、合格数、连通分量、哪些会话不在主体里）进 Lab 日志
+        for line in (p.stdout or "").splitlines():
+            if line.startswith("建图："):
+                print(f"[lab]   {line}")
         return json.loads(out.read_text(encoding="utf-8"))
 
 

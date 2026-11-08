@@ -46,8 +46,12 @@ private func pct(_ a: [Double], _ q: Double) -> Double? {
 public enum SessionEvaluator {
     /// 建图方式
     public enum MapBuild {
-        /// 和云端出图（hpass-build）同一份代码：MultiSessionFusion.buildProduction —— 三遍融合（全局解偏移，和会话顺序无关）、
+        /// 和云端出图（hpass-build）完全一样：MultiSessionFusion.buildProduction —— 三遍融合（全局解偏移，和会话顺序无关）、
         /// 有标签位置表 / 货架标签时的轨迹锚定修正、质量筛选（不合格的段 / 会话不用）、磁场图只用主体连通分量
+        case production
+        /// 同一条流水线（同一份代码），只差最后一步：和主体连不上的分量也留在磁场图里（各分量各自对齐，分量之间不对齐）。
+        /// 评估默认用这个：公开数据集的建图轨迹不是按「分片之间要有重叠」采的，只用主体会把大片区域从图里去掉，
+        /// 量到的是采集覆盖而不是定位；云端会排除哪些会话见 BuiltMaps.offMain（hpass-eval 打印）
         case fusion
         /// 手机上「生成磁场图」那套：会话按顺序一个个加，每个只和已经加进去的数据对齐偏移（结果和顺序有关）
         case sequential
@@ -62,13 +66,15 @@ public enum SessionEvaluator {
         public var components: Int = 1
         /// 质量筛选没通过、不用的会话（名字 + 原因）
         public var rejected: [(name: String, reason: String)] = []
-        /// 质量合格但和主体连不上、磁场图没用的会话
+        /// 质量合格但和主体连不上、磁场图没用的会话（只有 .production 会排除）
         public var magExcluded: [String] = []
+        /// 质量合格但不在主体分量里的会话（云端出图会排除的）
+        public var offMain: [String] = []
     }
 
     public enum BuildError: Error { case noUsableSession }
 
-    /// 用建图会话生成磁场图 + 蓝牙指纹。默认和云端出图同一份流水线（见 MapBuild.fusion），蓝牙指纹用合格会话
+    /// 用建图会话生成磁场图 + 蓝牙指纹。默认和云端出图同一份流水线（见 MapBuild.production / .fusion 的区别），蓝牙指纹用合格会话
     /// （含和主体连不上的）对齐后的轨迹和筛过的读数，和 hpass-build 一样。
     /// - tagPositions: 标签位置表（hpass-build --tag-locations 同一份）；空 = 没有表
     public static func buildMaps(sessions: [URL], map: StoreMap, mode: MapBuild = .fusion,
@@ -86,14 +92,15 @@ public enum SessionEvaluator {
             }
             let ble = bb.build()
             return BuiltMaps(field: b.build(), ble: ble.tags.count >= 20 ? ble : nil, reports: reps)
-        case .fusion:
+        case .production, .fusion:
             var loaded: [SurveySession] = [], bles: [[BLESample]] = [], signs: [[SignSample]] = []
             for u in sessions {
                 loaded.append(try SurveySessionLoader.load(u))
                 bles.append(SurveySessionLoader.loadBLE(u))
                 signs.append(SignSample.load(u))
             }
-            guard let pb = MultiSessionFusion(map: map).buildProduction(loaded, ble: bles, signs: signs, tagPositions: tagPositions) else {
+            guard let pb = MultiSessionFusion(map: map).buildProduction(loaded, ble: bles, signs: signs, tagPositions: tagPositions,
+                                                                     mainComponentOnly: mode == .production) else {
                 throw BuildError.noUsableSession
             }
             for (k, track) in pb.all.tracks.enumerated() where k < pb.keptBLE.count { _ = bb.add(samples: pb.keptBLE[k], track: track) }
@@ -101,7 +108,7 @@ public enum SessionEvaluator {
             return BuiltMaps(field: pb.magnetic.field, ble: ble.tags.count >= 20 ? ble : nil, reports: pb.magnetic.reports,
                              components: pb.components,
                              rejected: pb.quality.filter { !$0.kept }.map { ($0.name, $0.reason ?? "") },
-                             magExcluded: pb.magExcluded)
+                             magExcluded: pb.magExcluded, offMain: pb.offMain)
         }
     }
 

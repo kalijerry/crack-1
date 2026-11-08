@@ -32,11 +32,12 @@ final class ProductionMapBuildTests: XCTestCase {
 
     func dirs(_ set: String, _ names: [String]) -> [URL] { names.map { root.appendingPathComponent("\(set)/\($0)") } }
 
-    func testFusionRemovesOffsetsAndExcludesIsolatedSession() throws {
-        let built = try SessionEvaluator.buildMaps(sessions: dirs("off", ["a", "b", "c", "d", "e"]), map: map)
+    func testProductionRemovesOffsetsAndExcludesIsolatedSession() throws {
+        let built = try SessionEvaluator.buildMaps(sessions: dirs("off", ["a", "b", "c", "d", "e"]), map: map, mode: .production)
         // e 和别的会话没有共同格子：单独一个连通分量，磁场图不用（和 hpass-build 一样）
         XCTAssertEqual(built.components, 2)
         XCTAssertEqual(built.magExcluded, ["e"])
+        XCTAssertEqual(built.offMain, ["e"])
         XCTAssertTrue(built.rejected.isEmpty, "\(built.rejected)")
         XCTAssertEqual(built.reports.map(\.name), ["a", "b", "c", "d"])
         let f = built.field
@@ -50,7 +51,7 @@ final class ProductionMapBuildTests: XCTestCase {
             XCTAssertGreaterThan(rep.samplesUsed, 100, r.name)
         }
         // 每格均值 = 没有偏移时（同样路线、偏移都是 0）建出来的图
-        let control = try SessionEvaluator.buildMaps(sessions: dirs("zero", ["a", "b", "c", "d", "e"]), map: map).field
+        let control = try SessionEvaluator.buildMaps(sessions: dirs("zero", ["a", "b", "c", "d", "e"]), map: map, mode: .production).field
         var compared = 0
         for (k, c) in f.cells.enumerated() {
             guard let c, let z = control.cells[k] else { continue }
@@ -60,6 +61,27 @@ final class ProductionMapBuildTests: XCTestCase {
             XCTAssertEqual(c.total, z.total, accuracy: 0.6, "格 \(k)")
         }
         XCTAssertGreaterThan(compared, 40)
+    }
+
+    /// 评估默认（.fusion）：同一条流水线，只是孤立的分量留在图里；主体部分和 .production 一样
+    func testFusionKeepsIsolatedComponent() throws {
+        let ds = dirs("off", ["a", "b", "c", "d", "e"])
+        let fu = try SessionEvaluator.buildMaps(sessions: ds, map: map)
+        let pr = try SessionEvaluator.buildMaps(sessions: ds, map: map, mode: .production)
+        XCTAssertEqual(fu.components, 2)
+        XCTAssertTrue(fu.magExcluded.isEmpty)
+        XCTAssertEqual(fu.offMain, ["e"])
+        XCTAssertEqual(fu.reports.map(\.name), ["a", "b", "c", "d", "e"])
+        XCTAssertNil(try XCTUnwrap(fu.reports.last).offsetUT, "单独一个分量，没有偏移可解")
+        let f = fu.field
+        var eCells = 0
+        for (k, c) in f.cells.enumerated() {
+            if k % f.cols < 3 { if c != nil { eCells += 1 }; continue }
+            XCTAssertEqual(c == nil, pr.field.cells[k] == nil, "格 \(k)")
+            guard let c, let p = pr.field.cells[k] else { continue }
+            XCTAssertEqual(c.vertical, p.vertical, accuracy: 1e-6, "格 \(k)")
+        }
+        XCTAssertGreaterThan(eCells, 5)
     }
 
     func testFusionIsOrderIndependent() throws {
@@ -73,10 +95,10 @@ final class ProductionMapBuildTests: XCTestCase {
             XCTAssertEqual(x.vertical, y.vertical, accuracy: 1e-6)
             XCTAssertEqual(x.horizontal, y.horizontal, accuracy: 1e-6)
         }
-        XCTAssertEqual(b.magExcluded, ["e"])
-        // 报告按输入顺序（主体分量里的）
-        XCTAssertEqual(b.reports.map(\.name), ["d", "b", "a", "c"])
-        for r in a.reports {
+        XCTAssertEqual(b.offMain, ["e"])
+        // 报告按输入顺序
+        XCTAssertEqual(b.reports.map(\.name), ["d", "e", "b", "a", "c"])
+        for r in a.reports where r.name != "e" {
             let o = try XCTUnwrap(b.reports.first { $0.name == r.name }?.offsetUT)
             XCTAssertEqual(o.vertical, try XCTUnwrap(r.offsetUT).vertical, accuracy: 1e-6)
         }

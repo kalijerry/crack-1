@@ -1,7 +1,7 @@
 import Foundation
 import HPASSKit
 
-/// 一个门店数据文件的本地状态。
+/// 一个场地数据文件的本地状态。
 struct StoreFileInfo {
     var exists: Bool
     var bytes: Int64
@@ -12,7 +12,7 @@ struct StoreFileInfo {
     var error: String?
 }
 
-/// 门店数据的本地仓库：地图、指纹、价签三个文件。
+/// 场地数据的本地仓库：地图、指纹、标签三个文件。
 ///
 /// 文件存放在 Documents/store-data/ 下，可以由下载模块写入，也可以通过「文件」App 拖进来。
 /// 数据本身不进代码仓库。
@@ -21,7 +21,7 @@ final class StoreDataStore: ObservableObject {
     static let shared = StoreDataStore()
 
     enum FileKind: String, CaseIterable, Identifiable {
-        case map, fingerprint, esl
+        case map, fingerprint, tags = "esl"     // 原始值是已存数据里的键，不能改
 
         var id: String { rawValue }
 
@@ -32,7 +32,7 @@ final class StoreDataStore: ObservableObject {
             switch self {
             case .map: return "map.json"
             case .fingerprint: return "fingerprint.json"
-            case .esl: return "esl.json"
+            case .tags: return "esl.json"
             }
         }
 
@@ -40,7 +40,7 @@ final class StoreDataStore: ObservableObject {
             switch self {
             case .map: return "地图"
             case .fingerprint: return "指纹库"
-            case .esl: return "标签/物品"
+            case .tags: return "标签/物品"
             }
         }
     }
@@ -53,16 +53,16 @@ final class StoreDataStore: ObservableObject {
     private var rawMap: StoreMap?
     private static let shelfOffsetKey = "shelfOffsetCm.v1"
     @Published private(set) var fingerprints: [FingerprintPoint] = []
-    @Published private(set) var eslItems: [EslItem] = []
+    @Published private(set) var tagItems: [TagItem] = []
     @Published private(set) var goods: [GoodsItem] = []
     @Published private(set) var files: [String: StoreFileInfo] = [:]
     /// 数据自检结果，空表示没问题
     @Published private(set) var issues: [String] = []
     @Published private(set) var lastError: String?
 
-    var isReady: Bool { map != nil && !fingerprints.isEmpty && !eslItems.isEmpty }
+    var isReady: Bool { map != nil && !fingerprints.isEmpty && !tagItems.isEmpty }
 
-    var eslToShelf: [String: String] { StoreDataLoader.eslToShelf(eslItems) }
+    var tagToShelf: [String: String] { StoreDataLoader.tagToShelf(tagItems) }
 
     /// 地图变了没有（尺寸、货架、通道、地面）。换成房间地图时通道数可能不变（都是 0），所以不能只看通道数。
     var mapSignature: String {
@@ -70,89 +70,89 @@ final class StoreDataStore: ObservableObject {
         return "\(Int(m.width))x\(Int(m.height))/\(m.shelves.count)/\(m.crosses.count)/\(m.floor.count)/\(m.floorName ?? "")"
     }
 
-    // MARK: 价签位置表（esl_locations_<门店>.csv：价签 → 通道 / 段 / 层 / 条码）
+    // MARK: 标签位置表（CSV：标签 → 通道 / 段 / 层 / 条码）
 
-    private var eslLocURL: URL { Self.rootURL.appendingPathComponent("esl-locations.csv") }
-    private var eslLocCache: (sig: String, locs: [EslLocation])?
-    @Published private(set) var eslLocCount = 0
+    private var tagLocURL: URL { Self.rootURL.appendingPathComponent("esl-locations.csv") }
+    private var tagLocCache: (sig: String, locs: [TagLocation])?
+    @Published private(set) var tagLocCount = 0
 
-    /// 按当前地图对上货架的价签位置（地图换了重新对）
-    var eslLocations: [EslLocation] {
-        if let c = eslLocCache, c.sig == mapSignature { return c.locs }
-        guard let t = try? String(contentsOf: eslLocURL, encoding: .utf8) else { return [] }
-        let locs = EslLocations.parse(t, map: map)
-        eslLocCache = (mapSignature, locs)
+    /// 按当前地图对上货架的标签位置（地图换了重新对）
+    var tagLocations: [TagLocation] {
+        if let c = tagLocCache, c.sig == mapSignature { return c.locs }
+        guard let t = try? String(contentsOf: tagLocURL, encoding: .utf8) else { return [] }
+        let locs = TagLocations.parse(t, map: map)
+        tagLocCache = (mapSignature, locs)
         return locs
     }
 
-    var hasEslLocations: Bool { FileManager.default.fileExists(atPath: eslLocURL.path) }
+    var hasTagLocations: Bool { FileManager.default.fileExists(atPath: tagLocURL.path) }
 
-    /// 装上从后台拿到的价签位置表（正常模式），不再往回传
-    func installEslLocations(_ data: Data) throws {
-        guard let text = String(data: data, encoding: .utf8), !EslLocations.parse(text, map: map).isEmpty else {
+    /// 装上从后台拿到的标签位置表（正常模式），不再往回传
+    func installTagLocations(_ data: Data) throws {
+        guard let text = String(data: data, encoding: .utf8), !TagLocations.parse(text, map: map).isEmpty else {
             throw StoreDataError.unsupportedFormat("后台的标签位置表读不出来")
         }
         try FileManager.default.createDirectory(at: Self.rootURL, withIntermediateDirectories: true)
-        try data.write(to: eslLocURL, options: .atomic)
-        let locs = EslLocations.parse(text, map: map)
-        try locs.map(\.id).joined(separator: "\n").write(to: eslIdsURL, atomically: true, encoding: .utf8)
-        eslLocCache = nil
-        eslLocCount = locs.count
-        loadEslIds()
+        try data.write(to: tagLocURL, options: .atomic)
+        let locs = TagLocations.parse(text, map: map)
+        try locs.map(\.id).joined(separator: "\n").write(to: tagIdsURL, atomically: true, encoding: .utf8)
+        tagLocCache = nil
+        tagLocCount = locs.count
+        loadTagIds()
         AppLog.i("场地数据", "从后台装上标签位置表：\(locs.count) 个")
     }
 
-    /// 导入价签位置表：同时当价签名单用，连着后台就传上去（云端融合用它当蓝牙底图）
-    func importEslLocations(from source: URL) throws -> (total: Int, onShelf: Int) {
+    /// 导入标签位置表：同时当标签名单用，连着后台就传上去（云端融合用它当蓝牙底图）
+    func importTagLocations(from source: URL) throws -> (total: Int, onShelf: Int) {
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
         let data = try Data(contentsOf: source)
         guard let text = String(data: data, encoding: .utf8) else { throw StoreDataError.unsupportedFormat("不是 UTF-8 文本") }
-        let locs = EslLocations.parse(text, map: map)
+        let locs = TagLocations.parse(text, map: map)
         guard !locs.isEmpty else { throw StoreDataError.unsupportedFormat("没找到 ESL_ID 列") }
         try FileManager.default.createDirectory(at: Self.rootURL, withIntermediateDirectories: true)
-        try data.write(to: eslLocURL, options: .atomic)
-        try locs.map(\.id).joined(separator: "\n").write(to: eslIdsURL, atomically: true, encoding: .utf8)
-        eslLocCache = nil
-        eslLocCount = locs.count
-        loadEslIds()
+        try data.write(to: tagLocURL, options: .atomic)
+        try locs.map(\.id).joined(separator: "\n").write(to: tagIdsURL, atomically: true, encoding: .utf8)
+        tagLocCache = nil
+        tagLocCount = locs.count
+        loadTagIds()
         let onShelf = locs.filter { $0.position != nil }.count
         AppLog.i("场地数据", "导入标签位置表：\(locs.count) 个，对上地图障碍物 \(onShelf) 个")
-        Task { await Telemetry.shared.uploadEslLocations(data) }
+        Task { await Telemetry.shared.uploadTagLocations(data) }
         return (locs.count, onShelf)
     }
 
-    // MARK: 价签名单（蓝牙粗定位只收名单里的价签）
+    // MARK: 标签名单（蓝牙粗定位只收名单里的标签）
 
-    private var eslIdsURL: URL { Self.rootURL.appendingPathComponent("esl-ids.txt") }
-    @Published private(set) var eslIdCount = 0
-    /// 价签名单；没导入为 nil（不过滤，只按厂商 ID 和「听到范围」判断）
-    private(set) var eslIds: Set<String>?
+    private var tagIdsURL: URL { Self.rootURL.appendingPathComponent("esl-ids.txt") }
+    @Published private(set) var tagIdCount = 0
+    /// 标签名单；没导入为 nil（不过滤，只按厂商 ID 和「听到范围」判断）
+    private(set) var tagIds: Set<String>?
 
-    func loadEslIds() {
-        guard let t = try? String(contentsOf: eslIdsURL, encoding: .utf8) else { eslIds = nil; eslIdCount = 0; return }
+    func loadTagIds() {
+        guard let t = try? String(contentsOf: tagIdsURL, encoding: .utf8) else { tagIds = nil; tagIdCount = 0; return }
         let s = BLEFingerprintBuilder.parseIdList(t)
-        eslIds = s.isEmpty ? nil : s
-        eslIdCount = s.count
+        tagIds = s.isEmpty ? nil : s
+        tagIdCount = s.count
     }
 
-    /// 导入价签名单：任何文本里的 XX-XX-XX-XX 都算（CSV、TXT、表格另存的 CSV）
-    func importEslIds(from source: URL) throws -> Int {
+    /// 导入标签名单：任何文本里的 XX-XX-XX-XX 都算（CSV、TXT、表格另存的 CSV）
+    func importTagIds(from source: URL) throws -> Int {
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
         let text = try String(contentsOf: source, encoding: .utf8)
         let ids = BLEFingerprintBuilder.parseIdList(text)
         guard !ids.isEmpty else { throw StoreDataError.unsupportedFormat("文件里没找到标签 ID（格式 XX-XX-XX-XX）") }
         try FileManager.default.createDirectory(at: Self.rootURL, withIntermediateDirectories: true)
-        try ids.sorted().joined(separator: "\n").write(to: eslIdsURL, atomically: true, encoding: .utf8)
-        loadEslIds()
+        try ids.sorted().joined(separator: "\n").write(to: tagIdsURL, atomically: true, encoding: .utf8)
+        loadTagIds()
         AppLog.i("场地数据", "导入标签名单：\(ids.count) 个")
         return ids.count
     }
 
-    func clearEslIds() {
-        try? FileManager.default.removeItem(at: eslIdsURL)
-        loadEslIds()
+    func clearTagIds() {
+        try? FileManager.default.removeItem(at: tagIdsURL)
+        loadTagIds()
     }
 
     /// 当前地图是不是房间扫描生成的
@@ -169,8 +169,8 @@ final class StoreDataStore: ObservableObject {
 
     private init() {
         defer {
-            loadEslIds()
-            eslLocCount = FileManager.default.fileExists(atPath: eslLocURL.path) ? eslLocations.count : 0
+            loadTagIds()
+            tagLocCount = FileManager.default.fileExists(atPath: tagLocURL.path) ? tagLocations.count : 0
         }
         if let a = UserDefaults.standard.array(forKey: Self.shelfOffsetKey) as? [Double], a.count == 2 {
             shelfOffset = Point2(a[0], a[1])
@@ -194,7 +194,7 @@ final class StoreDataStore: ObservableObject {
 
     // MARK: 写入
 
-    /// 保存一个门店数据文件并重新解析。
+    /// 保存一个场地数据文件并重新解析。
     func save(_ data: Data, as kind: FileKind) throws {
         try FileManager.default.createDirectory(at: Self.rootURL, withIntermediateDirectories: true)
         try data.write(to: url(for: kind), options: .atomic)
@@ -260,16 +260,16 @@ final class StoreDataStore: ObservableObject {
             self.fingerprints = []
         }
 
-        // 价签
-        info[FileKind.esl.rawValue] = parse(.esl) { data in
+        // 标签
+        info[FileKind.tags.rawValue] = parse(.tags) { data in
             let g = try StoreDataLoader.loadGoods(data)
             self.goods = g
-            self.eslItems = g.flatMap(\.positions)
+            self.tagItems = g.flatMap(\.positions)
             let skus = g.filter { !$0.sku.isEmpty }.count
-            return "\(self.eslItems.count) 个标签" + (skus > 0 ? " / \(skus) 个物品" : "")
+            return "\(self.tagItems.count) 个标签" + (skus > 0 ? " / \(skus) 个物品" : "")
         } onMissing: {
             self.goods = []
-            self.eslItems = []
+            self.tagItems = []
         }
 
         files = info
@@ -299,16 +299,16 @@ final class StoreDataStore: ObservableObject {
         }
     }
 
-    /// 用定位模块的自检检查数据一致性（指纹区间、邻接表、价签货架对应关系等）。
+    /// 用定位模块的自检检查数据一致性（指纹区间、邻接表、标签货架对应关系等）。
     func validate() {
-        guard !fingerprints.isEmpty, !eslItems.isEmpty else {
+        guard !fingerprints.isEmpty, !tagItems.isEmpty else {
             issues = []
             return
         }
-        let positioner = FingerprintPositioner(points: fingerprints, eslToShelf: eslToShelf)
+        let positioner = FingerprintPositioner(points: fingerprints, tagToShelf: tagToShelf)
         issues = positioner.validate()
         if issues.isEmpty {
-            AppLog.i("场地数据", "自检通过：\(fingerprints.count) 个指纹点，\(eslItems.count) 个标签")
+            AppLog.i("场地数据", "自检通过：\(fingerprints.count) 个指纹点，\(tagItems.count) 个标签")
         } else {
             AppLog.w("场地数据", "自检发现 \(issues.count) 个问题，详见场地数据页")
         }

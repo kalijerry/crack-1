@@ -19,9 +19,9 @@ private final class LivePipeline {
     /// 剩余里程小于该值视为到达
     static let arriveCm: Double = 120
 
-    // 门店数据快照（启动时从 StoreDataStore 取一次）
+    // 场地数据快照（启动时从 StoreDataStore 取一次）
     let points: [FingerprintPoint]
-    let eslToShelf: [String: String]
+    let tagToShelf: [String: String]
 
     let positioner: FingerprintPositioner
     let fusion: FusionEngine
@@ -33,7 +33,7 @@ private final class LivePipeline {
     var hint: NavHint?
     var useIMU = true
 
-    // 统计：最近 2 秒的 (时间, 价签 ID)
+    // 统计：最近 2 秒的 (时间, 标签 ID)
     var recent: [(t: Int64, id: String)] = []
     var readingsPerSecond = 0
     var uniqueTagsPerSecond = 0
@@ -53,14 +53,14 @@ private final class LivePipeline {
     var gotFirstFix = false
 
     init(points: [FingerprintPoint],
-         eslToShelf: [String: String],
+         tagToShelf: [String: String],
          map: StoreMap,
          positioning: PositioningConfig,
          fusionConfig: FusionConfig,
          plannerConfig: RoutePlannerConfig = .init()) {
         self.points = points
-        self.eslToShelf = eslToShelf
-        self.positioner = FingerprintPositioner(points: points, eslToShelf: eslToShelf, config: positioning)
+        self.tagToShelf = tagToShelf
+        self.positioner = FingerprintPositioner(points: points, tagToShelf: tagToShelf, config: positioning)
         self.fusion = FusionEngine(map: map, config: fusionConfig)
         self.nav = NavigationSession(planner: RoutePlanner(map: map, config: plannerConfig))
     }
@@ -150,7 +150,7 @@ final class LiveLocationEngine: ObservableObject {
     /// HPASSKit 的三个对象全部只在这条队列上使用
     private nonisolated let queue = DispatchQueue(label: "live.pipeline", qos: .userInitiated)
     private var pipeline: LivePipeline?
-    /// 内核是按哪份门店数据建的（指纹点数 + 价签数），数据换了就重建
+    /// 内核是按哪份场地数据建的（指纹点数 + 标签数），数据换了就重建
     private var pipelineSignature: Int?
     private var tickTimer: DispatchSourceTimer?
 
@@ -171,16 +171,16 @@ final class LiveLocationEngine: ObservableObject {
         }
         lastError = nil
 
-        // 复用已有内核（保留标定滚动缓冲），门店数据换了才重建
+        // 复用已有内核（保留标定滚动缓冲），场地数据换了才重建
         let fpCount = store.fingerprints.count
-        let eslCount = store.eslItems.count
-        let signature = fpCount &* 1_000_003 &+ eslCount
+        let tagCount = store.tagItems.count
+        let signature = fpCount &* 1_000_003 &+ tagCount
         let pipe: LivePipeline
         if let existing = pipeline, pipelineSignature == signature {
             pipe = existing
         } else {
             pipe = LivePipeline(points: store.fingerprints,
-                                eslToShelf: store.eslToShelf,
+                                tagToShelf: store.tagToShelf,
                                 map: map,
                                 positioning: positioningConfig(),
                                 fusionConfig: fusionConfig())
@@ -217,7 +217,7 @@ final class LiveLocationEngine: ObservableObject {
         stepCount = 0
 
         // BLE：回调线程 → 流水线队列
-        ble.onlyESL = true
+        ble.onlyTags = true
         ble.onReading = { [weak self] r in
             guard let self else { return }
             self.queue.async { self.handleReading(r, pipe: pipe) }
@@ -242,7 +242,7 @@ final class LiveLocationEngine: ObservableObject {
 
         isRunning = true
         SensorArbiter.shared.claim("蓝牙定位") { [weak self] in self?.stop() }
-        AppLog.i("实时定位", "开始：\(fpCount) 个指纹点，\(eslCount) 个标签，"
+        AppLog.i("实时定位", "开始：\(fpCount) 个指纹点，\(tagCount) 个标签，"
                  + "offset \(Fmt.f(rssiOffset, 1)) / scale \(Fmt.f(rssiScale, 2))，"
                  + "IMU \(useIMU ? "开" : "关")，平滑 \(useGraphSmoothing ? "开" : "关")")
     }
@@ -277,7 +277,7 @@ final class LiveLocationEngine: ObservableObject {
 
     /// App 的 `BLEReading` → `HPASSKit.BLEReading`。type = 1 表示手机蓝牙扫描。
     private nonisolated func handleReading(_ r: BLEReading, pipe: LivePipeline) {
-        guard let id = r.eslId, !id.isEmpty else { return }   // 没解出价签 ID 的广播对定位无用
+        guard let id = r.tagId, !id.isEmpty else { return }   // 没解出标签 ID 的广播对定位无用
         let reading = HPASSKit.BLEReading(tagId: id, rssi: r.rssi, type: 1, tMs: r.tMs)
         pipe.positioner.add([reading])
 
@@ -562,7 +562,7 @@ final class LiveLocationEngine: ObservableObject {
                 }
                 return
             }
-            let r = RSSICalibrator.fitBlind(readings: window, points: pipe.points, eslToShelf: pipe.eslToShelf)
+            let r = RSSICalibrator.fitBlind(readings: window, points: pipe.points, tagToShelf: pipe.tagToShelf)
             AppLog.i("实时定位", "盲标定：offset \(Fmt.f(r.offset, 2)) scale \(Fmt.f(r.scale, 3))，"
                      + "得分 \(Fmt.f(r.scoreBefore, 3)) → \(Fmt.f(r.score, 3))，\(r.samples) 个时间窗")
             Task { @MainActor in
@@ -606,7 +606,7 @@ final class LiveLocationEngine: ObservableObject {
             }
             let r = RSSICalibrator.fit(readingsByPoint: [pid: buf],
                                        points: pipe.points,
-                                       eslToShelf: pipe.eslToShelf)
+                                       tagToShelf: pipe.tagToShelf)
             AppLog.i("实时定位", "点位 \(pid) 标定：offset \(Fmt.f(r.offset, 2)) scale \(Fmt.f(r.scale, 3))，"
                      + "得分 \(Fmt.f(r.scoreBefore, 3)) → \(Fmt.f(r.score, 3))，\(r.samples) 个时间窗")
             Task { @MainActor in

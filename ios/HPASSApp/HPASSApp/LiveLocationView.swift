@@ -385,7 +385,7 @@ struct LiveLocationView: View {
 
 // MARK: - 商品选择
 
-/// 按 sku / 名称搜索商品，取第一个带坐标的价签位置作为导航目标。
+/// 按 sku / 名称搜索商品，取第一个带坐标的标签位置作为导航目标。
 @MainActor
 private struct GoodsPickerView: View {
     let goods: [GoodsItem]

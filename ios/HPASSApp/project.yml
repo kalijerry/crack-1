@@ -1,4 +1,4 @@
-name: ESLCollector
+name: HPASSApp
 options:
   bundleIdPrefix: com.example
   deploymentTarget:
@@ -13,15 +13,15 @@ packages:
   HPASSKit:
     path: ../HPASSKit
 targets:
-  ESLCollector:
+  HPASSApp:
     type: application
     platform: iOS
     dependencies:
       - package: HPASSKit
     sources:
-      - path: ESLCollector
+      - path: HPASSApp
     info:
-      path: ESLCollector/Info.plist
+      path: HPASSApp/Info.plist
       properties:
         CFBundleDisplayName: 室内定位
         UILaunchScreen: {}
@@ -39,7 +39,7 @@ targets:
         NSLocalNetworkUsageDescription: 从场地服务器下载地图和信号数据
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.eslcollector
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.hpassapp
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_STYLE: Automatic
         GENERATE_INFOPLIST_FILE: NO

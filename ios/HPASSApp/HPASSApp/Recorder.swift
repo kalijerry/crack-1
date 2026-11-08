@@ -34,7 +34,7 @@ private final class SharedState {
         lock.unlock()
     }
 
-    /// 返回：最近 1 秒读数数、最近 1 秒唯一价签数、最近 2 秒最强 10 个价签、自上次以来 IMU 样本数、磁场精度。
+    /// 返回：最近 1 秒读数数、最近 1 秒唯一标签数、最近 2 秒最强 10 个标签、自上次以来 IMU 样本数、磁场精度。
     func snapshot(now: Int64) -> (Int, Int, [TagStat], Int, Int) {
         lock.lock()
         recent.removeAll { now - $0.t > 2000 }
@@ -80,7 +80,7 @@ final class SensorTap: @unchecked Sendable {
         get { lock.lock(); defer { lock.unlock() }; return _raw }
         set { lock.lock(); _raw = newValue; lock.unlock() }
     }
-    /// 价签读数：时间、价签编号、信号
+    /// 标签读数：时间、标签编号、信号
     var ble: (@Sendable (Int64, String, Double) -> Void)? {
         get { lock.lock(); defer { lock.unlock() }; return _ble }
         set { lock.lock(); _ble = newValue; lock.unlock() }
@@ -97,7 +97,7 @@ final class Recorder: ObservableObject {
     // 录制
     @Published var isRecording = false
     @Published var deviceLabel = "16pro"
-    @Published var onlyESL = true
+    @Published var onlyTags = true
     @Published var elapsed: TimeInterval = 0
     @Published var bleState = "未知"
     @Published var lastError: String?
@@ -194,12 +194,12 @@ final class Recorder: ObservableObject {
 
             let shared = self.shared
             let tapForBLE = self.tap
-            ble.onlyESL = onlyESL
+            ble.onlyTags = onlyTags
             ble.onReading = { r in
                 let point = shared.currentPoint
-                bleW.append("\(r.tMs),\(Fmt.csv(point)),\(r.eslId ?? ""),\(r.rssi),\(r.src),\(r.mfgHex)")
-                shared.addReading(t: r.tMs, id: r.eslId ?? r.src, rssi: r.rssi)
-                if let id = r.eslId { tapForBLE.ble?(r.tMs, id, Double(r.rssi)) }
+                bleW.append("\(r.tMs),\(Fmt.csv(point)),\(r.tagId ?? ""),\(r.rssi),\(r.src),\(r.mfgHex)")
+                shared.addReading(t: r.tMs, id: r.tagId ?? r.src, rssi: r.rssi)
+                if let id = r.tagId { tapForBLE.ble?(r.tMs, id, Double(r.rssi)) }
             }
             let tap = self.tap
             sensors.tap = tap
@@ -226,7 +226,7 @@ final class Recorder: ObservableObject {
                 AppLog.e("采集", "设备运动传感器不可用")
             }
             AppLog.shared.startMirroring(to: dir)
-            AppLog.i("采集", "开始录制：\(dir.lastPathComponent)，仅标签 \(onlyESL ? "是" : "否")")
+            AppLog.i("采集", "开始录制：\(dir.lastPathComponent)，仅标签 \(onlyTags ? "是" : "否")")
 
             UIApplication.shared.isIdleTimerDisabled = true
             isRecording = true
@@ -343,7 +343,7 @@ final class Recorder: ObservableObject {
             "os_version": UIDevice.current.systemVersion,
             "app_version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "",
             "start_ms": startMs,
-            "only_esl": onlyESL,
+            "only_esl": onlyTags,
             "imu_target_hz": 50,
             "format_version": 2,
             "setup_note": setupNote,

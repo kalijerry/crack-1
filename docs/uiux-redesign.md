@@ -1,6 +1,6 @@
 # iOS App UI/UX 改造方案
 
-> 范围：`ios/ESLCollector/ESLCollector/` 的界面层（SwiftUI，iOS 16+）。定位算法（`ios/HPASSKit`）和各引擎的行为不动，只改「怎么呈现、怎么操作」。
+> 范围：`ios/HPASSApp/HPASSApp/` 的界面层（SwiftUI，iOS 16+）。定位算法（`ios/HPASSKit`）和各引擎的行为不动，只改「怎么呈现、怎么操作」。
 > 目标：从「工程师调试面板」变成接近成熟室内导航产品（Apple 地图室内视图、商用室内定位演示 App）的体验，同时保留全部调试能力，收进「开发者」区域。
 
 ---
@@ -229,6 +229,6 @@ SF Symbols，统一 `.symbolRenderingMode(.hierarchical)`：
 
 ## 8. 实现与验收
 
-- 新文件：`DesignSystem.swift`、`AppEngines.swift`、`NavigateView.swift`、`MappingView.swift`、`LibraryView.swift`、`SettingsView.swift`。XcodeGen 的 `sources: - path: ESLCollector` 覆盖整个目录，新文件自动进工程。
+- 新文件：`DesignSystem.swift`、`AppEngines.swift`、`NavigateView.swift`、`MappingView.swift`、`LibraryView.swift`、`SettingsView.swift`。XcodeGen 的 `sources: - path: HPASSApp` 覆盖整个目录，新文件自动进工程。
 - 引擎共享：`AppEngines` 持有唯一的定位引擎和采集引擎，导航、建图、高级控制台用同一份，避免两个页面同时开传感器。
 - CI：`ios-app`（xcodebuild）和 `hpasskit` 必须通过；新增 `ios-screenshots` 任务在模拟器里用演示数据（`-uiDemo`）截图各个 Tab，上传为 artifact。

@@ -28,7 +28,7 @@ struct MapTransform {
 
 // MARK: - 地图视图
 
-/// Canvas 绘制的门店地图 + 定位叠加层。支持双指缩放、拖动平移、点击取坐标。
+/// Canvas 绘制的场地地图 + 定位叠加层。支持双指缩放、拖动平移、点击取坐标。
 struct MapCanvas: View {
 
     let map: StoreMap?
@@ -441,7 +441,7 @@ struct MapCanvas: View {
             mc.stroke(cached.nonStandard, with: .color(.gray.opacity(0.25)), lineWidth: 0.4 * px)
         }
 
-        // 房间扫描的墙 / 门 / 窗：墙深色、门棕色、窗浅蓝（门店地图没有这些类型）
+        // 房间扫描的墙 / 门 / 窗：墙深色、门棕色、窗浅蓝（场地地图没有这些类型）
         for o in m.others {
             let color: Color
             switch o.shapeType {

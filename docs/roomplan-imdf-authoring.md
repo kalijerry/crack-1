@@ -134,8 +134,8 @@ lon = lon0 + e / mPerDegLon,  lat = lat0 − s / mPerDegLat      # r = rotationD
 
 | 部分 | 位置 |
 |---|---|
-| 多房间扫描、入口记录、楼层、导出按钮 | `ios/ESLCollector/ESLCollector/RoomScanView.swift` |
-| 场馆设置、GPS / 朝向、气压楼层、单元编辑、门牌识别 | `ios/ESLCollector/ESLCollector/VenueAuthoring.swift` |
+| 多房间扫描、入口记录、楼层、导出按钮 | `ios/HPASSApp/HPASSApp/RoomScanView.swift` |
+| 场馆设置、GPS / 朝向、气压楼层、单元编辑、门牌识别 | `ios/HPASSApp/HPASSApp/VenueAuthoring.swift` |
 | 多房间 → map.json、单元派生字段、改类别 / 名字 | `HPASSKit/Models/RoomMapBuilder.swift` |
 | geoRef | `HPASSKit/Models/GeoRef.swift`、`tools/venue/georef.py` |
 | IMDF 类别表 | `HPASSKit/Models/IMDFCategory.swift`（和 imdf_convert 的 NON_WALKABLE / CONNECTOR 一致） |

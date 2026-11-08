@@ -12,7 +12,7 @@
 也可以用命令行（先 `gh auth login`）：
 
 ```bash
-gh run download --repo kalijerry/crack-1 -n eslcollector-unsigned-ipa -D ~/Downloads
+gh run download --repo kalijerry/crack-1 -n hpassapp-unsigned-ipa -D ~/Downloads
 ```
 
 ## 二、手机端准备（只做一次）

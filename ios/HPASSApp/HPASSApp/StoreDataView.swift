@@ -1,9 +1,9 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// 门店数据页：查看本地状态、从自建服务器下载、或离线从「文件」App 导入。
+/// 场地数据页：查看本地状态、从自建服务器下载、或离线从「文件」App 导入。
 ///
-/// 服务器地址、路径、门店编码等全部由用户在此页填写；代码里不含任何地址或密钥。
+/// 服务器地址、路径、场地编码等全部由用户在此页填写；代码里不含任何地址或密钥。
 /// 凭据默认只存在内存里，只有打开「记住凭据」才写入钥匙串。
 @MainActor
 struct StoreDataView: View {
@@ -42,7 +42,7 @@ struct StoreDataView: View {
             ModeSection()
             MapLibrarySection()
             CloudMapsSection()
-            if mode.developer { EslListSection() }
+            if mode.developer { TagListSection() }
             TelemetrySection()
             if mode.developer {
                 statusSection
@@ -196,7 +196,7 @@ struct StoreDataView: View {
                 .keyboardType(.URL)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-            TextField("标签/物品接口路径", text: $config.eslPath)
+            TextField("标签/物品接口路径", text: $config.tagPath)
                 .keyboardType(.URL)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -477,8 +477,8 @@ struct TelemetrySection: View {
     }
 }
 
-/// 价签名单：蓝牙粗定位只认名单里的价签（门店系统导出的价签 ID 列表）
-struct EslListSection: View {
+/// 标签名单：蓝牙粗定位只认名单里的标签（场地系统导出的标签 ID 列表）
+struct TagListSection: View {
     @ObservedObject private var store = StoreDataStore.shared
     @State private var importing = false
     @State private var importingLoc = false
@@ -489,27 +489,27 @@ struct EslListSection: View {
             HStack {
                 Text("标签位置表")
                 Spacer()
-                Text(store.eslLocCount > 0 ? "\(store.eslLocCount) 个（对上障碍物 \(store.eslLocations.filter { $0.position != nil }.count) 个）" : "未导入")
+                Text(store.tagLocCount > 0 ? "\(store.tagLocCount) 个（对上障碍物 \(store.tagLocations.filter { $0.position != nil }.count) 个）" : "未导入")
                     .foregroundStyle(.secondary).font(.footnote)
             }
-            Button("导入标签位置表（esl_locations_*.csv）") { importingLoc = true }
+            Button("导入标签位置表") { importingLoc = true }
             HStack {
                 Text("标签名单")
                 Spacer()
-                Text(store.eslIdCount > 0 ? "\(store.eslIdCount) 个" : "未导入").foregroundStyle(.secondary)
+                Text(store.tagIdCount > 0 ? "\(store.tagIdCount) 个" : "未导入").foregroundStyle(.secondary)
             }
             Button("导入标签名单（CSV / TXT）") { importing = true }
-            if store.eslIdCount > 0 {
-                Button("清除名单", role: .destructive) { store.clearEslIds() }
+            if store.tagIdCount > 0 {
+                Button("清除名单", role: .destructive) { store.clearTagIds() }
             }
             if let m = message { Text(m).font(.footnote).foregroundStyle(.secondary) }
         } header: { Text("蓝牙") } footer: {
-            Text("标签位置表（esl_locations_*.csv）：每个标签所在的位置，对上地图后当蓝牙粗定位的底图（不用采集也有粗定位），也能在「高级控制台 → 找标签」里找具体标签；导入时自动当标签名单，并传到后台给云端生成地图用。")
+            Text("标签位置表：每个标签所在的位置，对上地图后当蓝牙粗定位的底图（不用采集也有粗定位），也能在「高级控制台 → 找标签」里找具体标签；导入时自动当标签名单，并传到后台给云端生成地图用。")
         }
         .fileImporter(isPresented: $importingLoc, allowedContentTypes: [.commaSeparatedText, .plainText, .text]) { r in
             switch r {
             case .success(let u):
-                do { let (n, s) = try store.importEslLocations(from: u); message = "已导入 \(n) 个标签，\(s) 个对上了地图障碍物" }
+                do { let (n, s) = try store.importTagLocations(from: u); message = "已导入 \(n) 个标签，\(s) 个对上了地图障碍物" }
                 catch { message = "导入失败：\(error)" }
             case .failure(let e): message = "导入失败：\(e.localizedDescription)"
             }
@@ -517,7 +517,7 @@ struct EslListSection: View {
         .fileImporter(isPresented: $importing, allowedContentTypes: [.commaSeparatedText, .plainText, .text, .json]) { r in
             switch r {
             case .success(let u):
-                do { message = "已导入 \(try store.importEslIds(from: u)) 个标签" } catch { message = "导入失败：\(error)" }
+                do { message = "已导入 \(try store.importTagIds(from: u)) 个标签" } catch { message = "导入失败：\(error)" }
             case .failure(let e): message = "导入失败：\(e.localizedDescription)"
             }
         }
@@ -536,7 +536,7 @@ struct ModeSection: View {
                 HStack {
                     Text("标签位置表")
                     Spacer()
-                    Text(store.eslLocCount > 0 ? "\(store.eslLocCount) 个（来自后台）" : "还没有：连上后台后自动下载").font(.footnote).foregroundStyle(.secondary)
+                    Text(store.tagLocCount > 0 ? "\(store.tagLocCount) 个（来自后台）" : "还没有：连上后台后自动下载").font(.footnote).foregroundStyle(.secondary)
                 }
             }
         } header: { Text("模式") } footer: {

@@ -115,7 +115,7 @@ enum WorldMapKeeper {
                 AppLog.i(WorldMapKeeper.tag, "\(name)：不刷新（\(why)）；本机这份还没传过，原样随会话上传一次")
                 attachStored()
             case .skip(let why):
-                // 非房间（门店）不打扰
+                // 非房间（场地）不打扰
                 if why != "不是房间地图" { AppLog.i(WorldMapKeeper.tag, "\(name)：不刷新（\(why)）") }
             }
             if let upload {

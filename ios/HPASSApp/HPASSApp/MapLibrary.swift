@@ -2,7 +2,7 @@ import Foundation
 import HPASSKit
 import SwiftUI
 
-/// 地图库：门店地图、扫描的房间……可以随时切换。
+/// 地图库：场地地图、扫描的房间……可以随时切换。
 ///
 /// 每张地图有自己的一套「工作区」：磁场图和点位（magmap.json）、采集进度（survey-coverage.json）、
 /// 涂色（survey-paint.bin）、磁场图来源说明。切换时把当前这套收进旧地图的目录，再把新地图那套放回来，
@@ -16,17 +16,17 @@ final class MapLibrary: ObservableObject {
     struct Entry: Identifiable, Codable, Equatable {
         var id: String
         var name: String
-        /// store = 门店地图（通道），room = 房间扫描
+        /// store = 场地地图（通道），room = 房间扫描
         var kind: String
         var created: Date
         /// 本机这张地图对应的云端版本（上传或下载时记下，生成时间 Unix 毫秒）
         var cloudVersion: Int64?
-        /// 从云端装上时的说明（来源、会话数、磁场格数、蓝牙价签数…）
+        /// 从云端装上时的说明（来源、会话数、磁场格数、蓝牙标签数…）
         var cloudInfo: MapPackage.Meta?
         /// 是云端融合的正式版本
         var isCloudFused: Bool { cloudInfo?.origin == "cloud" }
         var isRoom: Bool { kind == "room" }
-        /// 这张地图用不用蓝牙（价签）：nil = 按类型——门店用，房间 / 办公室不用（价签可能堆在一处，会把位置拉过去）
+        /// 这张地图用不用蓝牙（标签）：nil = 按类型——场地用，房间 / 办公室不用（标签可能堆在一处，会把位置拉过去）
         var useBLE: Bool?
         var bleEnabled: Bool { useBLE ?? !isRoom }
     }
@@ -91,7 +91,7 @@ final class MapLibrary: ObservableObject {
         if let a = activeId, !entries.contains(where: { $0.id == a }) { activeId = nil }
     }
 
-    /// 第一次用地图库：把现在「门店数据」里的地图收进来当第一张，当前工作区就归它
+    /// 第一次用地图库：把现在「场地数据」里的地图收进来当第一张，当前工作区就归它
     private func migrateIfNeeded() {
         guard entries.isEmpty else { return }
         let cur = StoreDataStore.shared.url(for: .map)
@@ -139,7 +139,7 @@ final class MapLibrary: ObservableObject {
         AppLog.i("地图库", "「\(entries[i].name)」蓝牙：\(on ? "开" : "关")")
     }
 
-    /// 在用的地图用不用蓝牙（没有地图库条目时按门店处理）
+    /// 在用的地图用不用蓝牙（没有地图库条目时按场地处理）
     var activeBLEEnabled: Bool { active?.bleEnabled ?? true }
 
     func rename(_ id: String, to name: String) {
@@ -158,7 +158,7 @@ final class MapLibrary: ObservableObject {
         AppLog.w("地图库", "已删除地图 \(id)")
     }
 
-    /// 门店数据页下载 / 更新了地图：同步进当前这张
+    /// 场地数据页下载 / 更新了地图：同步进当前这张
     func syncActive(_ data: Data) {
         guard let a = activeId else { return }
         if (try? Data(contentsOf: mapURL(a))) != data { try? data.write(to: mapURL(a)) }
@@ -175,7 +175,7 @@ final class MapLibrary: ObservableObject {
         MagMapStore.shared.reloadFromDisk()
         setActive(id)
         try StoreDataStore.shared.save(data, as: .map)
-        // reloadFromDisk 清掉了通道 / 货架，马上按门店地图补回来（同一张图时页面收不到「地图变了」，不会自己补）
+        // reloadFromDisk 清掉了通道 / 货架，马上按场地地图补回来（同一张图时页面收不到「地图变了」，不会自己补）
         MagMapStore.shared.adopt(map: StoreDataStore.shared.map)
         lastError = nil
         AppLog.i("地图库", "切换地图：\(e.name)")
@@ -285,9 +285,9 @@ final class MapLibrary: ObservableObject {
             try d.write(to: cloudDirectionURL(m.id), options: .atomic)
             try? fm.removeItem(at: ws.appendingPathComponent("survey-coverage.json"))
         }
-        // 价签位置表（价签 → 绑定的货架、商品）：包里带了就用包里的（比单独拉的新）
-        if let e = c.eslCSV, m.kind == "store" {
-            do { try StoreDataStore.shared.installEslLocations(e) } catch { AppLog.w("地图库", "标签位置表：\(error)") }
+        // 标签位置表（标签 → 绑定的货架、商品）：包里带了就用包里的（比单独拉的新）
+        if let e = c.tagCSV, m.kind == "store" {
+            do { try StoreDataStore.shared.installTagLocations(e) } catch { AppLog.w("地图库", "标签位置表：\(error)") }
         }
         // 增量统计和变化检测是针对旧图的，清掉
         for f in ["build-state.json", "live-monitor.json"] { try? fm.removeItem(at: ws.appendingPathComponent(f)) }
@@ -314,7 +314,7 @@ final class MapLibrary: ObservableObject {
     }
 }
 
-/// 切换地图的菜单（地磁页、门店数据页、房间扫描页都用）
+/// 切换地图的菜单（地磁页、场地数据页、房间扫描页都用）
 struct MapPickerMenu: View {
     @ObservedObject private var lib = MapLibrary.shared
     var disabled = false
@@ -422,9 +422,9 @@ final class CloudMaps: ObservableObject {
             // 正常模式只看云端融合的正式版本
             list = AppMode.shared.developer ? all : all.filter(\.isCloudFused)
             message = nil
-            // 价签位置表：本机没有就从后台拿（找价签、蓝牙底图用）
-            if !StoreDataStore.shared.hasEslLocations, let d = await Telemetry.shared.downloadEslLocations() {
-                try? StoreDataStore.shared.installEslLocations(d)
+            // 标签位置表：本机没有就从后台拿（找标签、蓝牙底图用）
+            if !StoreDataStore.shared.hasTagLocations, let d = await Telemetry.shared.downloadTagLocations() {
+                try? StoreDataStore.shared.installTagLocations(d)
             }
             // 本机已有、云端更新了的地图自动更新（在用的那张正在定位 / 采集时也会立刻生效，所以只在空闲时调用）；
             // 正常模式下本机没有的云端正式地图也自动装上（重装 App 后不用一张张点下载，采集人员一打开就有地图和已采涂色）

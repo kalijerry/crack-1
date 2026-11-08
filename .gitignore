@@ -8,8 +8,8 @@ android/.kotlin/
 *.iml
 
 # iOS（工程与 Info.plist 由 xcodegen 生成）
-ios/ESLCollector/ESLCollector.xcodeproj/
-ios/ESLCollector/ESLCollector/Info.plist
+ios/HPASSApp/HPASSApp.xcodeproj/
+ios/HPASSApp/HPASSApp/Info.plist
 xcuserdata/
 DerivedData/
 *.xcworkspace/

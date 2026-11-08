@@ -10,7 +10,7 @@ import AppKit
 typealias S3Color = NSColor
 #endif
 
-/// 门店的 3D 场景（SceneKit）：地板、实物货架、通道采集进度、点位、磁场热力图、轨迹和当前位置。
+/// 场地的 3D 场景（SceneKit）：地板、实物货架、通道采集进度、点位、磁场热力图、轨迹和当前位置。
 ///
 /// 坐标：地图 (x, y) 厘米 → 场景 (x, 0, y) 米。俯视时 x 向右、z 向下，与地图的 x 右、y 下一致，不用翻转。
 /// 场景不依赖 UIKit，所以能在 Mac 上离屏渲染做回归检查。只在主线程使用。
@@ -107,7 +107,7 @@ final class Store3DScene {
         let holder = SCNNode()
         let furniture = Self.material(S3Color(red: 0.55, green: 0.62, blue: 0.75, alpha: 1))
         for s in map.physicalShelves {
-            // 房间扫描的家具有真实高度；门店货架没有，用统一高度
+            // 房间扫描的家具有真实高度；场地货架没有，用统一高度
             let h = s.heightCm.map { max($0 / 100, 0.05) } ?? shelfHeightM
             let box = SCNBox(width: s.width / 100, height: h, length: s.height / 100, chamferRadius: 0)
             box.firstMaterial = s.heightCm == nil ? mat : furniture

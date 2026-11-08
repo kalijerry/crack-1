@@ -155,7 +155,7 @@ struct MagneticView: View {
     }
 
     private func configureCoverage() {
-        // 门店地图有通道、但内存里的通道还没补上时不建（会建成房间网格）
+        // 场地地图有通道、但内存里的通道还没补上时不建（会建成房间网格）
         if let m = storeData.map, !m.crosses.isEmpty, store.crosses.isEmpty { return }
         survey.coverage.configure(crosses: store.crosses)
         survey.coverage.configurePaint(crosses: store.crosses, widthCm: store.widthCm, heightCm: store.heightCm,
@@ -164,7 +164,7 @@ struct MagneticView: View {
 
     // MARK: 画布
 
-    /// 画布用的地图：有门店地图就用它，没有就是一块带 1 m 方格的小测试区。
+    /// 画布用的地图：有场地地图就用它，没有就是一块带 1 m 方格的小测试区。
     private var canvasMap: StoreMap? {
         if let m = storeData.map, m.width > 0 { return m }
         return StoreMap(width: store.widthCm, height: store.heightCm, shelves: [], crosses: [])
@@ -1125,12 +1125,12 @@ struct MagneticView: View {
         }
     }
 
-    /// 寻找模式：按价签编号 / 商品条码 / 货架图名找价签，地图上高亮货架、导航过去，走近时看它的实时信号
+    /// 寻找模式：按标签编号 / 商品条码 / 货架图名找标签，地图上高亮货架、导航过去，走近时看它的实时信号
     @ViewBuilder private var findSection: some View {
-        let locs = storeData.eslLocations
+        let locs = storeData.tagLocations
         Section {
             if locs.isEmpty {
-                Text("先在「场地数据与导入 → 蓝牙」导入标签位置表（esl_locations_*.csv）。").font(.footnote).foregroundStyle(.secondary)
+                Text("先在「场地数据与导入 → 蓝牙」导入标签位置表。").font(.footnote).foregroundStyle(.secondary)
             } else if let t = engine.findTarget {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(t.id).font(.headline.monospaced())
@@ -1429,7 +1429,7 @@ struct MagneticView: View {
             do {
                 let data = try Data(contentsOf: url)
                 try store.importMap(data)
-                // 导入的是完整门店地图（有货架或通道）时，同时作为门店数据的地图，画面上才有货架
+                // 导入的是完整场地地图（有货架或通道）时，同时作为场地数据的地图，画面上才有货架
                 var withShelves = ""
                 if let m = try? StoreDataLoader.loadMap(data), !(m.shelves.isEmpty && m.crosses.isEmpty) {
                     try storeData.save(data, as: .map)

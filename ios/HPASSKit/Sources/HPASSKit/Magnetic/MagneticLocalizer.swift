@@ -75,6 +75,10 @@ public struct MagneticConfig {
 
     /// 通道约束：新位置不在可走区域、或中途穿过货架时的对数惩罚。
     public var blockedPenalty: Double = -4
+    /// 整步撞墙时贴墙滑（先只走 x，再只走 y），滑得过去就不原地不动。false = 原有行为。跟踪配置档打开。
+    public var wallSlide = false
+    /// 贴墙滑过去的粒子的对数惩罚（比原地不动轻：方向偏了一点，但不是穿墙）。
+    public var wallSlidePenalty: Double = -1
     /// 通道走向先验的标准差（度）。行走方向偏离通道轴线越多，扣分越多。
     public var corridorHeadingSigmaDeg: Double = 22
     /// 走向先验的整体强度，0 关闭。
@@ -616,8 +620,17 @@ public final class MagneticLocalizer {
             var np = Point2(nx, ny)
             if let w = walkable {
                 if !w.isWalkable(np) || !w.isSegmentClear(from: old, to: np) {
-                    np = old                          // 不能穿货架：原地不动并扣分
-                    logw[i] += config.blockedPenalty
+                    // 贴墙滑：整步走不过去时先试只走 x、再试只走 y（人沿墙 / 店铺边走，推算的方向偏了一点）
+                    let slide = config.wallSlide
+                        ? [Point2(np.x, old.y), Point2(old.x, np.y)].first { $0 != old && w.isWalkable($0) && w.isSegmentClear(from: old, to: $0) }
+                        : nil
+                    if let sp = slide {
+                        np = sp
+                        logw[i] += config.wallSlidePenalty
+                    } else {
+                        np = old                      // 不能穿货架：原地不动并扣分
+                        logw[i] += config.blockedPenalty
+                    }
                 } else if useHeading, let ax = w.axisAngle(at: np) {
                     // 行走方向相对通道轴线的夹角（模 π：沿轴线正反两个方向都可以）
                     let walk = atan2(dy, dx)

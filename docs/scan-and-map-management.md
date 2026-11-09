@@ -109,6 +109,7 @@ Documents/maps/<mapId>/
 - 认不出（45 秒超时、或用户点「认不出，先扫后对齐」）、iOS 16、地图没有特征地图：用 RoomPlan 自带的会话照常扫，扫完几何对齐。
 - 「这段扫完」前检查 `worldMappingStatus`，不是 mapped / extending 提示再转一圈（只提示一次）。
 - 合并预览：视觉认出的段 `toMap = 段 arAlign⁻¹ ∘ frameAlign`，再用 `MapComposer.consistency` 核对（重合 < 1 m 或偏差 > 30 cm 标黄）；其余 `RigidAlign2D.auto`，有歧义标黄，对不上必须手动两点对齐（`twoPoints` → `snapToAxes(5°)` → `refine`）。合并方式默认按 `suggestedMode`，可选「追加补充 / 替换这块」。也可以「另存为新地图」或「放弃」。
+- 扫描页不能下滑关掉（扫描中、认位置中、等合并时 `interactiveDismissDisabled`），左上角「关闭」要确认。扫完等合并的段在 `scans/<scanId>/pending.json` 记下（地图编号、段名、房间数、是否视觉认出、载入的特征地图时间、摘要）：关掉扫描页（「先关闭，稍后合并」）或 App 被杀掉都不丢，地图详情顶部显示「有 n 段扫描还没合并」，可「接着合并」（重新打开合并预览）或「放弃」。`scans/` 下不在注册表里、有 map.json 的目录都算待合并（没有 pending.json 的按 map.json 推断）；连 map.json 都没有的残留目录打开详情时删掉。
 - 视觉认出的段确认合并后，它结束时的特征地图顶替地图在用的那份（旁注 `source = scan-append`、基准 `frameId`、`uploaded = false`）；超过 15 MB 不顶替（只影响上传），接着扫仍用段目录里的完整那份。
 - 「房间类别和名称」改走注册表（`unitLabels`、楼层名 / 序号）再重新合成；IMDF 导出读地图库里各张房间地图的 map.json。
 - 会话 meta 新键：`map_origin_offset_cm`、`map_geometry_version`、`map_frame_id`（采集和实时定位都写）；手机本地生成磁场图时按地图当前偏移换算。

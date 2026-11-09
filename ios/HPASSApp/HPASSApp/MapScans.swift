@@ -206,6 +206,7 @@ extension MapLibrary {
     func commitScan(_ id: String, record: ScanRegistry.ScanRecord, relocSourceMs: Int64? = nil) throws -> MapComposer.Result {
         let r = try registry(id)
         let res = try recompose(id, registry: r.adding(record, nowMs: Fmt.nowMs()))
+        try? FileManager.default.removeItem(at: scanDir(id, record.id).appendingPathComponent(PendingScan.fileName))
         if record.inBaseFrame {
             if let cur = WorldMapKeeper.readSidecar(id), worldMapURL(id) != nil,
                cur.isCompatible(with: res.registry.frameAlign?.transform ?? cur.arAlign.transform, frameId: res.registry.frameId),
@@ -223,6 +224,50 @@ extension MapLibrary {
     /// 放弃一段（合并预览里点了放弃）：删掉它的目录
     func discardScan(_ id: String, _ scanId: String) {
         try? FileManager.default.removeItem(at: scanDir(id, scanId))
+        geometryRevision += 1
+    }
+
+    // MARK: 还没合并的段
+
+    /// 扫完、等合并的一段记在 `scans/<scanId>/pending.json`：关掉扫描页、App 被杀掉也不丢，
+    /// 地图详情里可以接着合并或放弃。
+    func savePendingScan(_ p: PendingScan) {
+        do {
+            let e = JSONEncoder()
+            e.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try e.encode(p).write(to: scanDir(p.mapId, p.scanId).appendingPathComponent(PendingScan.fileName), options: .atomic)
+        } catch {
+            AppLog.w("地图库", "记下待合并的扫描段失败：\(error.localizedDescription)")
+        }
+    }
+
+    /// 这张地图还没合并的段：`scans/` 下不在注册表里、有 map.json 的目录（没有 pending.json 的老目录按 map.json 推断）。
+    /// 连 map.json 都没有的目录是写了一半的残留，顺手删掉。
+    func pendingScans(_ id: String) -> [PendingScan] {
+        let fm = FileManager.default
+        guard let reg = storedRegistry(id),
+              let dirs = try? fm.contentsOfDirectory(at: scansDir(id), includingPropertiesForKeys: nil) else { return [] }
+        let known = Set(reg.scans.map(\.id))
+        var out: [PendingScan] = []
+        for d in dirs where !known.contains(d.lastPathComponent) {
+            let scanId = d.lastPathComponent
+            guard let json = try? Data(contentsOf: d.appendingPathComponent("map.json")) else {
+                try? fm.removeItem(at: d)
+                AppLog.w("地图库", "删掉了没写完的扫描段目录 \(scanId)")
+                continue
+            }
+            if let p = (try? Data(contentsOf: d.appendingPathComponent(PendingScan.fileName)))
+                .flatMap({ try? JSONDecoder().decode(PendingScan.self, from: $0) }) {
+                out.append(p)
+                continue
+            }
+            let root = (try? JSONSerialization.jsonObject(with: json)) as? [String: Any]
+            let created = (root?["geometryVersion"] as? NSNumber)?.int64Value
+                ?? Int64(((try? fm.attributesOfItem(atPath: d.path))?[.creationDate] as? Date ?? Date()).timeIntervalSince1970 * 1000)
+            out.append(PendingScan(mapId: id, scanId: scanId, scanName: nil, createdMs: created, osMajor: nil, roomCount: nil,
+                                   relocalized: (root?["frameId"] as? String) == reg.frameId, relocSourceMs: nil, summary: nil))
+        }
+        return out.sorted { $0.createdMs < $1.createdMs }
     }
 
     /// 这一段另存为一张新地图（认不出、也对不上的时候）：把段目录搬到新地图下
@@ -232,6 +277,7 @@ extension MapLibrary {
         let fm = FileManager.default
         try fm.createDirectory(at: scansDir(newId), withIntermediateDirectories: true)
         try fm.moveItem(at: scanDir(id, scanId), to: scanDir(newId, scanId))
+        try? fm.removeItem(at: scanDir(newId, scanId).appendingPathComponent(PendingScan.fileName))
         let json = try Data(contentsOf: scanDir(newId, scanId).appendingPathComponent("map.json"))
         let frameId = ((try? JSONSerialization.jsonObject(with: json)) as? [String: Any])?["frameId"] as? String ?? UUID().uuidString
         return try createFromScan(mapId: newId, name: name, scanId: scanId, frameId: frameId, osMajor: nil, roomCount: nil)
@@ -266,4 +312,23 @@ extension MapLibrary {
         if let f = root["frameId"] as? String { m["map_frame_id"] = f }
         return m
     }
+}
+
+/// 扫完、还没确认合并的一段（`scans/<scanId>/pending.json`）
+struct PendingScan: Codable, Identifiable, Hashable {
+    static let fileName = "pending.json"
+    var mapId: String
+    var scanId: String
+    var scanName: String?
+    var createdMs: Int64
+    var osMajor: Int?
+    var roomCount: Int?
+    /// 扫描时视觉认出了已扫区域
+    var relocalized: Bool
+    /// 扫描时载入的特征地图的生成时间
+    var relocSourceMs: Int64?
+    /// 扫完时给用户看的这一段摘要
+    var summary: String?
+
+    var id: String { mapId + "/" + scanId }
 }

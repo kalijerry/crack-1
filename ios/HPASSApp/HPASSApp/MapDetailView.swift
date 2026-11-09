@@ -19,6 +19,9 @@ struct MapDetailView: View {
     @State private var scanName = ""
     @State private var confirmDelete: MapLibrary.Entry?
     @State private var confirmScanDelete: ScanRegistry.ScanRecord?
+    @State private var pending: [PendingScan] = []
+    @State private var resumeScan: PendingScan?
+    @State private var confirmPendingDiscard: PendingScan?
 
     private var entry: MapLibrary.Entry? { lib.entries.first { $0.id == mapId } }
     private var busy: Bool { AppEngines.shared.magnetic.phase != .idle || AppEngines.shared.survey.isRunning }
@@ -36,6 +39,18 @@ struct MapDetailView: View {
         .onAppear(perform: load)
         .onChange(of: lib.geometryRevision) { _ in load() }
         .sheet(item: $scanTarget, onDismiss: load) { t in RoomScanView(target: t) }
+        .sheet(item: $resumeScan, onDismiss: load) { p in RoomScanView(resume: p) }
+        .confirmationDialog("放弃这一段扫描？", isPresented: Binding(get: { confirmPendingDiscard != nil },
+                                                             set: { if !$0 { confirmPendingDiscard = nil } }),
+                            titleVisibility: .visible) {
+            Button("放弃这一段", role: .destructive) {
+                if let p = confirmPendingDiscard { lib.discardScan(p.mapId, p.scanId) }
+                confirmPendingDiscard = nil
+                load()
+            }
+        } message: {
+            Text("这一段扫到的内容还没合进地图，放弃后删掉，不能恢复。")
+        }
         .alert("重命名地图", isPresented: $renaming) {
             TextField("名字", text: $newName)
             Button("保存") { lib.rename(mapId, to: newName) }
@@ -72,6 +87,7 @@ struct MapDetailView: View {
         } else {
             registry = nil
         }
+        pending = registry == nil ? [] : lib.pendingScans(mapId)
     }
 
     private func run(_ f: () throws -> Void) {
@@ -131,6 +147,8 @@ struct MapDetailView: View {
                 }
                 .disabled(busy)
 
+                if !pending.isEmpty { pendingSection }
+
                 if let r = registry { scansSection(r) }
 
                 Section {
@@ -153,6 +171,36 @@ struct MapDetailView: View {
             }
         }
         .listStyle(.insetGrouped)
+    }
+
+    /// 扫完、还没确认合并的段（扫描页关掉了、App 被杀掉）
+    private var pendingSection: some View {
+        Section {
+            ForEach(pending) { p in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(p.scanName ?? "扫描段").font(.body.weight(.medium))
+                    Text(Self.pendingDetail(p)).font(.caption).foregroundStyle(DS.Palette.textSecondary)
+                    HStack {
+                        Button("接着合并") { resumeScan = p }.buttonStyle(.borderedProminent)
+                        Button("放弃", role: .destructive) { confirmPendingDiscard = p }.buttonStyle(.bordered)
+                    }
+                    .disabled(busy)
+                }
+                .padding(.vertical, 2)
+            }
+        } header: {
+            Label("有 \(pending.count) 段扫描还没合并", systemImage: "exclamationmark.triangle.fill").foregroundStyle(DS.Palette.warning)
+        } footer: {
+            Text("扫完后没在合并预览里确认的段（关掉了扫描页，或 App 中途被关掉）。点「接着合并」重新打开合并预览。")
+        }
+    }
+
+    static func pendingDetail(_ p: PendingScan) -> String {
+        let df = DateFormatter(); df.dateFormat = "MM-dd HH:mm"
+        var parts = [df.string(from: Date(timeIntervalSince1970: Double(p.createdMs) / 1000))]
+        if let n = p.roomCount { parts.append("\(n) 个房间") }
+        parts.append(p.relocalized ? "视觉认出" : "待对齐")
+        return parts.joined(separator: " · ")
     }
 
     private func scansSection(_ r: ScanRegistry) -> some View {

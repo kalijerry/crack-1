@@ -643,6 +643,9 @@ final class RoomScanModel: ObservableObject {
                     scanJSON: json, existingJSON: existing, frameAlign: reg.frameAlign?.transform,
                     relocalized: inBaseFrame, osMajor: osMajor, roomCount: roomN, relocSourceMs: relocSourceMs)
                 summary = scanSummary
+                lib.savePendingScan(PendingScan(mapId: id, scanId: scanId, scanName: typed.isEmpty ? nil : typed, createdMs: now,
+                                                osMajor: osMajor, roomCount: roomN, relocalized: inBaseFrame,
+                                                relocSourceMs: inBaseFrame ? relocSourceMs : nil, summary: scanSummary))
                 rooms = []
                 captureView = nil
                 arSession = nil
@@ -675,6 +678,45 @@ final class RoomScanModel: ObservableObject {
     }
 
     // MARK: 合并预览的操作
+
+    /// 扫描页不能下滑关掉：扫描中、认位置中、等合并（关掉会丢掉这次扫描或让它悬着）
+    var blocksDismiss: Bool {
+        switch phase {
+        case .idle, .done, .failed: return false
+        default: return true
+        }
+    }
+
+    /// 接着合并之前没合并的一段（地图详情「有一段扫描还没合并」进来）
+    func resumeMerge(_ p: PendingScan) {
+        let lib = MapLibrary.shared
+        guard let scanJSON = try? Data(contentsOf: lib.scanDir(p.mapId, p.scanId).appendingPathComponent("map.json")),
+              let existing = try? Data(contentsOf: lib.mapURL(p.mapId)), let reg = try? lib.registry(p.mapId) else {
+            phase = .failed("找不到这一段扫描的数据（可能已经合并或删除了）")
+            return
+        }
+        target = .append(p.mapId)
+        targetFrameAlign = reg.frameAlign?.transform
+        relocSourceMs = p.relocSourceMs
+        summary = p.summary ?? "之前扫完、还没合并的一段"
+        mergeError = nil
+        pendingMerge = PendingMerge.prepare(
+            mapId: p.mapId, mapName: targetName ?? p.mapId, scanId: p.scanId, scanName: p.scanName,
+            scanJSON: scanJSON, existingJSON: existing, frameAlign: reg.frameAlign?.transform,
+            relocalized: p.relocalized && reg.frameAlign != nil, osMajor: p.osMajor, roomCount: p.roomCount,
+            relocSourceMs: p.relocSourceMs)
+        pendingMerge?.createdMs = p.createdMs
+        phase = .merging
+        AppLog.i("房间扫描", "接着合并之前扫的一段（\(p.scanId)）")
+    }
+
+    /// 先不合并，关掉扫描页：这一段留在磁盘上（pending.json），地图详情里可以再合并
+    func postponeMerge() {
+        guard let m = pendingMerge else { return }
+        pendingMerge = nil
+        phase = .idle
+        AppLog.i("房间扫描", "这一段（\(m.scanId)）先不合并，留到地图详情里再合并")
+    }
 
     func confirmMerge() {
         guard let m = pendingMerge else { return }
@@ -876,9 +918,15 @@ struct RoomScanView: View {
     @State private var showNewVenue = false
     @State private var confirmLegacyDelete: RoomScanItem?
 
+    @Environment(\.dismiss) private var dismiss
+    @State private var confirmClose = false
+    private let resume: PendingScan?
+
     /// - Parameter target: 扫进哪张地图；nil = 在用的是房间地图就接着扫它，否则新建
-    init(target: ScanTarget? = nil) {
-        _model = StateObject(wrappedValue: RoomScanModel(target: target))
+    /// - Parameter resume: 接着合并之前没合并的一段
+    init(target: ScanTarget? = nil, resume: PendingScan? = nil) {
+        self.resume = resume
+        _model = StateObject(wrappedValue: RoomScanModel(target: resume.map { ScanTarget.append($0.mapId) } ?? target))
     }
 
     var body: some View {
@@ -894,6 +942,32 @@ struct RoomScanView: View {
                 }
             }
             .navigationTitle("房间扫描")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") {
+                        if model.blocksDismiss { confirmClose = true } else { dismiss() }
+                    }
+                }
+            }
+            .confirmationDialog(model.phase == .merging ? "这一段还没合并" : "扫描还没完成",
+                                isPresented: $confirmClose, titleVisibility: .visible) {
+                if model.phase == .merging {
+                    Button("先关闭，稍后在地图详情里合并") { model.postponeMerge(); dismiss() }
+                    Button("放弃这一段", role: .destructive) { model.discardMerge(); dismiss() }
+                } else {
+                    Button("放弃这次扫描并关闭", role: .destructive) { model.cancel(); dismiss() }
+                }
+                Button("继续", role: .cancel) {}
+            } message: {
+                Text(model.phase == .merging
+                     ? "扫完的这一段已经存在手机上。先关闭的话，之后在这张地图的详情里点「接着合并」。"
+                     : "正在扫描或认位置。关闭会丢掉这次还没扫完的内容。")
+            }
+        }
+        .interactiveDismissDisabled(model.blocksDismiss)
+        .onAppear {
+            if let r = resume, model.phase == .idle, model.pendingMerge == nil, model.resultMapId == nil { model.resumeMerge(r) }
         }
         .onAppear { model.appear() }
         .onDisappear { model.disappear() }

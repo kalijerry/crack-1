@@ -63,12 +63,17 @@ struct SettingsView: View {
 
     @ObservedObject private var magnetic = AppEngines.shared.magnetic
     @AppStorage("backgroundPositioning") private var backgroundPositioning = true
+    @AppStorage("carryMotionEnabled") private var carryMotionEnabled = true
 
     private var positioningSection: some View {
         Section {
             Toggle(isOn: $backgroundPositioning) {
                 DSRowLabel(title: "锁屏后继续定位", systemImage: "lock.iphone", tint: DS.Palette.success,
                            subtitle: "手机放口袋、按侧键锁屏也不中断")
+            }
+            Toggle(isOn: $carryMotionEnabled) {
+                DSRowLabel(title: "按携带方式调整", systemImage: "figure.walk", tint: DS.Palette.info,
+                           subtitle: "认出看屏 / 口袋 / 包里 / 打电话 / 甩手，分别处理（实验，下次开始定位生效）")
             }
             Toggle(isOn: $magnetic.visualEnhancement) {
                 DSRowLabel(title: "视觉增强", systemImage: "camera.viewfinder", tint: DS.Palette.info,
@@ -77,7 +82,7 @@ struct SettingsView: View {
         } header: {
             Text("定位")
         } footer: {
-            Text("定位不需要摄像头：手机拿在手里、放口袋或包里、打电话时都只靠运动传感器和地磁。锁屏后继续定位要用到位置权限（只用最低精度保持 App 运行，不读取经纬度），状态栏会显示定位图标，会多耗一些电；不需要时可以关掉。视觉增强默认关，打开后只在手机竖着拿时开摄像头，认出房间时当一次位置参考，更耗电发热。")
+            Text("定位不需要摄像头，只靠运动传感器和地磁。拿在手里看屏最准；口袋、包里、打电话、甩手走时靠「按携带方式调整」，这些方式还在实测验证中。蓝牙标签只在 App 前台时扫描，锁屏后用不上。锁屏后继续定位要用到位置权限（只用最低精度保持 App 运行，不读取经纬度），状态栏会显示定位图标，会多耗一些电；不需要时可以关掉。视觉增强默认关，打开后只在手机竖着拿时开摄像头，认出房间时当一次位置参考，更耗电发热。")
         }
     }
 

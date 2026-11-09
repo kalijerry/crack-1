@@ -145,11 +145,13 @@ t_ms,ax,ay,az,gx,gy,gz,mx,my,mz,mag_acc,qw,qx,qy,qz,heading_deg,gvx,gvy,gvz
 | 字段 | 说明 |
 |---|---|
 | `imu_format` | 4 |
-| `attitude_frame` | `xArbitraryZVertical`（实时定位 / 盲测：姿态不用磁力计，偏航只靠陀螺 + 重力）或 `xMagneticNorthZVertical`（建图 / 采集：要 iOS 校准后磁场和系统航向） |
+| `attitude_frame` | 实时定位 / 盲测：本机有没过期（30 天，占位）的硬铁偏置存档时 `xArbitraryZVertical`（姿态不用磁力计），否则 `xArbitraryCorrectedZVertical`（iOS 照常给校准后磁场；定位不用 CoreMotion 的姿态 / 偏航，所以不受磁力计参与姿态的影响）；建图 / 采集：`xMagneticNorthZVertical`（要 iOS 校准后磁场和系统航向） |
 | `mag_calibration` | `ios`：mx..mz 是 iOS 校准后磁场；`app_hard_iron:<来源>`：参考系不含磁力计时 iOS 不给校准值，mx..mz = `mag_raw` − 本机硬铁偏置，来源 `learned`（建图 / 采集会话学到的存档）、`sphere_fit`（现场球面拟合）、`none`（还没有，mx..mz 为 0、mag_acc = -1） |
 | `mag_bias_ut` | 用到的偏置 [x, y, z] µT（有时才写） |
+| `mag_pollution` | true = 偏置核对没通过（开始后 15 s 里 \|原始 − 偏置\| 的中位数不在地图 \|B\| 的 P5～P95 ± 15 µT 里，例如磁吸附件），偏置作废、这次只用计步 + 地图 |
 
 `mag_acc`：`ios` 时同 v1；`app_hard_iron` 时 2 = 存档偏置、1 = 现场拟合、-1 = 没有偏置。
+mx..mz = 0,0,0 的行（没有偏置时）不是校准值：离线估偏置（`SurveyMapBuilder` / `RawBiasTracker`）和出特征都跳过它们。
 
 ## 实时定位 / 盲测会话（`mag-tracks/<时间>_files/`，`meta.json` 里 `live: true`）
 
@@ -159,13 +161,15 @@ t_ms,ax,ay,az,gx,gy,gz,mx,my,mz,mag_acc,qw,qx,qy,qz,heading_deg,gvx,gvy,gvz
 `track.csv`：
 
 ```
-t_ms,x_cm,y_cm,unc_cm,conf,pdr_x,pdr_y,heading_deg,steps,b_total,b_vert,b_horiz,check,src,trust,posture,lat_left_cm,lat_right_cm,room_id,carry_mode
+t_ms,x_cm,y_cm,unc_cm,conf,pdr_x,pdr_y,heading_deg,steps,b_total,b_vert,b_horiz,check,src,trust,posture,lat_left_cm,lat_right_cm,room_id,carry_mode,room_mass,carry_auto,frozen
 ```
 
 - `src`：终端用户定位里恒为 `pdr`（计步永远推粒子）。旧版本出现的 `visual` / `vio` / `vio-raw` 不再产生。
 - `check`：`视觉观测` 表示这一刻用了一次视觉重定位当位置观测（σ 50 cm，只在「视觉增强」开着、手机竖持时）。
-- `room_id`：房间级输出接入前为空，离线按 map.json 的 units 计算。
+- `room_id` / `room_mass`：地图有房间单元时，粒子权重最多的房间和它的权重占比（< 0.7 时界面只报房间级）；没有房间图时为空。
 - `carry_mode`：盲测会话声明的携带方式（中途切换后跟着变），普通定位为空。
+- `carry_auto`：惯导引擎自动判的携带方式（texting / upright / calling / swinging / pocket / bag / still / unknown；「按携带方式调整」关着时恒为 unknown）。
+- `frozen`：1 = 静止冻结中（房间图地图上坐着不动够久，粒子不随伪步移动）。
 
 `acc_raw.csv`（盲测机 / 伴随真值机，对时用）：`t_ms,ax,ay,az`，≈100 Hz 原始加速度计（`CMAccelerometerData`），
 m/s²，Android 约定（含重力，平放 az ≈ +9.81）。
@@ -173,7 +177,8 @@ m/s²，Android 约定（含重力，平放 az ≈ +9.81）。
 盲测会话 `meta.json` 另有：`purpose: "blind_test"`、`protocol: "office-carry-v1"`、`camera: false`、`carry_mode`、
 `route`、`pair_id`（伴随机广播的 8 位十六进制配对编号）、`pair_source`（`ble` / `manual` / 空）、`bumps_ms`（在线检测到的敲击时刻，只作核对，
 离线以 `acc_raw.csv` 互相关为准）、`mode_switches`（`[{t_ms, mode}]`）、`map_id`、`map_version`、`model`、`battery_start/end`、
-`thermal_start/end`、`proximity_monitoring`。
+`thermal_start/end`、`proximity_monitoring`。所有实时定位会话还写 `carry_motion`（「按携带方式调整」开没开）、`room_constraints`、
+`ble_background: false`（蓝牙只在前台扫）、`mag_pollution`。
 
 伴随真值机用建图采集的测试会话（`survey: true`、`purpose: "test"`，格式 v3），`meta.json` 另有 `role: "gt_companion"`、
 `pair_id`、`lever_arm_cm`、`bumps_ms`、`mode_switch_marks_ms`；地贴处的长按修正记在 `anchors.csv`（`kind = reanchor`）。

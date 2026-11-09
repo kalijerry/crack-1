@@ -88,6 +88,9 @@ final class BlindTestSession: ObservableObject {
             lastError = e.lastError ?? "定位没有启动"
             return
         }
+        // 从「导航」页、地磁页结束定位，或传感器被别的页面抢走时，引擎结束后回调这里收尾（评审：之前只有本页的「结束」会收尾，
+        // 之后的普通定位会一直带着盲测 meta、摄像头被强制关、近距离传感器和后台保活一直开着）
+        e.onLiveStopped = { [weak self] in self?.finishAfterLiveStopped() }
         e.setCarryModeLabel(currentMode.rawValue)
         // 有磁场图就开始自动找（只靠地磁不报位置，等外部先验或在「导航」页长按起点）
         if MagMapStore.shared.field != nil && MagMapStore.shared.usesStoreMap { e.startColdSearch() }
@@ -131,10 +134,18 @@ final class BlindTestSession: ObservableObject {
 
     func stop() {
         guard running else { return }
+        bump.stop()
+        engine.stopLive()           // 结束时再写一次 meta（含敲击、切换、配对）；引擎随后回调 finishAfterLiveStopped
+        finishAfterLiveStopped()    // 定位已经不在跑（引擎没回调）时也收尾
+    }
+
+    /// 收尾（可重复调用）：敲击记录、配对扫描、近距离传感器、后台保活
+    private func finishAfterLiveStopped() {
+        guard running else { return }
         scanTimeout?.cancel()
         scanner.stop()
         bump.stop()
-        engine.stopLive()           // 结束时再写一次 meta（含敲击、切换、配对）
+        if engine.onLiveStopped != nil { engine.onLiveStopped = nil }
         engine.forceCameraOff = false
         engine.liveExtraMeta = nil
         UIDevice.current.isProximityMonitoringEnabled = false

@@ -17,10 +17,25 @@ enum MagBiasStore {
         var source: String
     }
 
+    /// 存档超过这么多天不再直接用（换壳 / 加磁吸附件后偏置会变）。占位值，待自采 iPhone 双机数据标定
+    static let maxAgeDays = 30.0
+
     static func load() -> Stored? {
         guard let d = UserDefaults.standard.data(forKey: key),
               let s = try? JSONDecoder().decode(Stored.self, from: d), s.bias.count == 3 else { return nil }
         return s
+    }
+
+    /// 还能用的存档：没过期。定位开始时按它选参考系（有就不用磁力计参与姿态）
+    static func loadValid(nowMs: Int64 = Fmt.nowMs()) -> Stored? {
+        guard let s = load(), Double(nowMs - s.savedMs) / 86_400_000 <= maxAgeDays else { return nil }
+        return s
+    }
+
+    /// 在线核对没通过（磁吸附件、磁性保护壳、钥匙和手机在同一个口袋）：作废存档，下次定位回到 iOS 校准的参考系
+    static func invalidate() {
+        UserDefaults.standard.removeObject(forKey: key)
+        AppLog.w("地磁", "本机磁力计偏置存档作废（读数和地图磁场强度对不上，可能有磁吸附件），下次定位用 iOS 校准值")
     }
 
     static func save(_ b: (Double, Double, Double), source: String) {
@@ -60,7 +75,7 @@ final class MagBiasLearner: @unchecked Sendable {
 
 /// 实时定位里的硬铁偏置：优先本机存档；没有存档时用原始读数在线球面拟合。非线程安全（在引擎队列上用）。
 final class MagBiasEstimator {
-    enum Source: String { case none, learned, sphereFit = "sphere_fit", ios }
+    enum Source: String { case none, learned, sphereFit = "sphere_fit", ios, rejected }
 
     private(set) var bias: (Double, Double, Double)?
     private(set) var source: Source = .none
@@ -72,12 +87,29 @@ final class MagBiasEstimator {
     private var lastAddMs: Int64 = 0
     private var addedSinceFit = 0
 
+    // 在线核对（磁污染）：开始后 validationWindowMs 内 |原始 − 偏置| 的中位数要落在地图 |B| 的范围（± validationSlackUT）里。
+    // 占位值，待自采 iPhone 双机数据标定
+    static let validationWindowMs: Int64 = 15_000
+    static let validationMinSamples = 40
+    static let validationSlackUT = 15.0
+    /// 地图磁场强度 |B| 的 P5～P95（µT），定位开始时由引擎给；nil = 不核对
+    var expectedTotalUT: ClosedRange<Double>?
+    /// 核对没通过：偏置作废，这次只用计步 + 地图
+    private(set) var polluted = false
+    private var validationStartMs: Int64?
+    private var validationTotals: [Double] = []
+    private var validated = false
+
     func reset(useStored: Bool = true) {
         bins = [:]
         lastAddMs = 0
         addedSinceFit = 0
         fitRmsUT = nil
-        if useStored, let s = MagBiasStore.load() {
+        polluted = false
+        validationStartMs = nil
+        validationTotals = []
+        validated = false
+        if useStored, let s = MagBiasStore.loadValid() {
             bias = (s.bias[0], s.bias[1], s.bias[2])
             source = .learned
         } else {
@@ -93,6 +125,7 @@ final class MagBiasEstimator {
 
     /// 送入原始读数（µT）。有存档时只记不拟合。
     func addRaw(tMs: Int64, _ v: (Double, Double, Double)) {
+        validate(tMs: tMs, v)
         guard source == .none || source == .sphereFit else { return }
         guard tMs - lastAddMs >= 200 else { return }        // 5 Hz 就够
         lastAddMs = tMs
@@ -105,6 +138,26 @@ final class MagBiasEstimator {
         if addedSinceFit >= 25 {
             addedSinceFit = 0
             fit()
+        }
+    }
+
+    /// 存档 / 拟合出来的偏置用之前先核对一段：|原始 − 偏置| 的中位数要像这张地图的磁场强度
+    private func validate(tMs: Int64, _ v: (Double, Double, Double)) {
+        guard !validated, !polluted, let b = bias, let band = expectedTotalUT else { return }
+        if validationStartMs == nil { validationStartMs = tMs }
+        let c = (v.0 - b.0, v.1 - b.1, v.2 - b.2)
+        validationTotals.append((c.0 * c.0 + c.1 * c.1 + c.2 * c.2).squareRoot())
+        guard tMs - (validationStartMs ?? tMs) >= Self.validationWindowMs || validationTotals.count >= 4 * Self.validationMinSamples,
+              validationTotals.count >= Self.validationMinSamples else { return }
+        let sorted = validationTotals.sorted()
+        let med = sorted[sorted.count / 2]
+        validated = true
+        if med < band.lowerBound - Self.validationSlackUT || med > band.upperBound + Self.validationSlackUT {
+            AppLog.w("地磁", "磁力计偏置核对没通过：|B| 中位 \(Int(med)) µT，地图 \(Int(band.lowerBound))～\(Int(band.upperBound)) µT；这次只用计步 + 地图")
+            if source == .learned { MagBiasStore.invalidate() }
+            bias = nil
+            source = .rejected
+            polluted = true
         }
     }
 

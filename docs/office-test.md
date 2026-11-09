@@ -99,15 +99,20 @@ App「场地数据 → 云端地图」点「刷新云端列表」，有「更新
 
 终端用户不开摄像头、手机放哪都行（口袋、手里摆、看屏、贴耳、包里），所以成绩要用「盲测机 + 真值伴随机」量：
 
-1. 两台手机：A = 盲测机（被测，摄像头关，按这一段的携带方式带），B = 伴随真值机（同一个人竖持，ARKit + 地图锚点）。
-   A 的会话 `meta.json` 写 `purpose=blind_test`、`camera=false`、`carry_mode`、`pair_id`；B 写 `purpose=ground_truth` 和同一个 `pair_id`
-   （格式见 [data-format.md](data-format.md)「盲测 / 真值伴随会话」）。
+App 里已经有这个模式：设置 → 诊断 → 双机测试（逐步操作见 [office-carry-test.md](office-carry-test.md)）。
+
+1. 两台手机：A = 盲测机（被测，摄像头强制关，按这一段的携带方式带），B = 伴随真值机（同一个人竖持，ARKit + 地图锚点）。
+   App 给 A 写 `purpose=blind_test`、`camera=false`、`carry_mode`、`pair_id`（B 用蓝牙广播配对编号，A 自动扫到或手输）；
+   B 是建图测试会话，写 `role=gt_companion` 和同一个 `pair_id`（格式见 [data-format.md](data-format.md)「盲测 / 真值伴随会话」）。
 2. 两机都开始录 → **叠在一起在桌面敲三下**（间隔约 0.5 s）→ A 放进被测携带方式 → 走固定路线 → 结束前再叠在一起敲三下 → 两机停止。
-   A 要保持 App 在前台（口袋里靠近距离传感器熄屏，**不要按锁屏键**，否则 CoreMotion 停）。
+   A 打开了近距离传感器（贴耳 / 进口袋时屏幕熄灭，减少误触）。「设置 → 定位 → 锁屏后继续定位」打开时（默认），
+   A 也可以按侧键锁屏：后台定位权限让 App 保持运行、CoreMotion 不停。**锁屏和不锁屏要分开记**（同一种携带方式各走一段），
+   报告里的成绩默认是 App 在前台、没锁屏的条件；锁屏的段在 `route` 或备注里写明。蓝牙标签只在前台扫描（锁屏后没有蓝牙先验）。
 3. 起点已知的段：A 在地图上长按起点；手持看屏（texting）才设朝向，口袋 / 包 / 摆臂的段起步朝向按未知算。
-4. 离线：`tools/lab/bump_sync.py A/imu.csv B/imu.csv` 对时（残差 > 20 ms 的那组敲击不用，两组都不行整段作废）；
-   Lab 的 `prepare-private` 自动配对、把 B 的轨迹换到 A 的时钟、后挪杆臂 0.25 m、只留开始敲击 3 s 后到结束敲击前，写成 A 的真值，
-   再用真实 IMU 回放（`hpass-eval --motion pdr-imu`）冷启动、已知起点各打一次分。
+4. 离线：`tools/lab/bump_sync.py A/acc_raw.csv B/acc_raw.csv` 对时（没有 `acc_raw.csv` 时用 `imu.csv`；残差 > 20 ms 的那组敲击不用，
+   两组都不行整段作废）；Lab 的 `prepare-private` 自动配对、把 B 的轨迹换到 A 的时钟、后挪杆臂（默认 0.25 m，以 B 的 meta 为准）、
+   只留开始敲击 3 s 后到结束敲击前，写成 A 的真值，再用真实 IMU 回放（`hpass-eval --motion pdr-imu`）冷启动、已知起点各打一次分。
+   App 默认打开「按携带方式调整」（携带无关运动模型），回放时加 `--carry-motion` 才和 App 一致；对比老行为时去掉它。
 5. 成绩：房间判对率、错房间（相邻 / 远处）、过门延迟、≤1 m、P50 / P90、TTFF，按携带方式和地图年龄（0 / 1–7 / 8–30 / >30 天）分开报，
    只出聚合值（见 [lab-ci.md](lab-ci.md)「办公室指标」）。地图要有房间单元（RoomPlan 多房间扫描），否则没有房间类指标。
 

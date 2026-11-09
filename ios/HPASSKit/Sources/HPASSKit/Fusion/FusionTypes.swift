@@ -81,6 +81,13 @@ public struct IMUSample {
         return s
     }
 
+    /// imu.csv 的 mx..mz 是不是可用的「校准后」磁场。实时定位的参考系不含磁力计、还没有本机硬铁偏置时，
+    /// App 写 0,0,0（mag_acc = -1）：这种行不能拿来估偏置（原始 − 0 = 设备系平均磁场），也不出特征。
+    public static func calibratedFieldValid(_ m: (Double, Double, Double)) -> Bool {
+        let n = (m.0 * m.0 + m.1 * m.1 + m.2 * m.2).squareRoot()
+        return n.isFinite && n > 1
+    }
+
     /// 「向上」在设备系中的单位向量：优先重力列，其次四元数，都没有则 nil（调用方退回加速度低通）。
     var upFromSample: FusionVec3? {
         if let g = gravity {
@@ -148,6 +155,12 @@ public struct CarryMotionConfig {
     /// 翻转之后已经不等于前向轴方位角（评审）。保留 handled 撒开的偏差，只在附近再撒这么多（度，nil = 整圆）。
     /// 占位值，待自采 iPhone 双机数据标定（等有了陀螺积分的完整姿态、能几何地重算前向轴方位角再收紧）
     public var postHandledSpreadDeg: Double? = 30
+    /// 只有紧跟「操作手机」事件的模式变化才按新模式的先验重撒航向偏差。δ（手机-行走夹角）只在手机相对身体被转过时才变，
+    /// 而那一定伴随操作手机事件；没有事件的变化是分类器自己改了看法——公开真实手持数据（ILC）里约两成时间被判成包里 / 摆臂，
+    /// 每次都整圆重撒时已知起点跟踪中位从 3.2 m 坏到 5.0 m、错定 30% → 50%。这种变化只切参数、保留偏差，再撒 `unhandledChangeSpreadDeg`
+    public var respreadOnlyAfterHandled = true
+    /// 没有操作手机事件的模式变化：在原偏差附近撒多少（度）。占位值，待自采 iPhone 双机数据标定
+    public var unhandledChangeSpreadDeg: Double = 5
 
     public init() {}
 }

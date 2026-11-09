@@ -586,6 +586,14 @@ public final class FusionEngine {
                                   headingSpreadDeg: config.motion.postHandledSpreadDeg, headingCentersDeg: [0],
                                   keepBias: config.motion.postHandledSpreadDeg != nil,
                                   initialScaleSigma: p.initialScaleSigma, lostSuppressCm: max(p.lostSuppressCm, 1500))
+        case .changed where !afterHandled && config.motion.respreadOnlyAfterHandled && config.motion.internalClassifier
+                            && config.motion.reportHandledEvents:
+            // 没有「操作手机」的模式变化：手机相对身体没被大幅转过，δ 没变，只是分类器的看法变了（真实手持数据里
+            // 看屏 ↔ 包里 / 摆臂来回判是常事）。只切分模式参数，偏差保留、只撒一点，不进保护期。
+            // 外部给模式（没有操作手机事件）时不适用：那时模式变化就是唯一的信号
+            ev = CarryMotionEvent(tMs: tMs, kind: kind, from: from, to: to,
+                                  headingSpreadDeg: config.motion.unhandledChangeSpreadDeg, headingCentersDeg: [0], keepBias: true,
+                                  initialScaleSigma: 0, lostSuppressCm: 0)
         case .changed, .initial:
             ev = CarryMotionEvent(tMs: tMs, kind: kind, from: from, to: to,
                                   headingSpreadDeg: p.headingSpreadDeg, headingCentersDeg: p.headingCentersDeg, keepBias: false,

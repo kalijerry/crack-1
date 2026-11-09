@@ -42,10 +42,13 @@ final class MotionRecorder {
 
     /// CoreMotion 姿态参考系。
     enum Frame: String {
-        /// 定位用（默认）：`.xArbitraryZVertical`，偏航只靠陀螺 + 重力，不被室内磁干扰拉。
-        /// 注意：这个参考系下 CMDeviceMotion.magneticField 无效（accuracy = -1），
-        /// 磁场改由原始磁力计减硬铁偏置得到（MagBiasEstimator）。
+        /// 定位用、本机有可信的硬铁偏置存档时：`.xArbitraryZVertical`，姿态不用磁力计。
+        /// 这个参考系下 CMDeviceMotion.magneticField 无效（accuracy = -1），磁场 = 原始磁力计 − 本机偏置（MagBiasEstimator）。
         case positioning
+        /// 定位用、本机还没有（或刚作废了）偏置存档时：`.xArbitraryCorrectedZVertical`，iOS 照常给校准后磁场。
+        /// 定位流水线不用 CoreMotion 的姿态 / 偏航（FusionAttitude 自己积陀螺；重力、角速度和参考系无关），
+        /// 所以磁力计参与姿态解算对定位没有影响；而没有偏置时不含磁力计的参考系会让地磁完全用不上（评审：阻断）。
+        case positioningCalibrated
         /// 建图 / 采集用：`.xMagneticNorthZVertical`（不可用时 `.xArbitraryCorrectedZVertical`）。
         /// 建图离线流水线要 iOS 校准后磁场（imu.csv mx..mz）和系统航向，这条路不改。
         case mapping
@@ -73,6 +76,10 @@ final class MotionRecorder {
         switch want {
         case .positioning:
             frame = .xArbitraryZVertical
+            manager.showsDeviceMovementDisplay = false
+        case .positioningCalibrated:
+            frame = frames.contains(.xArbitraryCorrectedZVertical) ? .xArbitraryCorrectedZVertical : .xArbitraryZVertical
+            // 不弹系统的「画 8 字校准」界面（盲测 / 口袋里没法操作）
             manager.showsDeviceMovementDisplay = false
         case .mapping:
             frame = frames.contains(.xMagneticNorthZVertical) ? .xMagneticNorthZVertical : .xArbitraryCorrectedZVertical

@@ -226,12 +226,22 @@ class PublicImuScenarioTests(unittest.TestCase):
             self.assertNotIn("--motion", by_id[sid]["flags"])
         imu = {k: v for k, v in by_id.items() if k.startswith("public/imu/")}
         self.assertEqual(sorted(imu), ["public/imu/cold-mag-radio", "public/imu/cold-mag-search", "public/imu/cold-wifi",
-                                       "public/imu/track-mag"])
+                                       "public/imu/track-mag", "public/imu/track-mag-carry", "public/imu/track-mag-noheading",
+                                       "public/imu/track-mag-noheading-carry"])
+        # 携带无关运动模型（App 默认）的场景带 --carry-motion，起步朝向未知的带 --start-heading unknown
+        for k, s in imu.items():
+            self.assertEqual("--carry-motion" in s["flags"], k.endswith("-carry"), k)
+            self.assertEqual("unknown" in s["flags"], "noheading" in k, k)
         for s in imu.values():
             self.assertEqual(s["dataset"], "ilc-imu")
             self.assertEqual(s["flags"][s["flags"].index("--motion") + 1], "pdr-imu")
             self.assertTrue(s["office_metrics"])
-        self.assertEqual({k for k, s in imu.items() if "pr" in s["tiers"]}, {"public/imu/track-mag", "public/imu/cold-mag-radio"})
+        self.assertEqual({k for k, s in imu.items() if "pr" in s["tiers"]},
+                         {"public/imu/track-mag", "public/imu/cold-mag-radio", "public/imu/track-mag-carry"})
+        # 办公室盲测和 App 默认一致：携带无关运动模型、房间约束、静止冻结
+        oc_flags = SUITE["private"]["protocols"]["office-carry"]["flags"]
+        for f in ("--carry-motion", "--rooms", "--stationary-freeze"):
+            self.assertIn(f, oc_flags)
         self.assertEqual(SUITE["datasets"]["ilc-imu"]["drift"], "imu")
         self.assertTrue(SUITE["datasets"]["ilc-imu"]["flip_y"])
 

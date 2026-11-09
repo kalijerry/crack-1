@@ -37,7 +37,13 @@
     {"id": "public/imu/cold-mag-radio", "dataset": "ilc-imu", "flags": ["--motion", "pdr-imu"],
      "title": "冷启动 · 地磁 + 蓝牙 · 真实 IMU 计步", "tiers": ["pr", "nightly"], "gate": true, "office_metrics": true},
     {"id": "public/imu/cold-wifi", "dataset": "ilc-imu", "flags": ["--wifi", "--no-ble", "--motion", "pdr-imu"],
-     "title": "冷启动 · Wi-Fi + 地磁 · 真实 IMU 计步（只有 Android 能扫 Wi-Fi）", "tiers": ["nightly"], "gate": true, "office_metrics": true}
+     "title": "冷启动 · Wi-Fi + 地磁 · 真实 IMU 计步（只有 Android 能扫 Wi-Fi）", "tiers": ["nightly"], "gate": true, "office_metrics": true},
+    {"id": "public/imu/track-mag-carry", "dataset": "ilc-imu", "flags": ["--oracle-start", "--no-ble", "--motion", "pdr-imu", "--carry-motion"],
+     "title": "已知起点 · 只地磁 · 真实 IMU 计步 + 携带无关运动模型（App 默认：携带方式分类、按方式重撒、步长 K 在线标定）", "tiers": ["pr", "nightly"], "gate": true, "office_metrics": true},
+    {"id": "public/imu/track-mag-noheading", "dataset": "ilc-imu", "flags": ["--oracle-start", "--no-ble", "--motion", "pdr-imu", "--start-heading", "unknown"],
+     "title": "已知起点、起步朝向未知（整圆：口袋 / 包里起步的条件）· 只地磁 · 真实 IMU 计步", "tiers": ["nightly"], "gate": true, "office_metrics": true},
+    {"id": "public/imu/track-mag-noheading-carry", "dataset": "ilc-imu", "flags": ["--oracle-start", "--no-ble", "--motion", "pdr-imu", "--start-heading", "unknown", "--carry-motion"],
+     "title": "已知起点、起步朝向未知 · 只地磁 · 真实 IMU 计步 + 携带无关运动模型", "tiers": ["nightly"], "gate": true, "office_metrics": true}
   ],
   "private": {
     "note": "自采数据（后台的建图 / 测试会话）。站点名只用哈希代号，公开仓库的报告里不出现任何站点信息",
@@ -46,7 +52,7 @@
       "all-builds": {"title": "全部建图会话融合 → 测试", "flags": []},
       "track": {"title": "全部建图会话融合 → 已知起点跟踪（App 实时定位的跟踪配置档 MagneticConfig.tracking）", "flags": ["--oracle-start"]},
       "office-carry": {"title": "办公室盲测（摄像头关、按携带方式带）· 真实 IMU 计步 · 双机真值",
-                       "flags": ["--motion", "pdr-imu"], "track_flags": [], "cold_flags": ["--no-mag-only-cold-fix"]}
+                       "flags": ["--motion", "pdr-imu", "--carry-motion", "--rooms", "--stationary-freeze"], "track_flags": [], "cold_flags": ["--no-mag-only-cold-fix"]}
     },
     "tiers": ["pr", "nightly"],
     "gate": true

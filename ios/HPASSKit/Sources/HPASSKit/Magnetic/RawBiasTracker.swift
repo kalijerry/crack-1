@@ -31,6 +31,9 @@ public final class RawBiasTracker {
 
     /// 送入同一时刻附近的原始读数和校准读数。
     public func add(tMs: Int64, raw: (Double, Double, Double), calibrated: (Double, Double, Double)) {
+        // 「校准后」磁场为 0（实时定位参考系不含磁力计、还没有本机偏置时 App 写的 0,0,0 / mag_acc = -1）不是校准值：
+        // 拿它算「原始 − 校准」得到的是设备系里的平均磁场，不是硬铁偏置
+        guard IMUSample.calibratedFieldValid(calibrated) else { return }
         let sec = tMs / 1000
         if let c = currentSecond, c != sec, n > 0 {
             perSecond.append((acc.0 / Double(n), acc.1 / Double(n), acc.2 / Double(n)))

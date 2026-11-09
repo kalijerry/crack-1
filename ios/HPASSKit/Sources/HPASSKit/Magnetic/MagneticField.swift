@@ -29,6 +29,15 @@ public struct MagneticFieldMap {
     let cells: [MagneticFeature?]
     let sigmas: [MagneticFeature?]
 
+    /// 有数据格子的 |B| 分位数区间（lo、hi 是 0～1）。不到 20 格时 nil。App 用它核对本机磁力计偏置（磁吸附件 / 磁性保护壳）
+    public func totalPercentiles(_ lo: Double, _ hi: Double) -> ClosedRange<Double>? {
+        let v = cells.compactMap { $0?.total }.sorted()
+        guard v.count >= 20 else { return nil }
+        func q(_ p: Double) -> Double { v[min(max(Int(Double(v.count - 1) * p + 0.5), 0), v.count - 1)] }
+        let a = q(min(lo, hi)), b = q(max(lo, hi))
+        return a...b
+    }
+
     public init(widthCm: Double, heightCm: Double, cellCm: Double,
                 cells: [MagneticFeature?], sigmas: [MagneticFeature?]) {
         precondition(cellCm > 0 && widthCm > 0 && heightCm > 0)

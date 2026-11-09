@@ -46,6 +46,9 @@ final class MagMapStore: ObservableObject {
     /// 融合引擎用的「地图 +y 轴的罗盘方位」= 上方 + 180°。
     var declinationDeg: Double? { mapUpBearingDeg.map { ($0 + 180).truncatingRemainder(dividingBy: 360) } }
     private var walkableCache: WalkableMap?
+    /// 有房间单元（map.json 的 units / floorPolygons + 门 / 墙）的地图：可走区域带房间图（不经门不能换房间、房间级输出、静止冻结）
+    private var roomMap: StoreMap?
+    private var roomSignature = ""
     private var shelves: [ShelfRect] = []
     /// 房间扫描的地图：能走的地面（没有通道时用它当可走区域）
     @Published private(set) var floor: [[Point2]] = []
@@ -82,6 +85,13 @@ final class MagMapStore: ObservableObject {
         crosses = m.crosses
         floor = m.floor
         if !sameCrosses { walkableCache = nil }
+        let units = m.roomUnits.filter { $0.isWalkable && $0.polygon.count >= 3 }
+        let sig = "\(units.map(\.id).joined(separator: ","))|\(m.doors.count)|\(m.walls.count)|\(m.width)x\(m.height)"
+        if sig != roomSignature {
+            roomSignature = sig
+            roomMap = units.isEmpty ? nil : m
+            walkableCache = nil
+        }
         // 只有标准货架（Shelf-001…100）是实物；虚拟货架和 107 / 401 / Shelf-4-… 等不参与
         let phys = m.physicalShelves
         if phys != shelves {
@@ -104,6 +114,11 @@ final class MagMapStore: ObservableObject {
     /// 可走区域（由通道栅格化，首次使用时生成并缓存）。没有通道时为 nil。
     func walkableMap() -> WalkableMap? {
         if let w = walkableCache { return w }
+        if let rm = roomMap, let w = WalkableMap(roomsOf: rm) {
+            walkableCache = w
+            AppLog.i("地磁", "可走区域（房间图）：\(w.rooms?.rooms.count ?? 0) 个单元、\(w.rooms?.doors.count ?? 0) 扇门，不经门不能换房间")
+            return w
+        }
         if crosses.isEmpty && !floor.isEmpty {
             let w = WalkableMap(floor: floor, obstacles: shelves, widthCm: widthCm, heightCm: heightCm)
             walkableCache = w

@@ -26,6 +26,7 @@
 | `public/pdr-sparse/track-mag` | 建图只用 15 条 trace：模拟「只走几趟」的稀疏建图 |
 | `public/vio/*`、`public/pdr/track-mag-radio` | 每晚跑：视觉里程计级漂移、已知起点 + 蓝牙（`public/vio/cold-mag` 和 `public/pdr/cold-mag` 一样只看错定、不拦；`public/vio/cold-mag-search` 拦退步） |
 | `public/imu/track-mag`、`public/imu/cold-mag-radio`（PR + 每晚）；`public/imu/cold-mag-search`、`public/imu/cold-wifi`（每晚） | **真实 IMU**：数据集 `ilc-imu`（`ilc_convert.py --drift imu --flip-y`）的测试会话不写合成位姿，`hpass-eval --motion pdr-imu` 把手机的真实 IMU 送进 FusionEngine（配置和 App 实时定位页同一份 `FusionEngine.live`，罗盘关），推算位置的增量再推粒子（`ShadowLocalizer.odometryStep`）。已知起点的起步朝向取真值前 1.5 m（ILC 是手持，手机-行走夹角 δ≈0）；冷启动从地图中心、朝向 0 起步、粒子整圆。多出一张「办公室指标」表（≤1 m 按时间、TTFF 等） |
+| `public/imu/track-mag-carry`（PR + 每晚）；`public/imu/track-mag-noheading`、`public/imu/track-mag-noheading-carry`（每晚） | 同上的真实 IMU 回放，加 `--carry-motion`（携带无关运动模型 + 按携带方式重撒 + 步长 K 在线标定，App 默认）和 / 或 `--start-heading unknown`（起步朝向整圆：口袋 / 包里起步的条件）。ILC 是手持数据，携带方式分类应判成看屏 / 竖持，这几个场景守的是「新运动模型在手持上不比老的差」，口袋 / 包 / 摆臂 / 通话仍要等自采 office-carry 数据 |
 
 `public/pdr/*` 不经过 FusionEngine（位姿是合成的），留着当粒子滤波 / 地图侧的回归守门；`public/imu/*` 和它同一份建图 / 测试划分，
 两组数字的差就是「合成漂移 vs 真实计步」的代价。ILC 的坐标 y 朝北，我们的地图 y 朝下（`FusionTypes.swift`：θ̇ = +ω_up），
@@ -39,7 +40,7 @@
 | `walk-once` | **每个建图会话单独建图（= 只走一遍）**，用不是同一天的测试会话来测，所有组合混在一起出指标。这是对标 Oriient「走一遍就能用」的核心指标 |
 | `all-builds` | 全部建图会话融合后测 |
 | `track` | 全部建图会话融合，**已知起点跟踪**（`--oracle-start`）：量 App 实时定位的跟踪配置档（`MagneticConfig.tracking`）在自采门店上的表现。前两个协议都是冷启动 |
-| `office-carry` | **办公室双机盲测**：盲测机 A（`purpose=blind_test`、`camera=false`、按被测携带方式带）配同一 `pair_id` 的真值伴随机 B（竖持 ARKit）。`tools/lab/bump_sync.py` 用两机开头 / 结尾各敲三下的 \|a\| 峰求时钟偏移 + 漂移（残差 > 20 ms 的组不用）；B 的轨迹换到 A 的时钟、沿行进方向后挪杆臂 0.25 m、只留开始敲击 3 s 后到结束敲击前，写成 A 的 `truth.csv`（`tools/lab/office_carry.py`）。回放 `--motion pdr-imu`，出两个场景：`…/office-carry/track`（已知起点；texting 等手持看屏给真值朝向，其余 `--start-heading unknown` 整圆）和 `…/office-carry/cold`（App 冷启动配置档，只靠地磁不报位置）。指标见下「办公室指标」，按携带方式、地图年龄分组 |
+| `office-carry` | **办公室双机盲测**：盲测机 A（`purpose=blind_test`、`camera=false`、按被测携带方式带）配同一 `pair_id` 的真值伴随机 B（竖持 ARKit）。`tools/lab/bump_sync.py` 用两机开头 / 结尾各敲三下的 \|a\| 峰求时钟偏移 + 漂移（残差 > 20 ms 的组不用）；B 的轨迹换到 A 的时钟、沿行进方向后挪杆臂 0.25 m、只留开始敲击 3 s 后到结束敲击前，写成 A 的 `truth.csv`（`tools/lab/office_carry.py`）。回放 `--motion pdr-imu --carry-motion --rooms --stationary-freeze`（和 App 默认一致：携带无关运动模型、房间约束、静止冻结），出两个场景：`…/office-carry/track`（已知起点；texting 等手持看屏给真值朝向，其余 `--start-heading unknown` 整圆）和 `…/office-carry/cold`（App 冷启动配置档，只靠地磁不报位置）。指标见下「办公室指标」，按携带方式、地图年龄分组 |
 
 仓库是公开的：报告、日志里站点只用代号（`site-xxxxxx`），不出现地图编号、名称、会话内容、坐标、房间名、日期。
 设置了环境变量 `HPASS_LAB_SALT`（CI 用仓库 secret）时代号 = HMAC-SHA256(盐, map_id) 前 6 位——`sha1(map_id)` 拿已知的地图编号一试就能对上，
@@ -47,7 +48,8 @@
 
 ## 办公室指标（`tools/lab/office_metrics.py`）
 
-`hpass-eval --track-out track.csv` 每个运动节拍写一行（`session,run,t_ms,est_x,est_y,converged,unc_cm,ref_x,ref_y`），
+`hpass-eval --track-out track.csv` 每个运动节拍写一行（`session,run,t_ms,est_x,est_y,converged,unc_cm,ref_x,ref_y,room_id,room_mass,carry_mode,frozen`；
+后四列是 `--rooms` 时滤波器报的房间 / 房间置信度、`--carry-motion` 时引擎判的携带方式、`--stationary-freeze` 时是否冻结），
 `office_metrics.py` 按 1 Hz 网格、用 `map.json` 的房间单元（`units`）算：
 
 | 指标 | 口径 |

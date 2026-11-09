@@ -105,6 +105,12 @@ private final class MagPipeline {
     var lastTouchMs: Int64 = 0
     /// 盲测录制：当前声明的携带方式（写进 track.csv 的 carry_mode 列）
     var carryMode = ""
+    /// 步长 K 在线标定（携带方式模型打开时）
+    let calibrator = StepScaleCalibrator()
+    /// 静止冻结判定（房间图地图）
+    var freezeDet = StationaryFreezeDetector()
+    /// 近距离传感器：贴着（true）/ 没贴着（false）/ 没开（nil）
+    var proximityNear: Bool?
     /// 实时定位录下来的蓝牙 / 货架标签（和 imu、mag_raw 一起上传，电脑上能原样回放）
     var bleWriter: CSVWriter?
     var rawLastA: Point2?
@@ -192,8 +198,16 @@ final class MagneticEngine: ObservableObject {
     @Published var visualEnhancement: Bool = UserDefaults.standard.bool(forKey: "visualEnhancement") {
         didSet { UserDefaults.standard.set(visualEnhancement, forKey: "visualEnhancement") }
     }
+    /// 携带无关的运动模型（设置 → 定位，默认开）：携带方式分类、分方式步长 / 航向、口袋 / 摆臂步幅平均，粒子按携带方式重撒，
+    /// 步长 K 在线标定。HPASSKit FusionConfig.motion + MagneticConfig.carryModeAdaptive，评估 hpass-eval --carry-motion 同一套。
+    /// 还没在真机上标定（全部占位参数），关掉就是原来的行为，双机测试可以两种各跑一遍对比
+    nonisolated static var carryMotionEnabled: Bool {
+        UserDefaults.standard.object(forKey: "carryMotionEnabled") as? Bool ?? true
+    }
     /// 盲测录制时强制关摄像头（不管「视觉增强」开没开）
     var forceCameraOff = false
+    /// 实时定位结束（不管从哪个页面结束）之后调一次：盲测模式在这里收尾（关近距离传感器、后台保活、敲击记录）
+    var onLiveStopped: (() -> Void)?
     /// 这次实时定位允许用摄像头
     var cameraAllowed: Bool { visualEnhancement && !forceCameraOff && ARKitLogger.isSupported }
     /// 实时定位录制的附加 meta（盲测模式填），开始和结束时各取一次
@@ -511,6 +525,10 @@ final class MagneticEngine: ObservableObject {
             pipe.carryMode = ""
         }
         writeLiveMeta(final: true)
+        // 盲测附加的东西只属于这一次实时定位：从「导航」页 / 地磁页 / 传感器被别的页面抢走结束时也要清掉（评审）
+        forceCameraOff = false
+        liveExtraMeta = nil
+        if let cb = onLiveStopped { onLiveStopped = nil; cb() }
         liveSignsWriter?.close()
         liveSignsWriter = nil
         isTracking = false
@@ -643,6 +661,7 @@ final class MagneticEngine: ObservableObject {
             pipe.stepBase = 0
             pipe.fusion = fusion
             pipe.localizer = localizer
+            Self.wireMotion(pipe)
             pipe.lastFusedPos = nil
             pipe.lastOut = nil
             pipe.pos = nil
@@ -681,6 +700,20 @@ final class MagneticEngine: ObservableObject {
         return (fusion, loc)
     }
 
+    /// 惯导引擎 ↔ 粒子滤波的携带方式接线（HPASSKit docs/carry-motion.md，评估器 --carry-motion 同一套）：
+    /// 携带事件 → `loc.apply`（按方式重撒航向偏差，粒子位置不动），粒子滤波一换就补告知当前方式，
+    /// 步长 K 在线标定（学到的分方式比例存在本机），静止冻结判定器清零。在引擎队列上调。
+    private nonisolated static func wireMotion(_ pipe: MagPipeline) {
+        pipe.calibrator.reset()
+        pipe.freezeDet.reset()
+        guard let f = pipe.fusion else { return }
+        guard let loc = pipe.localizer, f.config.motion.enabled else { f.onCarryEvent = nil; return }
+        f.setLearnedStepScales(StepScaleStore.load())
+        f.onStepScaleLearned = { m, v in StepScaleStore.save(mode: m, scale: v) }
+        f.onCarryEvent = { [weak loc] ev in _ = loc?.apply(ev) }
+        loc.setCarryMode(f.activeCarryMode, respread: false)
+    }
+
     /// 设朝向时点 / 拖到的位置：箭头从我的位置指向这里。
     func pointHeading(toward t: Point2) {
         guard headingEditing, let p = position, p.distance(to: t) > 10 else { return }
@@ -693,9 +726,11 @@ final class MagneticEngine: ObservableObject {
         let store = MagMapStore.shared
         // 和离线评估（SessionEvaluator .pdrIMU、hpass-eval --motion pdr-imu）同一份配置（HPASSKit FusionEngine.live）：
         // 有场地通道时惯导位置被限制在通道里，罗盘按页面开关（冷启动显式指定）
-        return FusionEngine.live(corridors: store.crosses, start: p, headingRad: heading,
+        // 有磁场图时惯导只当增量送粒子滤波：不加通道约束（冷启动的绝对位置 / 航向是随便给的，投影会剪掉增量；粒子滤波自己有墙）
+        return FusionEngine.live(corridors: store.field == nil ? store.crosses : [], start: p, headingRad: heading,
                                  compass: compass ?? useCompassHeading, stepLengthScale: stepScale,
-                                 declinationDeg: declinationDeg ?? store.declinationDeg)
+                                 declinationDeg: declinationDeg ?? store.declinationDeg,
+                                 carryMotion: Self.carryMotionEnabled)
     }
 
     private func makeLocalizer(field: MagneticFieldMap, start: Point2?, headingUnknown: Bool = false,
@@ -714,7 +749,15 @@ final class MagneticEngine: ObservableObject {
             cfg = MagneticConfig.liveColdStart(visualOdometry: false)
         }
         cfg.lateralWeight = depthMode == .fuse ? 1 : 0
-        let loc = MagneticLocalizer(field: field, walkable: MagMapStore.shared.walkableMap(), config: cfg)
+        cfg.carryModeAdaptive = Self.carryMotionEnabled
+        let walk = MagMapStore.shared.walkableMap()
+        if walk?.rooms != nil {
+            // 办公室地图：不经门不能换房间、估计带房间、坐着不动时冻结（门限都是占位值，待自采 iPhone 双机数据标定）
+            cfg.roomConstraints = true
+            cfg.reportRoom = true
+            cfg.stationaryFreeze = true
+        }
+        let loc = MagneticLocalizer(field: field, walkable: walk, config: cfg)
         loc.raycaster = MagMapStore.shared.raycaster()
         loc.reset(start: start, spreadCm: TrackingProfile.startSpreadCm, headingUnknown: headingUnknown, priorFraction: priorFraction)
         return loc
@@ -973,6 +1016,7 @@ final class MagneticEngine: ObservableObject {
             if !pipe.tracking { pipe.stepBase = 0 }
             pipe.fusion = fusion
             pipe.localizer = localizer
+            Self.wireMotion(pipe)
             pipe.lastFusedPos = nil
             pipe.lastOut = nil
             pipe.tracking = true
@@ -1038,6 +1082,11 @@ final class MagneticEngine: ObservableObject {
             "mag_calibration": motion.frameName == "xArbitraryZVertical" ? "app_hard_iron:\(biasSrc)" : "ios",
             "imu_convention": "android: acc m/s^2 incl. gravity (+z up when flat), gyro rad/s, mag uT; gvx..gvz gyro-aided gravity m/s^2 same sign as acc; qw..qz CoreMotion attitude in attitude_frame",
             "background_mode": BackgroundKeeper.enabledSetting,
+            // 蓝牙扫描只在前台（没有服务 UUID 过滤，iOS 后台不回报）；锁屏后的冷启动拿不到蓝牙先验
+            "ble_background": false,
+            "carry_motion": Self.carryMotionEnabled,
+            "room_constraints": MagMapStore.shared.walkableMap()?.rooms != nil,
+            "mag_pollution": queue.sync { pipe.magBias.polluted },
             "battery_start": Double(liveStartBattery), "thermal_start": liveStartThermal,
         ]
         if let b = bias { meta["mag_bias_ut"] = [b.0, b.1, b.2] }
@@ -1232,6 +1281,7 @@ final class MagneticEngine: ObservableObject {
         queue.sync {
             pipe.fusion = fusion
             pipe.localizer = localizer
+            Self.wireMotion(pipe)
             pipe.lastFusedPos = nil
             pipe.lastOut = nil
             pipe.estimate = nil
@@ -1411,8 +1461,19 @@ final class MagneticEngine: ObservableObject {
             case .idle: break
             }
         }
-        // 定位：.xArbitraryZVertical（姿态不用磁力计，偏航不被室内磁干扰拉）；校准（建图）保持含磁力计的参考系
-        motion.start(hz: 50, frame: mode == .calibrating ? .mapping : .positioning)
+        // 定位：本机有没过期的硬铁偏置存档时用 .xArbitraryZVertical（姿态不用磁力计），磁场 = 原始 − 偏置，开始后先核对一段；
+        // 没有存档时用 .xArbitraryCorrectedZVertical，iOS 照常给校准后磁场（定位不用 CoreMotion 的偏航，姿态里有没有磁力计不影响）。
+        // 校准（建图）保持含磁力计的参考系
+        let frame: MotionRecorder.Frame = mode == .calibrating ? .mapping
+            : (MagBiasStore.loadValid() != nil ? .positioning : .positioningCalibrated)
+        let band = MagMapStore.shared.field.flatMap { Self.totalBand($0) }
+        queue.sync { pipe.magBias.expectedTotalUT = band }
+        motion.start(hz: 50, frame: frame)
+        // 近距离传感器（盲测模式打开；贴耳 / 口袋）交给携带方式分类区分通话和竖持
+        proximityObserver = NotificationCenter.default.addObserver(forName: UIDevice.proximityStateDidChangeNotification,
+                                                                   object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.proximityChanged() }
+        }
         // 原始磁力计：和校准后磁场的差就是系统当前估计的偏置，用来发现重新校准；
         // 定位参考系不含磁力计时，磁场就靠它减本机偏置
         if motion.manager.isMagnetometerAvailable && mode != .calibrating {
@@ -1449,7 +1510,22 @@ final class MagneticEngine: ObservableObject {
         UIApplication.shared.isIdleTimerDisabled = true
     }
 
+    /// 地图磁场强度 |B| 的 P5～P95（偏置核对用）
+    private static func totalBand(_ f: MagneticFieldMap) -> ClosedRange<Double>? {
+        f.totalPercentiles(0.05, 0.95)
+    }
+
+    private func proximityChanged() {
+        let dev = UIDevice.current
+        let near: Bool? = dev.isProximityMonitoringEnabled ? dev.proximityState : nil
+        let pipe = self.pipe
+        queue.async { pipe.proximityNear = near }
+    }
+
+    private var proximityObserver: NSObjectProtocol?
+
     private func stopMotion() {
+        if let o = proximityObserver { NotificationCenter.default.removeObserver(o); proximityObserver = nil }
         SensorArbiter.shared.release("地磁定位")
         motion.stop()
         motion.onSample = nil
@@ -1478,9 +1554,11 @@ final class MagneticEngine: ObservableObject {
             magAcc = -1
         }
         let m = magCal ?? (0, 0, 0)
+        // 陀螺辅助的重力（Android 约定）一起给：摆臂时「向上」不被手的离心加速度带偏（携带方式分类、Bz 都用它）
         let sample = HPASSKit.IMUSample(tMs: s.tMs, ax: s.acc.0, ay: s.acc.1, az: s.acc.2,
                                         gx: s.gyr.0, gy: s.gyr.1, gz: s.gyr.2,
-                                        mx: m.0, my: m.1, mz: m.2)
+                                        mx: m.0, my: m.1, mz: m.2,
+                                        gravity: (s.grav.0, s.grav.1, s.grav.2))
         // v4：真四元数 + 陀螺辅助重力；mx..mz 写上面这个「校准后」磁场
         pipe.imuWriter?.append(s.csvLineV4(mag: m, magAcc: magAcc))
         let feat: MagneticFeature?
@@ -1523,6 +1601,7 @@ final class MagneticEngine: ObservableObject {
             }
             publishLive(pipe: pipe, tMs: s.tMs)
         case .live:
+            pipe.fusion?.proximityNear = pipe.proximityNear
             guard let fusion = pipe.fusion, let out = fusion.process(sample) else {
                 publishLive(pipe: pipe, tMs: s.tMs)
                 return
@@ -1548,7 +1627,12 @@ final class MagneticEngine: ObservableObject {
                 loc.setOdometry(.pdr)
                 let lat = pipe.pendingLateral
                 pipe.pendingLateral = nil
+                // 办公室房间图：坐着不动够久冻结，连续走几步才解冻（StationaryFreezeDetector；没开房间约束时什么都不做）
+                if loc.config.stationaryFreeze {
+                    loc.feedStationary(&pipe.freezeDet, tMs: out.tMs, still: !out.isMoving, stepCount: out.stepCount)
+                }
                 let e = loc.step(delta: delta, feature: feat, trust: pipe.trustNow, lateral: lat)
+                pipe.calibrator.step(deltaCm: delta.length, engine: fusion, localizer: loc)
                 est = e
                 shown = e.position
                 unc = e.uncertaintyCm
@@ -1570,6 +1654,7 @@ final class MagneticEngine: ObservableObject {
             bleTick(pipe: pipe, tMs: s.tMs, loc: loc)
             loc.setOdometry(.pdr)
             let est = loc.step(delta: delta, feature: feat, trust: pipe.trustNow)
+            pipe.calibrator.step(deltaCm: delta.length, engine: fusion, localizer: loc)
             pipe.estimate = est
             pipe.lastShown = est.position
             emit(pipe: pipe, tMs: out.tMs, shown: est.position, unc: est.uncertaintyCm, est: est,
@@ -1588,6 +1673,11 @@ final class MagneticEngine: ObservableObject {
         if let w = pipe.trackWriter {
             let check = pipe.pendingCheck ?? ""
             pipe.pendingCheck = nil
+            // 房间（房间图地图）、自动判的携带方式、是否静止冻结
+            let roomText: String = Fmt.csv(est?.roomId ?? "")
+            let roomMassText: String = est?.roomId == nil ? "" : Fmt.f(est?.roomMass ?? 0, 3)
+            let carryAuto: String = pipe.lastOut?.carryMode.rawValue ?? ""
+            let frozenText: String = (pipe.localizer?.stationaryFrozen ?? false) ? "1" : "0"
             w.append([
                 "\(tMs)", Fmt.f(shown.x, 1), Fmt.f(shown.y, 1),
                 Fmt.f(unc, 1), Fmt.f(est?.confidence ?? -1, 3),
@@ -1596,7 +1686,7 @@ final class MagneticEngine: ObservableObject {
                 Fmt.f(feat?.total ?? 0, 2), Fmt.f(feat?.vertical ?? 0, 2), Fmt.f(feat?.horizontal ?? 0, 2),
                 Fmt.csv(check), src, Fmt.f(pipe.trustNow, 2), pipe.posture.rawValue,
                 pipe.lastLatLeft.map { Fmt.f($0, 0) } ?? "", pipe.lastLatRight.map { Fmt.f($0, 0) } ?? "",
-                "", Fmt.csv(pipe.carryMode),         // room_id：房间级输出接进来之前留空，离线按地图 units 算
+                roomText, Fmt.csv(pipe.carryMode), roomMassText, carryAuto, frozenText,
             ].joined(separator: ","))
         }
         let acc = pipe.magAccuracy
@@ -1797,7 +1887,7 @@ final class MagneticEngine: ObservableObject {
         fmt.locale = Locale(identifier: "en_US_POSIX")
         let name = "mag_\(fmt.string(from: Date())).csv"
         guard let w = try? CSVWriter(url: dir.appendingPathComponent(name),
-                                     header: "t_ms,x_cm,y_cm,unc_cm,conf,pdr_x,pdr_y,heading_deg,steps,b_total,b_vert,b_horiz,check,src,trust,posture,lat_left_cm,lat_right_cm,room_id,carry_mode") else {
+                                     header: "t_ms,x_cm,y_cm,unc_cm,conf,pdr_x,pdr_y,heading_deg,steps,b_total,b_vert,b_horiz,check,src,trust,posture,lat_left_cm,lat_right_cm,room_id,carry_mode,room_mass,carry_auto,frozen") else {
             return nil
         }
         return (w, name)

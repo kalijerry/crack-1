@@ -458,7 +458,9 @@ final class CarryMotionTests: XCTestCase {
                 XCTAssertTrue(kinds.contains(.changed), "应有一次 texting→upright 的切换事件：\(kinds)")
                 let ev = engine.carryEvents.first { $0.kind == .changed }!
                 XCTAssertEqual(ev.from, .texting); XCTAssertEqual(ev.to, .upright)
-                XCTAssertEqual(ev.headingSpreadDeg, 15)
+                // 慢慢立起来（没有「操作手机」事件）：δ 没变（引擎前向轴按几何切换），只切参数、保留偏差
+                XCTAssertTrue(ev.keepBias)
+                XCTAssertEqual(ev.lostSuppressCm, 0)
             }
         }
     }

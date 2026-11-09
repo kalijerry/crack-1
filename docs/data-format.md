@@ -100,6 +100,14 @@ point_id,x_cm,y_cm,t_start_ms,t_end_ms,note
 
 在 v2 的基础上多两个文件。`meta.json` 另有 `map_width_cm`、`map_height_cm`、`arkit: true`。
 
+`meta.json` 还可以有（扫描段合成之后的地图，见 [scan-and-map-management.md](scan-and-map-management.md)；老会话没有，按 `[0, 0]` 处理）：
+
+| 键 | 说明 |
+|---|---|
+| `map_origin_offset_cm` | 录制时地图的累计原点偏移 `[x, y]`（cm）。地图后来因为接着扫往 −x / −y 扩展而整体平移过时，读会话的一方（`SurveySessionLoader` / `LiveRunLoader`，hpass-build、`SessionEvaluator` 走同一入口）把 `anchors.csv` / `track.csv` 里的地图坐标加上「地图现在的 `originOffsetCm` − 这个值」；ARKit 坐标不动。会话文件本身不改写 |
+| `map_geometry_version` | 录制时地图的几何版本（扫描段注册表每次几何改动递增），只作记录 |
+| `map_frame_id` | 录制时地图的基准 AR 坐标系身份（`frameId`），只作记录 |
+
 | 文件 | 列 | 频率 | 说明 |
 |---|---|---|---|
 | `arkit_pose.csv` | `t_ms,x_m,y_m,z_m,qx,qy,qz,qw,tracking,limited_reason` | ≈30 Hz | ARKit 世界跟踪位姿。世界系重力对齐，x 右、y 上、z 朝向观察者；俯视时 (x, z) 与地图 (x, y) 手性相同。`tracking`：0 不可用、1 受限、2 正常；`limited_reason`：1 初始化、2 运动过快、3 特征不足、4 重定位、9 其他 |

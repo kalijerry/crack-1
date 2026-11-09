@@ -1,0 +1,90 @@
+"""cloud_build_lib.py 的单元测试：特征地图兼容规则（frameId 优先，否则 arAlign 等价）和挑选。"""
+import json
+import math
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+
+import cloud_build_lib as cb  # noqa: E402
+
+ALIGN = {"phi": -0.6, "pRefX": 120.0, "pRefY": 80.0, "aRefX": 0.0, "aRefY": 0.0}
+
+
+def map_json(align=ALIGN, frame=None, wrap=False):
+    root = {"mapElementList": [], "arAlign": align}
+    if frame:
+        root["frameId"] = frame
+    return json.dumps({"data": root} if wrap else root).encode()
+
+
+def shifted(a, dx, dy):
+    return dict(a, pRefX=a["pRefX"] + dx, pRefY=a["pRefY"] + dy)
+
+
+class CompatTest(unittest.TestCase):
+    def test_frame_id_rule(self):
+        a = cb._align(ALIGN)
+        far = cb._align(shifted(ALIGN, 300, 0))
+        self.assertTrue(cb.worldmap_compatible(far, "F", a, "F"))          # 同一 frameId：arAlign 差 3 m 也兼容
+        self.assertFalse(cb.worldmap_compatible(a, "F", a, "G"))           # frameId 不同：arAlign 一样也不兼容
+        self.assertTrue(cb.worldmap_compatible(a, None, a, "F"))           # 一方没有：退回 arAlign
+        self.assertFalse(cb.worldmap_compatible(far, None, a, "F"))
+        self.assertTrue(cb.worldmap_compatible(a, "F", a, None))
+        self.assertFalse(cb.worldmap_compatible(None, None, a, None))
+
+    def test_map_fields(self):
+        self.assertEqual(cb.map_frame_id(map_json(frame="F1")), "F1")
+        self.assertEqual(cb.map_frame_id(map_json(frame="F1", wrap=True)), "F1")    # 带 data 包装
+        self.assertIsNone(cb.map_frame_id(map_json()))
+        self.assertEqual(cb.map_align(map_json(wrap=True)), cb._align(ALIGN))
+        self.assertIsNone(cb.map_align(b"not json"))
+
+    def test_equivalent_anchor_rewrite(self):
+        # 同一个映射换锚点写法仍然等价；旋转差 2° 不等价
+        a = cb._align(ALIGN)
+        ax, ay = 300.0, -150.0
+        px, py = cb._to_map(a, ax, ay)
+        alt = (a[0], px, py, ax, ay)
+        self.assertTrue(cb.align_equivalent(a, alt))
+        self.assertFalse(cb.align_equivalent(a, (a[0] + math.radians(2),) + a[1:]))
+
+
+class PickTest(unittest.TestCase):
+    def session(self, root, name, meta, payload=b"bplist00" + b"x" * 100):
+        d = Path(root) / name
+        d.mkdir()
+        (d / cb.WM_FILE).write_bytes(payload)
+        (d / cb.WM_META).write_text(json.dumps(meta), encoding="utf-8")
+        return str(d)
+
+    def test_pick(self):
+        with tempfile.TemporaryDirectory() as t:
+            base = {"version": 1, "mapId": "m", "source": "scan"}
+            dirs = [
+                self.session(t, "old", dict(base, createdMs=1, arAlign=ALIGN)),
+                self.session(t, "shifted", dict(base, createdMs=5, arAlign=shifted(ALIGN, 50, 100), frameId="F")),
+                self.session(t, "other", dict(base, createdMs=9, arAlign=ALIGN, frameId="G")),
+                self.session(t, "v2", dict(base, createdMs=10, arAlign=ALIGN, version=2)),
+                self.session(t, "notmine", dict(base, createdMs=11, arAlign=ALIGN, mapId="x")),
+            ]
+            a = cb._align(ALIGN)
+            # 地图有 frameId F（原点平移过，arAlign 已经变了）：只有 shifted 那份（同 frameId）和没 frameId 但 arAlign 等价的 old
+            path, info = cb.pick_worldmap(dirs, "m", cb._align(shifted(ALIGN, 50, 100)), "F")
+            self.assertEqual(info["session"], "shifted")
+            # 老地图（没有 frameId）：按 arAlign，最新的等价那份是 other（frameId 不参与）
+            path, info = cb.pick_worldmap(dirs, "m", a, None)
+            self.assertEqual(info["session"], "other")
+            # 地图 frameId = F、arAlign 是原来的：other（G）不收；shifted（同 F）和 old（无 frameId、arAlign 等价）都收，挑新的
+            path, info = cb.pick_worldmap(dirs, "m", a, "F")
+            self.assertEqual(info["session"], "shifted")
+            path, info = cb.pick_worldmap(dirs[:1] + dirs[2:], "m", a, "F")
+            self.assertEqual(info["session"], "old")
+            self.assertIsNone(cb.pick_worldmap(dirs, "m", None, "F"))
+
+
+if __name__ == "__main__":
+    unittest.main()

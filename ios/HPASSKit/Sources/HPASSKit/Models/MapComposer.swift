@@ -6,7 +6,9 @@ import Foundation
 /// 1. 按时间顺序处理启用的段；每段的元素用 `toMap` 变换到地图坐标（墙门窗按中心 + 旋转、家具先转中心再换回左上角、
 ///    多边形逐点）。
 /// 2. `replace` 段先删掉自己足迹（本段单元外扩 30 cm）里的旧东西：墙按足迹裁掉里面那截，门窗 / 家具 / 其他元素按中心，
-///    单元按质心；被替换的单元编号、类别、名字由新单元继承。
+///    单元按质心；被替换的单元编号、类别、名字由新单元继承。足迹外的旧墙，凡是和本段某面新墙平行（≤ 5°）、
+///    垂直距离 ≤ 60 cm 的，新墙沿线范围（两头各加 30 cm）里那截也裁掉（旧墙偏得多正是重扫的原因，不能留下两道平行墙）。
+///    新墙和剩下的旧墙接上时以新墙为准（旧墙两端都离新墙的线 ≤ 25 cm 才接，接成新墙的线；否则各留各的）。
 /// 3. 去重（只和更早的段比，同一段内部不动）：墙 = 平行 ≤ 5°、垂直距离 ≤ 25 cm、沿线区间重叠或间隙 ≤ 20 cm → 取区间并集；
 ///    门窗开口 = 同类、中心距 ≤ 40 cm、夹角 ≤ 20°；家具 = 同类、中心距 ≤ 40 cm、宽深各在 ±30% 内。
 /// 4. 单元：同一房间（质心互含 + 面积比 0.5～2）继承编号；`append` 保留旧多边形，`replace` 用新的；
@@ -30,6 +32,8 @@ public enum MapComposer {
         public var replaceMarginCm = 30.0
         /// append：没匹配上的新单元有这么多面积落在旧单元里就丢掉
         public var ghostUnitShare = 0.6
+        /// replace：足迹外和新墙平行、离新墙这么近的旧墙，新墙沿线范围里那截算同一道墙的旧测量，裁掉
+        public var replaceParallelCm = 60.0
         /// 墙被裁掉后剩下的小于这个长度就不要了
         public var minWallCm = 20.0
         /// 一致性检查：采样点离已有墙这么近才算重合
@@ -153,6 +157,30 @@ public enum MapComposer {
                     }
                 }
                 items = kept
+                // 足迹外的旧墙：和新墙平行又离得近的那截是同一道墙的旧测量（走廊墙、几个房间共用一长段的墙），裁掉
+                let newWalls = elements.compactMap(MapGeometry.segment).filter { $0.type == "MapWall" }
+                if !newWalls.isEmpty {
+                    var out: [Item] = []
+                    for it in items {
+                        guard it.kind == .wall, it.order < k, let s = it.seg else { out.append(it); continue }
+                        let near = newWalls.filter { MapGeometry.lineAngleDiffDeg($0.rotationDeg, s.rotationDeg) <= th.wallAngleDeg }
+                        if near.isEmpty { out.append(it); continue }
+                        func covered(_ p: Point2) -> Bool {
+                            near.contains { n in
+                                let u = n.param(of: p)
+                                return u >= -th.replaceMarginCm && u <= n.length + th.replaceMarginCm
+                                    && abs(n.offset(of: p)) <= th.replaceParallelCm
+                            }
+                        }
+                        for piece in clip(s, inside: covered, step: 5, minLen: th.minWallCm) {
+                            var n = it
+                            n.seg = piece
+                            n.raw = piece == s ? it.raw : MapGeometry.element(piece, template: it.raw)
+                            out.append(n)
+                        }
+                    }
+                    items = out
+                }
             }
 
             // 4. 单元并入
@@ -170,7 +198,7 @@ public enum MapComposer {
                     if s.type == "MapWall" {
                         // 替换时旧墙在足迹边上被裁出一道缺口（外扩量），新墙要能跨过它接上
                         let gap = th.wallGapCm + (rec.mode == .replace ? th.replaceMarginCm : 0)
-                        mergeWall(s, raw: e, order: k, into: &items, th, maxGap: gap)
+                        mergeWall(s, raw: e, order: k, into: &items, th, maxGap: gap, newerWins: rec.mode == .replace)
                     } else {
                         let dup = items.contains { it in
                             guard it.order < k, let o = it.seg, o.type == s.type else { return false }
@@ -279,12 +307,25 @@ public enum MapComposer {
         return MapGeometry.unionOnLine(base, s, maxGapCm: maxGap)
     }
 
+    /// 以新墙为准合并：旧墙两端都离新墙的线不超过 `wallOffsetCm`、方向差 ≤ `wallAngleDeg` 才接，接成新墙的线
+    /// （只看中心会把一长段斜一点的旧走廊墙整条转到新线上，远端挪得太多）
+    static func canMergeNewer(_ new: MapGeometry.Segment, _ old: MapGeometry.Segment, _ th: Thresholds, maxGap: Double) -> MapGeometry.Segment? {
+        guard MapGeometry.lineAngleDiffDeg(new.rotationDeg, old.rotationDeg) <= th.wallAngleDeg,
+              abs(new.offset(of: old.a)) <= th.wallOffsetCm, abs(new.offset(of: old.b)) <= th.wallOffsetCm else { return nil }
+        return MapGeometry.unionOnLine(new, old, maxGapCm: maxGap)
+    }
+
+    /// 新墙并进已有的墙。append：旧墙为准（新墙只补长度）；replace（`newerWins`）：新墙为准，接上的旧墙改到新墙的线上
     static func mergeWall(_ s: MapGeometry.Segment, raw: [String: Any], order k: Int, into items: inout [Item], _ th: Thresholds,
-                          maxGap: Double) {
+                          maxGap: Double, newerWins: Bool = false) {
         func isOld(_ i: Int) -> Bool { items[i].kind == .wall && items[i].order < k }
+        func merge(_ base: MapGeometry.Segment, _ other: MapGeometry.Segment, _ gap: Double) -> MapGeometry.Segment? {
+            newerWins ? canMergeNewer(base, other, th, maxGap: gap) : canMerge(base, other, th, maxGap: gap)
+        }
         var mi: Int?
         for i in items.indices where isOld(i) {
-            if let u = canMerge(items[i].seg!, s, th, maxGap: maxGap) {
+            let u = newerWins ? canMergeNewer(s, items[i].seg!, th, maxGap: maxGap) : canMerge(items[i].seg!, s, th, maxGap: maxGap)
+            if let u {
                 items[i].seg = u; items[i].raw = MapGeometry.element(u, template: items[i].raw); mi = i
                 break
             }
@@ -298,7 +339,7 @@ public enum MapComposer {
         while changed {
             changed = false
             for j in items.indices where j != m && isOld(j) {
-                if let u = canMerge(items[m].seg!, items[j].seg!, th, maxGap: th.wallGapCm) {
+                if let u = merge(items[m].seg!, items[j].seg!, th.wallGapCm) {
                     items[m].seg = u; items[m].raw = MapGeometry.element(u, template: items[m].raw)
                     items.remove(at: j)
                     if j < m { m -= 1 }

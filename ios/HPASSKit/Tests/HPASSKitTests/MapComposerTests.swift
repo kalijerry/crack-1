@@ -170,6 +170,56 @@ final class MapComposerTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(ScanRegistry.decode(try res.registry.encoded())).retiredUnitIds, ["R1", "R2"])
     }
 
+    /// 重扫办公区，旧图里贯穿整栋的走廊墙（y = 4）偏了 d：新墙为准，不能被拉回旧线，也不能留两道平行墙
+    func rescanAgainstOffsetCorridorWall(_ d: Double) throws -> (walls: [MapGeometry.Segment], at: (Point2) throws -> Point2) {
+        var old = O.full
+        old.walls = old.walls.map { $0.0.y == 4 && $0.1.y == 4 ? (O.P(0, 4 + d), O.P(20, 4 + d)) : $0 }
+        old.doors = old.doors.map { (O.P($0.0.x, 4 + d), O.P($0.1.x, 4 + d)) }
+        let oldJ = try O.build(old, O.frameA, frameId: "F1")
+        var reg = try ScanRegistry.newMap(mapId: "office", frameId: "F1", scanId: "s1", scanJSON: oldJ, createdMs: 1000)
+        let first = try MapComposer.compose(registry: reg, scans: ["s1": oldJ])
+        let shift0 = first.originShift ?? .zero
+        let rescan = try O.build(O.officeRescan, O.frameC)
+        let t = try O.truth(from: rescan, O.frameC, to: oldJ, O.frameA)
+        reg = first.registry.adding(.init(id: "s2", createdMs: 2000, inBaseFrame: false, toMap: t.translated(by: shift0),
+                                          alignment: .manual, mode: .replace), nowMs: 2000)
+        let res = try MapComposer.compose(registry: reg, scans: ["s1": oldJ, "s2": rescan])
+        let shift = shift0 + (res.originShift ?? .zero)
+        let walls = MapGeometry.segments(try O.root(res.json), types: ["MapWall"])
+        return (walls, { try O.scanPoint(oldJ, O.frameA, $0) + shift })
+    }
+
+    /// 经过点 p、沿线范围盖住 p 的水平墙离 p 的垂直距离
+    func horizontalWallOffsets(_ walls: [MapGeometry.Segment], near p: Point2, within: Double = 80) -> [Double] {
+        walls.compactMap { w in
+            let u = w.param(of: p)
+            guard u >= 0, u <= w.length, abs(w.offset(of: p)) <= within else { return nil }
+            return abs(w.offset(of: p))
+        }
+    }
+
+    func testReplaceNewWallWinsOverLongOldWall() throws {
+        // 偏 20 cm：剩下的旧走廊墙接到新墙的线上
+        let r = try rescanAgainstOffsetCorridorWall(0.20)
+        let inRoom = horizontalWallOffsets(r.walls, near: try r.at(O.P(4, 4)))
+        XCTAssertEqual(inRoom.count, 1, "重扫范围里只有一道走廊墙：\(inRoom)")
+        XCTAssertLessThan(inRoom.first ?? 99, 2, "走廊墙在新线上，没被拉回旧线")
+        let far = horizontalWallOffsets(r.walls, near: try r.at(O.P(16, 4)))
+        XCTAssertEqual(far.count, 1)
+        XCTAssertLessThan(far.first ?? 99, 2, "接上的旧墙改到新线上")
+    }
+
+    func testReplaceRemovesParallelOldWallOutsideFootprint() throws {
+        // 偏 40 cm（在足迹外扩 30 cm 以外）：新墙范围里的旧墙裁掉，不留两道平行墙；范围外的旧墙原样
+        let r = try rescanAgainstOffsetCorridorWall(0.40)
+        let inRoom = horizontalWallOffsets(r.walls, near: try r.at(O.P(4, 4)))
+        XCTAssertEqual(inRoom.count, 1, "重扫范围里只有一道走廊墙：\(inRoom)")
+        XCTAssertLessThan(inRoom.first ?? 99, 2)
+        let far = horizontalWallOffsets(r.walls, near: try r.at(O.P(16, 4.4)))
+        XCTAssertEqual(far.count, 1)
+        XCTAssertLessThan(far.first ?? 99, 2, "没重扫的那段旧墙不动")
+    }
+
     func testGhostCopyOfOldRoomIsDropped() throws {
         let leftJ = try O.build(O.left, O.frameA, frameId: "F1")
         var reg = try ScanRegistry.newMap(mapId: "m", frameId: "F1", scanId: "s1", scanJSON: leftJ, createdMs: 1)

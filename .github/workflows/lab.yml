@@ -56,6 +56,9 @@ jobs:
       TIER: ${{ github.event_name == 'schedule' && 'nightly' || (github.event_name == 'workflow_dispatch' && github.event.inputs.tier || 'pr') }}
       WORK: ${{ github.workspace }}/../lab-work
       ILC: ${{ github.workspace }}/../lab-data/ilc
+      # Swift 的字典 / 集合每个进程随机散列，遍历顺序不同会让冷启动 + 蓝牙场景同一份代码、同样的种子跑出不同结果
+      # （同一提交两次：P90 27.4 m / 34.0 m），把波动误判成退步。固定散列让回放可复现。
+      SWIFT_DETERMINISTIC_HASHING: "1"
     steps:
       - uses: actions/checkout@v4
 

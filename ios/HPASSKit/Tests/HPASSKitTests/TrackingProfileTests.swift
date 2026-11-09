@@ -364,6 +364,25 @@ final class TrackingProfileTests: XCTestCase {
         XCTAssertTrue(app.magOnlyColdStartSuppressed)
     }
 
+    /// 小场地（办公室 / 房间，没有蓝牙标签）只靠地磁的冷启动也报位置；大场地、面积不知道时照旧不报。
+    func testLiveColdStartSmallVenueReportsMagOnly() {
+        let office = MagneticConfig.liveColdStart(visualOdometry: false, mapAreaM2: 231)
+        XCTAssertTrue(office.magOnlyColdStartReports)
+        XCTAssertTrue(MagneticConfig.liveColdStart(visualOdometry: false, mapAreaM2: 1000).magOnlyColdStartReports)
+        XCTAssertFalse(MagneticConfig.liveColdStart(visualOdometry: false, mapAreaM2: 4613).magOnlyColdStartReports)
+        XCTAssertFalse(MagneticConfig.liveColdStart(visualOdometry: false, mapAreaM2: nil).magOnlyColdStartReports)
+        XCTAssertFalse(MagneticConfig.liveColdStart(visualOdometry: false, mapAreaM2: 0).magOnlyColdStartReports)
+        // 其余参数和大场地一样
+        let big = MagneticConfig.liveColdStart(visualOdometry: false)
+        XCTAssertEqual(office.hybridOffset, big.hybridOffset)
+        XCTAssertEqual(office.initialHeadingBiasSigmaDeg, big.initialHeadingBiasSigmaDeg)
+        XCTAssertEqual(office.jumpConfirmUpdates, big.jumpConfirmUpdates)
+
+        let l = MagneticLocalizer(field: world(), config: office, seed: 5)
+        l.reset(start: nil, headingUnknown: true)
+        XCTAssertFalse(l.magOnlyColdStartSuppressed)
+    }
+
     /// App 冷启动时能解除「只靠地磁不报」的外部先验都会标 externalPriorApplied：
     /// 蓝牙粗定位（applyPositionPrior）、标签范围（applyTagRanges）、贴近标签 / 货架标识牌（applyRegion）。
     func testLiveColdStartPriorsLiftSuppression() {

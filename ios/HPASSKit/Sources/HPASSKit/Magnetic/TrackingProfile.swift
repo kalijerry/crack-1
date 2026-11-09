@@ -155,8 +155,14 @@ public extension MagneticConfig {
     /// 产品决定：只靠地磁冷启动不报位置（`magOnlyColdStartReports = false`）。公开商场楼层上只靠地磁冷启动的错定
     /// 91～100%（Lab public/pdr/cold-mag-search），宁可不报，等外部位置先验（蓝牙粗定位 / 标签范围 / 贴近标签 /
     /// 货架标识牌，都会标 `MagneticLocalizer.externalPriorApplied`）或用户在图上指起点。
-    /// - Parameter visualOdometry: 视觉里程计在推粒子（ARKit 可用且打开了）。
-    static func liveColdStart(visualOdometry: Bool) -> MagneticConfig {
+    ///
+    /// 例外：小场地（地图外框面积 ≤ `magOnlyColdStartMaxAreaM2`，办公室 / 房间）只靠地磁也报位置。
+    /// 办公室没有蓝牙标签、也没有货架标识牌，按上面的规则就永远定不到；商场的错定来自几千平米里
+    /// 十几米的磁场序列能对上很多处，几百平米的房间里长得像的地方少得多。收敛门、远跳确认照旧。
+    /// - Parameters:
+    ///   - visualOdometry: 视觉里程计在推粒子（ARKit 可用且打开了）。
+    ///   - mapAreaM2: 地图外框面积（m²）；nil = 不知道，按大场地处理（不报）。
+    static func liveColdStart(visualOdometry: Bool, mapAreaM2: Double? = nil) -> MagneticConfig {
         var c = MagneticConfig()
         // 冷启动时航向只来自罗盘，偏差可能很大
         c.initialHeadingBiasSigmaDeg = 30
@@ -171,8 +177,17 @@ public extension MagneticConfig {
         }
         // 每次读数的整体水平会差 10～16 µT（磁力计偏置估计不同）：没定到按起伏找，定到后估出偏移再按绝对值比
         c.hybridOffset = true
-        c.magOnlyColdStartReports = false
+        c.magOnlyColdStartReports = magOnlyColdStartAllowed(mapAreaM2: mapAreaM2)
         return c
+    }
+
+    /// 只靠地磁冷启动也报位置的地图面积上限（m²，地图外框）。办公室 / 房间几百平米，商场楼层几千平米。
+    static let magOnlyColdStartMaxAreaM2: Double = 1000
+
+    /// 这张地图上只靠地磁的冷启动报不报位置（见 `liveColdStart`）。
+    static func magOnlyColdStartAllowed(mapAreaM2: Double?) -> Bool {
+        guard let a = mapAreaM2, a > 0 else { return false }
+        return a <= magOnlyColdStartMaxAreaM2
     }
 }
 

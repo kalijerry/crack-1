@@ -199,6 +199,14 @@ public struct MagneticConfig {
     /// 软约束时蓝牙持续对不上是否触发局部找回（false = 只给先验，从不判丢）
     public var bleSoftLocalRecovery = true
 
+    // MARK: 携带模式（默认关：原有行为）
+
+    /// 按携带模式切换分模式参数（`carryTable`），携带姿态变了就按新模式的先验重撒航向偏差 / 步长比例、粒子位置不动、
+    /// 之后走一段不判丢（`MagneticLocalizer.setCarryMode` / `apply(_:)`）。只对计步运动来源有意义。
+    public var carryModeAdaptive = false
+    /// 分模式参数表（占位值，待自采 iPhone 双机数据标定；见 `CarryMotionTable.placeholder`）。
+    public var carryTable = CarryMotionTable.placeholder
+
     public init() {}
 
     /// 打开冷启动收敛门（推荐值见 `ColdStartGate`）：只用地磁冷启动时宁可不报位置，也不报错的。
@@ -363,6 +371,107 @@ public final class MagneticLocalizer {
         !config.magOnlyColdStartReports && coldStart && !hasConverged && !externalPriorApplied
     }
 
+    // MARK: 携带模式
+
+    /// 当前携带模式（`setCarryMode` / `apply` 给的；reset 后回到 unknown，调用方要重新告知）。
+    public private(set) var carryMode: CarryMode = .unknown
+    /// 携带模式重撒之后还剩多远（cm）不判丢。
+    private var lostSuppressRemainingCm = 0.0
+    /// 正处在「刚重撒、不判丢」的保护期。
+    public var lostSuppressed: Bool { lostSuppressRemainingCm > 0 }
+    /// 重撒过几次（诊断 / 测试）。
+    public private(set) var respreadCount = 0
+
+    /// 携带模式变了 / 「操作手机」事件：每个粒子的航向偏差和步长比例重新撒开，**粒子位置不动**（不是全图找回），
+    /// 之后走 `suppressLostCm` 不判丢（航向整圆撒开后置信度必然先掉，等走一段磁场把航向挑出来）。
+    /// 扩展自 `setOdometry` 的做法（来源变了按初始 σ 再撒开），区别是这里可以整圆、多峰、也可以不保留原偏差：
+    /// - `spreadDeg` nil：整圆均匀（夹角完全未知：口袋 / 包 / 摆臂）；
+    /// - 否则偏差 = (keepBias ? 原偏差 : 0) + 随机选一个 `centersDeg` 里的中心 + N(0, spreadDeg)（通话 ±90° 双峰）；
+    /// - 步长比例在原值附近再撒 N(0, scaleSigma ?? config.initialScaleSigma)。
+    /// 冷启动（没收敛）时也照做：粒子的航向偏差本来就还没定。
+    public func carryModeChanged(spreadDeg: Double?, centersDeg: [Double] = [0], scaleSigma: Double? = nil,
+                                 keepBias: Bool = false, suppressLostCm: Double = 1500) {
+        guard !xs.isEmpty else { return }
+        let centers = centersDeg.isEmpty ? [0.0] : centersDeg
+        let ss = scaleSigma ?? config.initialScaleSigma
+        for i in 0..<xs.count {
+            if let sd = spreadDeg {
+                let c = centers[min(Int(rng.uniform() * Double(centers.count)), centers.count - 1)] * Double.pi / 180
+                bias[i] = (keepBias ? bias[i] : 0) + c + rng.normal() * sd * Double.pi / 180
+            } else {
+                bias[i] = (rng.uniform() * 2 - 1) * Double.pi
+            }
+            scale[i] = min(max(scale[i] + rng.normal() * ss, config.scaleRange.lowerBound), config.scaleRange.upperBound)
+        }
+        lostSuppressRemainingCm = max(lostSuppressRemainingCm, max(suppressLostCm, 0))
+        lowStreak = 0
+        respreadCount += 1
+    }
+
+    /// 告知携带模式（App 自己的分类器，或 FusionEngine 的事件）。`config.carryModeAdaptive` 关着、不是携带姿态、
+    /// 或运动来源是视觉里程计时什么都不做。切分模式参数；`respread` 且携带姿态真的变了（上一个也是携带姿态）才重撒。
+    /// 第一次告知不重撒：起点 / 上一轮的航向先验还有效。返回是否重撒了。
+    @discardableResult
+    public func setCarryMode(_ mode: CarryMode, respread: Bool = true) -> Bool {
+        guard config.carryModeAdaptive, mode.isCarryPosture else { return false }
+        let prev = carryMode
+        carryMode = mode
+        guard config.applyCarryMode(mode) else { return false }
+        guard respread, prev.isCarryPosture, prev != mode else { return false }
+        let p = config.carryTable[mode]
+        carryModeChanged(spreadDeg: p.headingSpreadDeg, centersDeg: p.headingCentersDeg, scaleSigma: p.initialScaleSigma,
+                         keepBias: false, suppressLostCm: p.lostSuppressCm)
+        return true
+    }
+
+    /// 吃 FusionEngine 的携带模式事件：initial 只切参数；changed 按新模式先验重撒；handled 在原偏差附近撒开。
+    /// `config.carryModeAdaptive` 关着或运动来源是视觉里程计时什么都不做。返回是否重撒了。
+    @discardableResult
+    public func apply(_ ev: CarryMotionEvent) -> Bool {
+        guard config.carryModeAdaptive, config.trackingOdometry != .vio else { return false }
+        switch ev.kind {
+        case .initial:
+            return setCarryMode(ev.to, respread: false)
+        case .changed:
+            _ = setCarryMode(ev.to, respread: false)
+            carryModeChanged(spreadDeg: ev.headingSpreadDeg, centersDeg: ev.headingCentersDeg, scaleSigma: ev.initialScaleSigma,
+                             keepBias: ev.keepBias, suppressLostCm: ev.lostSuppressCm)
+            return true
+        case .handled:
+            guard carryMode.isCarryPosture || ev.to.isCarryPosture else { return false }
+            if carryMode != ev.to { _ = setCarryMode(ev.to, respread: false) }
+            carryModeChanged(spreadDeg: ev.headingSpreadDeg, centersDeg: ev.headingCentersDeg, scaleSigma: ev.initialScaleSigma,
+                             keepBias: ev.keepBias, suppressLostCm: ev.lostSuppressCm)
+            return true
+        }
+    }
+
+    /// 粒子步长比例的加权中位数和加权标准差（在线标定步长 K 用：收敛后走一段，中位数回写当前模式的 K）。
+    public func scaleStatistics() -> (median: Double, sigma: Double) {
+        guard !xs.isEmpty else { return (1, 0) }
+        let mx = logw.max() ?? 0
+        var total = 0.0, mean = 0.0
+        for i in xs.indices { let w = exp(logw[i] - mx); total += w; mean += w * scale[i] }
+        guard total > 0 else { return (1, 0) }
+        mean /= total
+        var acc = 0.0, med = scale[0]
+        for i in scale.indices.sorted(by: { scale[$0] < scale[$1] }) {
+            acc += exp(logw[i] - mx)
+            if acc >= total / 2 { med = scale[i]; break }
+        }
+        var v = 0.0
+        for i in xs.indices { let w = exp(logw[i] - mx); v += w * (scale[i] - mean) * (scale[i] - mean) }
+        return (med, (v / total).squareRoot())
+    }
+
+    /// 步长 K 吸收了 `factor` 之后，把每个粒子的步长比例除以同一个 factor：净位移不变，比例回到 1 附近。
+    public func absorbStepScale(_ factor: Double) {
+        guard factor.isFinite, factor > 0.3, factor < 3 else { return }
+        for i in scale.indices {
+            scale[i] = min(max(scale[i] / factor, config.scaleRange.lowerBound), config.scaleRange.upperBound)
+        }
+    }
+
     public init(field: MagneticFieldMap, walkable: WalkableMap? = nil,
                 config: MagneticConfig = .init(), seed: UInt64 = 1) {
         self.field = field
@@ -468,6 +577,8 @@ public final class MagneticLocalizer {
         hasConverged = !coldStart
         externalPriorApplied = false
         searchPathCm = 0
+        carryMode = .unknown
+        lostSuppressRemainingCm = 0
     }
 
     /// 是否已经收敛（有把握）
@@ -776,6 +887,7 @@ public final class MagneticLocalizer {
     private func predict(delta: Point2, dist: Double) {
         pathSinceResetCm += dist
         if !hasConverged { searchPathCm += dist }
+        if lostSuppressRemainingCm > 0 { lostSuppressRemainingCm = max(0, lostSuppressRemainingCm - dist) }
         var mx = 0.0, my = 0.0, mw = 0.0
         let distM = dist / 100
         let frac = hasConverged ? (config.convergedPositionNoiseFraction ?? config.positionNoiseFraction) : config.positionNoiseFraction
@@ -863,14 +975,19 @@ public final class MagneticLocalizer {
             }
         }
         if config.adaptiveMagWeight { updateMagWeight(f) }
-        let mw = config.adaptiveMagWeight ? magneticWeight : (hasConverged ? config.convergedMagWeight : 1)
+        // 携带模式刚重撒（航向偏差重新未知）：虽然还报位置，但证据权重按「找位置」给满，不打跟踪时的折扣，
+        // 不然整圆撒开的航向要走很远才挑得出来
+        let reacquiring = lostSuppressRemainingCm > 0
+        let mw = config.adaptiveMagWeight ? magneticWeight : (hasConverged && !reacquiring ? config.convergedMagWeight : 1)
         let rel = config.hybridOffset ? offsetEst == nil : config.offsetInvariant
         let fAbs = offsetEst.map { f - $0 } ?? f
         let slack2 = config.offsetSlackUT * config.offsetSlackUT
         // 冷启动收敛门起作用时（只靠地磁找位置）可以用更高的温度：相邻几次读数高度相关，按独立算会过度自信，
         // 峰的权重比就量不准。再按残差相关长度折算（跟踪档；0 = 原有行为）
         let baseTemp = coldStartGateActive && config.coldSearchTemperature > 0 ? config.coldSearchTemperature : config.likelihoodTemperature
-        let corrFactor = max(config.magneticCorrelationCm / max(config.updateDistanceCm, 1), 1)
+        // 相关长度折算是给稳定跟踪用的（地图误差成片）；携带模式刚重撒时是在几米到几十米外的假设之间挑，
+        // 残差差别大、彼此独立，按「找位置」的强度更新，不然走反的那团粒子要几十米才死
+        let corrFactor = reacquiring ? 1 : max(config.magneticCorrelationCm / max(config.updateDistanceCm, 1), 1)
         let temp = baseTemp * corrFactor
         for i in 0..<xs.count {
             guard let m = field.sample(at: Point2(xs[i], ys[i])) else { continue }
@@ -964,6 +1081,15 @@ public final class MagneticLocalizer {
         holdingAgainstFar = false
         let best = cluster(from: nil)
         guard hasConverged, let c = committed else { committed = best.center; switchStreak = 0; return }
+        // 携带模式刚重撒：位置本来就在重新挑，不走远跳的 15 次确认（那是给稳定跟踪防「长得像」用的），
+        // 但也不每次都跳到最重的簇（两团粒子势均力敌时估计会来回闪）：另一团明显更重才换过去
+        if lostSuppressRemainingCm > 0 {
+            switchStreak = 0
+            if best.center.distance(to: c) <= config.jumpGateCm { committed = best.center; return }
+            let mine = cluster(from: c)
+            committed = (best.mass > max(1.5 * mine.mass, 0.4) || mine.mass < config.keepClusterMinMass) ? best.center : mine.center
+            return
+        }
         if best.center.distance(to: c) <= config.jumpGateCm {
             committed = best.center
             switchStreak = 0
@@ -1012,6 +1138,7 @@ public final class MagneticLocalizer {
             return
         }
         if holdingAgainstFar { return }       // 远跳确认期间：丢失计数不动（远跳要么确认、要么原来的簇恢复）
+        if lostSuppressRemainingCm > 0 { lowStreak = 0; return }   // 携带模式刚重撒：航向整圆撒开后置信度必然先掉，不算丢
         let bad = e.confidence < effectiveLostConfidence || e.uncertaintyCm > config.lostUncertaintyCm
         lowStreak = bad ? lowStreak + 1 : 0
         if lowStreak >= config.lostUpdates { loseTrack() }
@@ -1061,6 +1188,9 @@ public final class MagneticLocalizer {
         holdingAgainstFar = false
         lostCount += 1
     }
+
+    /// 测试用：每个粒子的航向偏差（rad）。
+    func headingBiasesForTesting() -> [Double] { bias }
 
     /// 测试用：把权重最低的一部分粒子挪到 `center` 附近（航向偏差、步长比例不变），模拟远处长出一个簇。
     func moveParticlesForTesting(fraction: Double, to center: Point2, spreadCm: Double) {

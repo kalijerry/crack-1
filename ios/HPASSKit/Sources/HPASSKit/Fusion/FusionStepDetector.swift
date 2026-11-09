@@ -10,6 +10,31 @@ struct FusionStepEvent {
     var accelRange: Double
 }
 
+/// 计步的自适应阈值 / 步频锁参数（`FusionStepDetector.adaptive` 打开时用）。**占位值，待自采 iPhone 数据标定。**
+public struct StepDetectorTuning {
+    /// 峰值阈值 = clamp(max(peakFactor × σ_dyn(最近 sigmaWindowS 秒), rangeFactor × 最近几步的峰谷差), peakMin, peakMax)。
+    /// peakMin 取原有固定阈值 1.0：静止 / 低幅度看屏时和以前一样；幅度大（口袋、摆臂）时阈值跟着抬，脚跟触地的次峰不计成步。
+    public var peakFactor = 0.5
+    public var rangeFactor = 0.35
+    public var peakMin = 1.0
+    public var peakMax = 2.5
+    /// 退出阈值 = exitRatio × 峰值阈值；谷值武装阈值 = −valleyRatio × 峰值阈值（原有 1.0 / 0.6 / −0.6 的比例）。
+    public var exitRatio = 0.6
+    public var valleyRatio = 0.6
+    public var sigmaWindowS = 3.0
+    /// 最近几步峰谷差的 EMA 系数；超过 rangeHoldS 秒没有步就清零（停下再走时不被上一段的大幅度卡住）。
+    public var rangeAlpha = 0.3
+    public var rangeHoldS = 2.0
+    /// 步频锁：距上一步不足 cadenceLockRatio × 当前步周期的峰不算步（快走时的双峰）。0 = 不用。
+    /// 步周期只用 minPeriodS 以上的间隔估（更短的间隔不是人的步频，是次峰）。
+    public var cadenceLockRatio = 0.6
+    public var minPeriodS = 0.35
+    /// 步周期 EMA 系数。
+    public var periodAlpha = 0.3
+
+    public init() {}
+}
+
 /// 步伐检测 + 步长估计 + 运动检测。
 ///
 /// 技术组成：
@@ -20,6 +45,7 @@ struct FusionStepEvent {
 ///   并且距上一步不短于 minStepIntervalMs。站立时 a_dyn 远达不到阈值，所以不会误计数。
 /// - **Weinberg 步长模型**：`L = k · (a_max − a_min)^(1/4)`（Weinberg 2002），再限幅 + EMA 平滑。
 /// - **运动检测**：a_dyn 在 1 s 滑窗内的方差。
+/// - **可选（`adaptive`）**：阈值随 a_dyn 的标准差自适应 + 步频锁（见 `StepDetectorTuning`）。关着时和原来完全一样。
 ///
 /// 线程约定：非线程安全，由 FusionEngine 在同一串行队列上驱动。
 final class FusionStepDetector {
@@ -43,7 +69,8 @@ final class FusionStepDetector {
 
     /// Weinberg 系数，单位 m·(m/s²)^(−1/4)。文献常用 0.4–0.5（手持/口袋姿态）。
     /// 0.45 对应峰峰值 4 m/s² 时步长 0.64 m，符合成人常速步行。**这是最需要按人标定的常量。**
-    private let weinbergK: Double = 0.45
+    /// 携带模式路径打开时由 FusionEngine 按模式表（`CarryMotionTable`）和在线标定改写。
+    var weinbergK: Double = 0.45
     /// 步长下限（m）。小于 0.3 m 基本是原地挪步，不应该推动位置。
     private let minStepLenM: Double = 0.30
     /// 峰谷差下限（m/s²）。低于此值 Weinberg 的四次根不可靠，沿用上一次平滑值。
@@ -58,6 +85,10 @@ final class FusionStepDetector {
     private let movingVarThresh: Double = 0.2
     /// 滑窗长度：50 样本 @50 Hz = 1 s，刚好覆盖 1–2 个步伐周期。
     private let windowSize: Int = 50
+
+    /// 自适应阈值 + 步频锁。false = 原有固定阈值（默认）。
+    var adaptive = false
+    var tuning = StepDetectorTuning()
 
     // MARK: - 状态
 
@@ -79,8 +110,23 @@ final class FusionStepDetector {
     private var windowIdx = 0
     private var windowFilled = 0
 
+    /// 自适应阈值用的 σ 窗（3 s @ 50 Hz = 150 样本）：环形缓冲 + 运行和。
+    private var sigWin = [Double](repeating: 0, count: 150)
+    private var sigIdx = 0
+    private var sigFilled = 0
+    private var sigSum = 0.0
+    private var sigSum2 = 0.0
+    /// 步周期估计（s）；nil = 还没有两步。
+    private(set) var stepPeriodS: Double?
+    /// 最近几步峰谷差的 EMA（0 = 没有）。
+    private var recentRange: Double = 0
+    /// 被步频锁丢掉的峰（诊断 / 测试用）。
+    private(set) var cadenceRejects = 0
+
     /// 最近一次的 a_dyn（调试用）。
     private(set) var lastDyn: Double = 0
+    /// 当前生效的峰值阈值（诊断用）。
+    private(set) var currentPeakThresh: Double = 1.0
 
     init() {
         smoothedLen = defaultLenM
@@ -94,7 +140,13 @@ final class FusionStepDetector {
         smoothedLen = defaultLenM
         window = [Double](repeating: 0, count: windowSize)
         windowIdx = 0; windowFilled = 0
+        sigWin = [Double](repeating: 0, count: sigWin.count)
+        sigIdx = 0; sigFilled = 0; sigSum = 0; sigSum2 = 0
+        stepPeriodS = nil
+        recentRange = 0
+        cadenceRejects = 0
         lastDyn = 0
+        currentPeakThresh = peakThresh
     }
 
     /// 1 s 窗内 a_dyn 方差是否超过阈值。窗未半满时保守返回 false。
@@ -135,18 +187,46 @@ final class FusionStepDetector {
         windowIdx = (windowIdx + 1) % windowSize
         if windowFilled < windowSize { windowFilled += 1 }
 
+        // 阈值：固定（原有）或随 σ_dyn 自适应
+        var peakT = peakThresh, exitT = peakExitThresh, valleyT = valleyThresh
+        if adaptive {
+            let n = Int(max(tuning.sigmaWindowS, 0.5) / max(dt, 1e-3))
+            if n != sigWin.count, n >= 10, n <= 1000 {
+                sigWin = [Double](repeating: 0, count: n); sigIdx = 0; sigFilled = 0; sigSum = 0; sigSum2 = 0
+            }
+            let old = sigWin[sigIdx]
+            if sigFilled == sigWin.count { sigSum -= old; sigSum2 -= old * old }
+            sigWin[sigIdx] = dyn
+            sigSum += dyn; sigSum2 += dyn * dyn
+            sigIdx = (sigIdx + 1) % sigWin.count
+            if sigFilled < sigWin.count { sigFilled += 1 }
+            let m = sigSum / Double(sigFilled)
+            let sigma = max(sigSum2 / Double(sigFilled) - m * m, 0).squareRoot()
+            if hasStep, Double(s.tMs - lastStepTMs) / 1000 > tuning.rangeHoldS { recentRange = 0 }
+            peakT = FusionMath.clamp(max(tuning.peakFactor * sigma, tuning.rangeFactor * recentRange), tuning.peakMin, tuning.peakMax)
+            exitT = tuning.exitRatio * peakT
+            valleyT = -tuning.valleyRatio * peakT
+        }
+        currentPeakThresh = peakT
+
         // 谷值跟踪 / 武装
         if dyn < curMin { curMin = dyn }
-        if dyn <= valleyThresh { armed = true }
+        if dyn <= valleyT { armed = true }
 
         var event: FusionStepEvent?
 
         if inPeak {
             if dyn > curMax { curMax = dyn }
-            if dyn < peakExitThresh {
+            if dyn < exitT {
                 // 峰值下降沿：此时 curMax / curMin 已经是本周期的完整峰谷。
                 inPeak = false
-                let intervalOK = !hasStep || (s.tMs - lastStepTMs) >= max(minStepIntervalMs, 0)
+                let sinceS = hasStep ? Double(s.tMs - lastStepTMs) / 1000 : .infinity
+                var intervalOK = !hasStep || (s.tMs - lastStepTMs) >= max(minStepIntervalMs, 0)
+                if adaptive, intervalOK, hasStep, let p = stepPeriodS, tuning.cadenceLockRatio > 0,
+                   sinceS < tuning.cadenceLockRatio * p {
+                    intervalOK = false
+                    cadenceRejects += 1
+                }
                 if armed && intervalOK {
                     let range = max(curMax - curMin, 0.0)
                     let raw = range > minRangeForWeinberg ? weinbergK * pow(range, 0.25) : smoothedLen
@@ -154,6 +234,12 @@ final class FusionStepDetector {
                     let clamped = FusionMath.clamp(raw, minStepLenM, upper)
                     smoothedLen = hasStep ? smoothedLen + (clamped - smoothedLen) * lenAlpha : clamped
                     event = FusionStepEvent(tMs: s.tMs, lengthM: smoothedLen, accelRange: range)
+                    if adaptive {
+                        if hasStep, sinceS.isFinite, sinceS >= tuning.minPeriodS, sinceS <= 1.5 {
+                            stepPeriodS = stepPeriodS.map { $0 + (sinceS - $0) * tuning.periodAlpha } ?? sinceS
+                        }
+                        recentRange = recentRange > 0 ? recentRange + (range - recentRange) * tuning.rangeAlpha : range
+                    }
                     lastStepTMs = s.tMs
                     hasStep = true
                 }
@@ -161,7 +247,7 @@ final class FusionStepDetector {
                 curMin = dyn
                 curMax = dyn
             }
-        } else if dyn > peakThresh {
+        } else if dyn > peakT {
             inPeak = true
             curMax = dyn
         }

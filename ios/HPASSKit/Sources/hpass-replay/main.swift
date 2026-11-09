@@ -55,11 +55,7 @@ func truthAt(_ t: Int64) -> Point2? {
     return Point2(a.p.x + (b.p.x - a.p.x) * f, a.p.y + (b.p.y - a.p.y) * f)
 }
 
-let imu = rows(sessionDir + "/imu.csv").compactMap { r -> IMUSample? in
-    guard r.count >= 10, let t = Int64(r[0]) else { return nil }
-    let v = r[1...9].map { Double($0) ?? 0 }
-    return IMUSample(tMs: t, ax: v[0], ay: v[1], az: v[2], gx: v[3], gy: v[4], gz: v[5], mx: v[6], my: v[7], mz: v[8])
-}.filter { $0.tMs >= t0Truth - 3000 }
+let imu = rows(sessionDir + "/imu.csv").compactMap { IMUSample.fromCSV($0) }.filter { $0.tMs >= t0Truth - 3000 }
 
 // 起点和朝向：真值的第一个点，以及前 1.5 m 的行进方向
 let start = truth.first?.p ?? .zero

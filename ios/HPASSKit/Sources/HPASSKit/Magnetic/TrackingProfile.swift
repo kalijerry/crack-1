@@ -59,6 +59,27 @@ public enum TrackingProfile {
     /// 而门限放宽到 0.1 会让锁错的位置多显示很久（Lab public/pdr/track-mag-radio：0.1 时错定 8.9%、P90 4.1 m，
     /// 0.2 时 4.4%、3.0 m，覆盖 99% → 92%；0.12 / 0.14 / 0.16 在中间，单调）。
     public static let lostConfidenceWithExternalPrior: Double = 0.2
+
+    /// 分携带模式的运动 / 观测参数（航向偏差先验、随机游走、步长比例 σ、K、步内航向噪声、特征权重、噪声下限）。
+    /// 现在是 `CarryMotionTable.placeholder`：**每个数值都待自采 iPhone 双机数据标定**，RIDI / NILoc 派生的数字已作废。
+    /// 只在 `MagneticConfig.carryModeAdaptive` 打开时起作用（`MagneticLocalizer.setCarryMode` / `apply`）。
+    public static func motion(for mode: CarryMode) -> CarryMotionParameters { CarryMotionTable.placeholder[mode] }
+}
+
+public extension MagneticConfig {
+    /// 按携带模式改地磁观测和运动随机游走参数（来自 `carryTable`）。只在 `carryModeAdaptive` 打开、模式是携带姿态、
+    /// 运动来源不是视觉里程计（视觉里程计的位移和航向与携带方式无关）时才改；返回是否改了。
+    /// 不动 `initialHeadingBiasSigmaDeg`：航向偏差的重撒由 `MagneticLocalizer.carryModeChanged` 按事件来。
+    @discardableResult
+    mutating func applyCarryMode(_ mode: CarryMode) -> Bool {
+        guard carryModeAdaptive, mode.isCarryPosture, trackingOdometry != .vio else { return false }
+        let p = carryTable[mode]
+        headingBiasWalkDegPerM = p.headingBiasWalkDegPerM
+        initialScaleSigma = p.initialScaleSigma
+        featureWeights = p.featureWeights
+        observationSigmaFloorUT = p.observationSigmaFloorUT
+        return true
+    }
 }
 
 public extension MagneticConfig {

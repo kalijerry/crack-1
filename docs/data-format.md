@@ -107,6 +107,29 @@ point_id,x_cm,y_cm,t_start_ms,t_end_ms,note
 
 离线建图时只把 `start` 和 `reanchor` 当真值：相邻两个锚点之间，用它们拟合「旋转 + 平移」把 ARKit 轨迹对到地图上，终点残差按时间线性摊回去；最后一个锚点之后沿用上一段的旋转，且最多信任 30 m。
 
+---
+
+# 格式 v4：重力列与真四元数（携带无关的运动模型用）
+
+`meta.json` 里 `format_version` 为 4 时，`imu.csv` 在 v1 的 16 列之后再加 3 列：
+
+```
+t_ms,ax,ay,az,gx,gy,gz,mx,my,mz,mag_acc,qw,qx,qy,qz,heading_deg,gvx,gvy,gvz
+```
+
+| 列 | 单位 | 约定 |
+|---|---|---|
+| gvx..gvz | m/s² | 系统（陀螺辅助）给出的重力方向，**Android 约定**：平放屏幕朝上 ≈ (0, 0, +9.81)，和静止时的加速度读数同向。iOS 端 `gv = -gravity × 9.80665`（CoreMotion 的 gravity 指向下方、单位 g）。当时不可用写 `0,0,0` |
+| qw..qz | — | 姿态四元数，**设备系 → 世界系**（世界 z 向上、偏航任意），即 Android `TYPE_ROTATION_VECTOR` 的约定；v4 之前这几列是占位值（实时定位页写 1,0,0,0），读取端只在 v4 文件里才当真 |
+
+读取端（`IMUSample.fromCSV`）按列数判断：≥ 19 列视为 v4，重力列模长在 5～15 m/s² 之间才用、四元数模长接近 1 才用；
+老文件照旧只读前 10 列，姿态和地磁特征退回加速度低通，行为不变。
+
+为什么要这几列：摆臂时手的离心加速度会把「加速度低通」估的向上方向带偏几十度，Bz 差 10～20 µT；CoreMotion 的 gravity 是陀螺辅助的，
+不受影响。iOS 端的参考系要用 **不含磁力计** 的 `.xArbitraryZVertical`（`.xArbitraryCorrectedZVertical` 仍用磁力计改善偏航），
+偏航只靠陀螺 + 重力，磁场由我们自己处理；换参考系后 `CMDeviceMotion.magneticField` 可能不可用，偏置估计要走原始磁力计那条路（待真机核对）。
+四元数目前只在没有重力列时用来推向上方向，**偏航不用**（iOS 四元数到这个约定的换算还没在真机上核对）。
+
 ## 位置真值导出（`tools/magmap.py --truth-dir`）
 
 `<会话名>.csv`，列 `t_ms,x_cm,y_cm`，约 10 Hz，是对齐后的地图坐标。给 `hpass-replay` 离线回放用。

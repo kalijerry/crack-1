@@ -63,22 +63,7 @@ jobs:
           name: hpassapp-unsigned-ipa
           path: ios/HPASSApp/HPASSApp-unsigned.ipa
           retention-days: 30
-      # main 上的构建同时传到云端后台（Cloudflare R2），看板「安装包」里下载
-      - name: Upload ipa to backend
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        working-directory: ios/HPASSApp
-        env:
-          HPASS_URL: ${{ secrets.HPASS_URL }}
-          HPASS_TOKEN: ${{ secrets.HPASS_TOKEN }}
-          MSG: ${{ github.event.head_commit.message }}
-        run: |
-          if [ -z "$HPASS_URL" ] || [ -z "$HPASS_TOKEN" ]; then echo "没配后台，跳过"; exit 0; fi
-          NAME="HPASSApp-$(date -u +%Y%m%d-%H%M)-${GITHUB_SHA::7}.ipa"
-          ENC=$(python3 -c 'import os,urllib.parse;print(urllib.parse.quote(os.environ.get("MSG","").splitlines()[0][:100] if os.environ.get("MSG") else ""))')
-          curl -fsS -X PUT --data-binary @HPASSApp-unsigned.ipa \
-            -H "Authorization: Bearer $HPASS_TOKEN" -H "User-Agent: hpass-ci" \
-            -H "x-build-sha: $GITHUB_SHA" -H "x-build-run: $GITHUB_RUN_ID" -H "x-build-message: $ENC" \
-            "${HPASS_URL%/}/api/builds/$NAME"
+      # 后台只收签名包（ios-adhoc.yml 上传）；未签名包只留在上面的 artifact 里
 
   # 模拟器截图：用演示数据（-uiDemo）启动各个页面截图，作为 artifact 上传，方便评审界面效果。
   # 不读真实传感器、不连网；失败不影响 ios-app / hpasskit 的结论。

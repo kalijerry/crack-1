@@ -107,11 +107,14 @@ point_id,x_cm,y_cm,t_start_ms,t_end_ms,note
 | `map_origin_offset_cm` | 录制时地图的累计原点偏移 `[x, y]`（cm）。地图后来因为接着扫往 −x / −y 扩展而整体平移过时，读会话的一方（`SurveySessionLoader` / `LiveRunLoader`，hpass-build、`SessionEvaluator` 走同一入口）把 `anchors.csv` / `track.csv` 里的地图坐标加上「地图现在的 `originOffsetCm` − 这个值」；ARKit 坐标不动。会话文件本身不改写 |
 | `map_geometry_version` | 录制时地图的几何版本（扫描段注册表每次几何改动递增），只作记录 |
 | `map_frame_id` | 录制时地图的基准 AR 坐标系身份（`frameId`），只作记录 |
+| `quality_score` / `quality_grade` / `quality_kept` / `quality_reason` | 采集时质量打分的结果（详见 `quality.json`）。`quality_kept = false` 的会话整个不用 |
 
 | 文件 | 列 | 频率 | 说明 |
 |---|---|---|---|
 | `arkit_pose.csv` | `t_ms,x_m,y_m,z_m,qx,qy,qz,qw,tracking,limited_reason` | ≈30 Hz | ARKit 世界跟踪位姿。世界系重力对齐，x 右、y 上、z 朝向观察者；俯视时 (x, z) 与地图 (x, y) 手性相同。`tracking`：0 不可用、1 受限、2 正常；`limited_reason`：1 初始化、2 运动过快、3 特征不足、4 重定位、9 其他 |
 | `anchors.csv` | `t_ms,kind,map_x_cm,map_y_cm,ar_x_cm,ar_z_cm,heading_rad,note` | 事件 | 操作者在 App 里长按地图记下的已知位置。`kind`：`start` 起点；`reanchor` 走动中的修正；`heading` 设朝向（记的是当时的估计位置，**不是真值**）；`end` 结束时的估计位置（**不是真值**）。`ar_*` 是同一时刻 ARKit 的 (x, z)，单位 cm |
+
+| `quality.json` | `CollectionQualityMonitor.Summary` | 结束时 | 采集时质量打分（10 秒一段，和云端 `SessionQualityGate` 同一套阈值）：`score` 0～100、`grade` 好 / 一般 / 差、`kept`、`reason`、`droppedSpansMs`（差段连同前后各一段，绝对毫秒）、`autoStopped` / `stopReason`、`windowList`（每段的分数和问题）。读会话（`SurveySessionLoader`，手机建图和 hpass-build 同一入口）时 `droppedSpansMs` 里的磁场和蓝牙样本不用；`kept = false` 的会话 App 不上传、手机建图不列出、`cloud_build.py` / hpass-build 跳过。没有这个文件（旧会话）= 全部照用 |
 
 离线建图时只把 `start` 和 `reanchor` 当真值：相邻两个锚点之间，用它们拟合「旋转 + 平移」把 ARKit 轨迹对到地图上，终点残差按时间线性摊回去；最后一个锚点之后沿用上一段的旋转，且最多信任 30 m。
 

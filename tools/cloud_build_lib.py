@@ -124,3 +124,16 @@ def pick_worldmap(dirs, mid, align, frame_id=None):
     if best is None:
         return None
     return best[1], {"session": best[0][1], "createdMs": best[0][0], "bytes": best[3], "source": best[2].get("source")}
+
+
+def quality_rejected(session_dir):
+    """App 采集时质量打分（quality.json，见 CollectionQualityMonitor）判为整个不能用：返回原因；能用 / 没打分（旧会话）返回 None"""
+    p = os.path.join(session_dir, "quality.json")
+    try:
+        with open(p, encoding="utf-8") as f:
+            q = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if q.get("kept", True):
+        return None
+    return q.get("reason") or f"质量分 {q.get('score', 0)}"

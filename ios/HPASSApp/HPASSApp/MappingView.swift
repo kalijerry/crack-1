@@ -31,6 +31,14 @@ struct MappingView: View {
         var toFraction: Double
         var session: String?
         var error: String?
+        var quality: CollectionQualityMonitor.Summary? = nil
+        var qualityStopReason: String? = nil
+
+        static func == (a: Summary, b: Summary) -> Bool {
+            a.walkedM == b.walkedM && a.fromFraction == b.fromFraction && a.toFraction == b.toFraction
+                && a.session == b.session && a.error == b.error && a.quality?.score == b.quality?.score
+                && a.qualityStopReason == b.qualityStopReason
+        }
     }
 
     private static let steps = ["准备", "定起点", "采集", "完成"]
@@ -254,6 +262,7 @@ struct MappingView: View {
                 VStack(alignment: .leading, spacing: DS.Spacing.m) {
                     Toggle("用蓝牙标签辅助定起点", isOn: $survey.bleBase)
                     Toggle("识别位置标识牌（相机）", isOn: $survey.readSigns)
+                    Toggle("质量太差时自动停止采集", isOn: $survey.qualityAutoStop)
                     Toggle("激光雷达实景扫描（文件较大）", isOn: $survey.scanMesh)
                         .disabled(!ARKitLogger.supportsMesh)
                     if store.field != nil {
@@ -354,6 +363,18 @@ struct MappingView: View {
             if survey.recorder.magAccuracy >= 0 && survey.recorder.magAccuracy < 2 {
                 StatusPill(text: "在空中画几次 8 字校准", systemImage: "infinity", tone: .info)
             }
+            // 质量打分发现的问题（走太快 / 跟踪受限 / 采样率低上面已经有了）
+            if let q = survey.quality {
+                ForEach(q.issues.filter { ![CollectionQualityMonitor.Issue.tooFast, .tracking, .lowRate].contains($0) }, id: \.self) { x in
+                    StatusPill(text: x.hint, systemImage: "exclamationmark.triangle.fill", tone: .warning)
+                }
+                if q.badStreak > 0 {
+                    StatusPill(text: q.badStreak >= 2 && survey.qualityAutoStop
+                                     ? "质量太差，再差一段（10 秒）就自动停止"
+                                     : "刚才这段质量差，已剔除，不会用来建图",
+                               systemImage: "xmark.octagon.fill", tone: .danger)
+                }
+            }
         }
         .padding(4)
     }
@@ -423,6 +444,7 @@ struct MappingView: View {
                         MetricTile(value: "\(Int(demo ? 186 : survey.totalWalkedM))", unit: "m", label: "已走")
                         MetricTile(value: Fmt.f(demo ? 0.9 : survey.speedMS, 1), unit: "m/s", label: "步速",
                                    tint: survey.speedMS > SurveyEngine.maxSpeedMS ? DS.Palette.warning : DS.Palette.textPrimary)
+                        qualityTile
                     }
                     if let z = zone {
                         Text(z.done ? "这个区域完成了，可以结束" : "还需约 \(minutes(z.remainingCm)) 分钟")
@@ -445,6 +467,23 @@ struct MappingView: View {
         }
     }
 
+    /// 实时质量分（最近 1 分钟的平均，10 秒一段）
+    private var qualityTile: some View {
+        let score = demo ? 86 : survey.quality?.score
+        let level: CollectionQualityMonitor.Level = demo ? .good : (survey.quality?.level ?? .good)
+        return MetricTile(value: score.map { "\($0)" } ?? "--", unit: "分", label: "采集质量",
+                          tint: score == nil ? DS.Palette.textSecondary : Self.qualityColor(level))
+            .accessibilityLabel(score.map { "采集质量 \($0) 分" } ?? "采集质量还在计算")
+    }
+
+    static func qualityColor(_ l: CollectionQualityMonitor.Level) -> Color {
+        switch l {
+        case .good: return DS.Palette.success
+        case .fair: return DS.Palette.warning
+        case .poor: return DS.Palette.danger
+        }
+    }
+
     private func guideRow(_ icon: String, _ text: String) -> some View {
         HStack(alignment: .top, spacing: DS.Spacing.s) {
             Image(systemName: icon).foregroundStyle(DS.Palette.warning).accessibilityHidden(true)
@@ -464,12 +503,13 @@ struct MappingView: View {
                                message: e, actionTitle: "重新开始", action: { summary = nil })
             } else {
                 VStack(spacing: DS.Spacing.m) {
-                    Image(systemName: "checkmark.circle.fill")
+                    let rejected = s.quality?.kept == false
+                    Image(systemName: rejected ? "xmark.circle.fill" : "checkmark.circle.fill")
                         .font(.system(size: 64))
                         .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(DS.Palette.success)
+                        .foregroundStyle(rejected ? DS.Palette.danger : DS.Palette.success)
                         .accessibilityHidden(true)
-                    Text("采集完成").font(DS.Typography.hero)
+                    Text(rejected ? "质量不合格" : "采集完成").font(DS.Typography.hero)
                     Text(s.session.map { "已保存采集记录 \($0)" } ?? "已保存采集记录")
                         .font(.footnote).foregroundStyle(DS.Palette.textSecondary)
                         .multilineTextAlignment(.center)
@@ -482,8 +522,10 @@ struct MappingView: View {
                                    tint: DS.Palette.success)
                     }
                 }
+                if let q = s.quality { qualityCard(q, stopReason: s.qualityStopReason) }
                 DSCard(title: tel.enabled ? "上传" : "只保存在本机", systemImage: tel.enabled ? "icloud.and.arrow.up" : "internaldrive") {
-                    Text(tel.enabled ? (tel.lastUpload ?? "正在上传…云端生成新地图后，手机上的地图会自动更新。")
+                    Text(s.quality?.kept == false ? "质量不合格，这次没有上传，也不会用来生成地图。"
+                         : tel.enabled ? (tel.lastUpload ?? "正在上传…云端生成新地图后，手机上的地图会自动更新。")
                                      : "打开「设置 → 云端连接」后，以后的采集会自动上传。")
                         .font(.callout).foregroundStyle(DS.Palette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -499,6 +541,26 @@ struct MappingView: View {
                 }
                 .buttonStyle(.dsSecondaryTint(DS.Palette.mapping))
             }
+        }
+    }
+
+    private func qualityCard(_ q: CollectionQualityMonitor.Summary, stopReason: String?) -> some View {
+        let dropped = q.droppedSpans.reduce(0) { $0 + ($1.count >= 2 ? $1[1] - $1[0] : 0) }
+        let level = CollectionQualityMonitor.level(q.score)
+        return DSCard(title: "采集质量", systemImage: q.kept ? "checkmark.seal" : "xmark.seal", tint: Self.qualityColor(level)) {
+            HStack {
+                MetricTile(value: "\(q.score)", unit: "分 · \(q.grade)", label: "质量分", tint: Self.qualityColor(level))
+                MetricTile(value: "\(dropped)", unit: "秒", label: "剔除的数据")
+            }
+            if let r = stopReason {
+                Label(r, systemImage: "stop.circle.fill")
+                    .font(.callout).foregroundStyle(DS.Palette.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(q.kept ? (dropped > 0 ? "质量差的 \(dropped) 秒已剔除，其余数据正常使用。" : "数据全部可用。")
+                        : "整次不合格，已剔除：\(q.reason ?? "")")
+                .font(.callout).foregroundStyle(q.kept ? DS.Palette.textSecondary : DS.Palette.danger)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -525,10 +587,12 @@ struct MappingView: View {
                         fromFraction: startFraction ?? 0,
                         toFraction: survey.coverage.paintGrid?.fraction ?? 0,
                         session: survey.sessionName ?? survey.lastSessionDir?.lastPathComponent,
-                        error: survey.lastError)
+                        error: survey.lastError,
+                        quality: survey.lastQuality,
+                        qualityStopReason: survey.qualityStopReason)
         startFraction = nil
         summary = s
-        if s.error == nil { Haptics.success() } else { Haptics.error() }
+        if s.error == nil && s.quality?.kept != false { Haptics.success() } else { Haptics.error() }
     }
 
     private func reportTelemetry() {

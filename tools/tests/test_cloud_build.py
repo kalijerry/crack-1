@@ -113,5 +113,17 @@ class RebuildTest(unittest.TestCase):
         self.assertFalse(cb.build_unchanged(self.PREV, ["t1", "b1"], [], "b1", 3))
         self.assertFalse(cb.build_unchanged(self.PREV, ["t1", "b1"], ["l1"], "b2", 3))
 
+class QualityRejectedTest(unittest.TestCase):
+    def test_reads_quality_json(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(cb.quality_rejected(d))                       # 旧会话没打分：照用
+            (Path(d) / "quality.json").write_text(json.dumps({"kept": True, "score": 82}))
+            self.assertIsNone(cb.quality_rejected(d))
+            (Path(d) / "quality.json").write_text(json.dumps({"kept": False, "score": 31, "reason": "质量分太低（31 分）"}))
+            self.assertEqual(cb.quality_rejected(d), "质量分太低（31 分）")
+            (Path(d) / "quality.json").write_text("{坏的")
+            self.assertIsNone(cb.quality_rejected(d))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -66,7 +66,7 @@ def package_meta(map_id, secs=None):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cloud_build_lib import (WM_FILE, WM_META, WM_WARN, WM_MAX, map_align, map_frame_id,  # noqa: E402
                              align_equivalent, worldmap_compatible, pick_worldmap,
-                             map_geometry_version, build_unchanged)
+                             map_geometry_version, build_unchanged, quality_rejected)
 
 
 def main():
@@ -91,6 +91,10 @@ def main():
                 if not all(os.path.exists(os.path.join(d, f)) for f in ("track.csv", "arkit_pose.csv", "imu.csv")):
                     continue
             elif not meta.get("survey") or not os.path.exists(os.path.join(d, "anchors.csv")):
+                continue
+            why = quality_rejected(d)
+            if why:
+                print(f"  跳过 {os.path.basename(d)}：采集质量不合格（{why}）")
                 continue
             mid = meta.get("map_id") or ""
             if not mid:

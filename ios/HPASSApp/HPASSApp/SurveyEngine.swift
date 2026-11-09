@@ -466,6 +466,23 @@ final class SurveyEngine: ObservableObject {
     static let autoStartStableCm = 500.0
     private var speedRef: (t: Int64, a: Point2)?
 
+    // 采集质量打分（CollectionQualityMonitor，和云端 SessionQualityGate 同一套标准）：
+    // 实时提示，差段剔除，太差自动停止；整个不合格的会话不上传、不进磁场图
+    /// 质量太差时自动停止采集
+    @Published var qualityAutoStop = UserDefaults.standard.object(forKey: "surveyQualityAutoStop") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(qualityAutoStop, forKey: "surveyQualityAutoStop") }
+    }
+    /// 采集中的实时质量
+    @Published private(set) var quality: CollectionQualityMonitor.Live?
+    /// 上一次采集的质量结果（结束时写进会话目录的 quality.json）
+    @Published private(set) var lastQuality: CollectionQualityMonitor.Summary?
+    /// 上一次采集因为质量太差被自动停止的原因
+    @Published private(set) var qualityStopReason: String?
+    private var qualityMonitor: CollectionQualityMonitor?
+    private let magBox = MagBox()
+    private var lastPoseMs: Int64 = 0
+    private var warnedStreak = 0
+
     init() {
         // 把录制器的变化转发出来，界面只需要观察本对象
         cancellable = Publishers.Merge(recorder.objectWillChange, coverage.objectWillChange)
@@ -479,7 +496,10 @@ final class SurveyEngine: ObservableObject {
                 Task { @MainActor in self?.handleShadow(t: t, e, stable: stable, phi: phi, a: ea) }
             }
         }
+        let mb = magBox
         recorder.tap.imu = { s in
+            if s.magValid { mb.set(tMs: s.tMs, totalUT: (s.mag.0 * s.mag.0 + s.mag.1 * s.mag.1 + s.mag.2 * s.mag.2).squareRoot(),
+                                   accuracy: s.magAccuracy) }
             let h = HPASSKit.IMUSample(tMs: s.tMs, ax: s.acc.0, ay: s.acc.1, az: s.acc.2,
                                        gx: s.gyr.0, gy: s.gyr.1, gz: s.gyr.2,
                                        mx: s.mag.0, my: s.mag.1, mz: s.mag.2)
@@ -623,12 +643,14 @@ final class SurveyEngine: ObservableObject {
         lockFixes = 0
         speedMS = 0
         speedRef = nil
+        startQuality(store: store, bleOn: bleOn)
         stage = .needPosition
         UIApplication.shared.isIdleTimerDisabled = true
         AppLog.i("建图", "开始建图采集：\(dir.lastPathComponent)")
     }
 
-    func stop() {
+    /// - autoStopped: 质量太差自动停的
+    func stop(autoStopped: Bool = false) {
         coverage.sessionActive = false
         guard stage != .idle else { return }
         if stage == .tracking, let p = position, let a = latestA {
@@ -654,6 +676,7 @@ final class SurveyEngine: ObservableObject {
         ar.onFrame = nil
         signsWriter?.close()
         signsWriter = nil
+        let q = finishQuality(autoStopped: autoStopped)
         recorder.stopRecording()
         coverage.save()
         coverage.clearGuides()
@@ -662,7 +685,8 @@ final class SurveyEngine: ObservableObject {
         SensorArbiter.shared.release("建图采集")
         UIApplication.shared.isIdleTimerDisabled = false
         var uploadJob: (() async -> Bool)?
-        if Telemetry.shared.enabled && Telemetry.shared.autoUpload, let dir = lastSessionDir {
+        // 质量不合格的会话直接剔除：不上传（云端也不会用），本机建图也不列出来
+        if Telemetry.shared.enabled && Telemetry.shared.autoUpload, q?.kept ?? true, let dir = lastSessionDir {
             uploadJob = { await Telemetry.shared.upload(sessionDir: dir) }
         }
         Task { await wmPlan.finish(upload: uploadJob) }
@@ -695,6 +719,7 @@ final class SurveyEngine: ObservableObject {
         case .aligning, .tracking:
             // 修正：不改旋转，只把位置拉到 p
             let before = position
+            if let b = before { qualityMonitor?.correction(tMs: lastPoseMs, jumpCm: b.distance(to: p)) }
             pRef = p
             aRef = a
             position = p
@@ -747,6 +772,7 @@ final class SurveyEngine: ObservableObject {
             AppLog.i("建图", "认出房间，视觉定了起点和朝向")
         default:
             // 已经有锚点：把位置和旋转拉到特征地图给出的值（ARKit 认出房间时坐标会跳一下，这一小段轨迹可能不准）
+            if let b = position { qualityMonitor?.correction(tMs: lastPoseMs, jumpCm: b.distance(to: p)) }
             pRef = p
             aRef = a
             phi = t.phi
@@ -768,6 +794,7 @@ final class SurveyEngine: ObservableObject {
     // MARK: 蓝牙打底
 
     private func bleReading(tMs: Int64, id: String, rssi: Double) {
+        if stage == .tracking { qualityMonitor?.ble(tMs: tMs, id: id, rssi: rssi) }
         guard stage != .idle, bleBaseMap != nil else { return }
         bleObs.append((tMs, id, rssi))
         if tMs - lastBleTick >= 1000 { lastBleTick = tMs; bleTick(tMs) }
@@ -837,6 +864,7 @@ final class SurveyEngine: ObservableObject {
             AppLog.i("建图", "位置标识牌 \(text) 定了起点（\(sg.shelfCode)）")
             autoHeadingFromCompass()
         case .tracking:
+            if let p = position { qualityMonitor?.sign(tMs: tMs, distanceCm: ss.distance(sg, from: p)) }
             guard let p = position, ss.distance(sg, from: p) > Self.signFixCm, tMs - lastSignFixMs > 10_000 else { return }
             let before = ss.distance(sg, from: p)
             lastSignFixMs = tMs
@@ -887,8 +915,13 @@ final class SurveyEngine: ObservableObject {
     private func handlePose(t: Int64, a: Point2, state: Int) {
         guard stage != .idle else { return }
         latestA = a
+        lastPoseMs = t
         if state != trackingState { trackingState = state }
-        guard state == 2 else { lock?.reset(); return }   // 跟踪受限时不更新位置，也不记覆盖
+        guard state == 2 else {   // 跟踪受限时不更新位置，也不记覆盖
+            lock?.reset()
+            if stage == .tracking { feedQuality(t: t, position: nil) }
+            return
+        }
         if let r = speedRef {
             if t - r.t >= 2000 { speedMS = a.distance(to: r.a) / 100 / (Double(t - r.t) / 1000); speedRef = (t, a) }
         } else { speedRef = (t, a) }
@@ -935,6 +968,71 @@ final class SurveyEngine: ObservableObject {
             headingRad = atan2(step.x, step.y)
         }
         position = p
+        feedQuality(t: t, position: p)
+    }
+
+    // MARK: 采集质量打分
+
+    private func startQuality(store: MagMapStore, bleOn: Bool) {
+        var tagPos: [String: Point2] = [:]
+        if bleOn { for e in StoreDataStore.shared.tagLocations { if let p = e.position { tagPos[e.id] = p } } }
+        let gate = SessionQualityGate(tagPositions: tagPos)
+        // 和云端出图一样：房间小，走几米就够
+        if store.crosses.isEmpty { gate.minPathCm = 500; gate.minGoodSamples = 150 }
+        let m = CollectionQualityMonitor(gate: gate)
+        m.maxSpeedMS = Self.maxSpeedMS
+        m.minImuHz = Self.minImuHz
+        qualityMonitor = m
+        quality = nil
+        lastQuality = nil
+        qualityStopReason = nil
+        warnedStreak = 0
+        magBox.reset()
+    }
+
+    private func feedQuality(t: Int64, position p: Point2?) {
+        guard let m = qualityMonitor else { return }
+        m.pose(tMs: t, position: p, trackingOK: p != nil, speedMS: speedMS, imuHz: recorder.imuHz)
+        if let x = magBox.take() {
+            // 有磁场图、磁力计校准过：和图比（只比形状，整体偏移在里面减掉）
+            let expected = x.accuracy >= 1 ? p.flatMap { MagMapStore.shared.field?.sample(at: $0)?.mean.total } : nil
+            m.mag(tMs: x.tMs, totalUT: x.totalUT, expectedUT: expected)
+        }
+        let live = m.live
+        if live != quality { quality = live }
+        if live.badStreak > warnedStreak {
+            // 每多一段差的就震一下提醒（剔除的数据，及时纠正还来得及）
+            Haptics.warning()
+            AppLog.w("建图", "采集质量差（连续 \(live.badStreak) 段）：\(live.issues.map(\.hint).joined(separator: "；"))")
+        }
+        warnedStreak = live.badStreak
+        if let r = live.stopReason, qualityAutoStop {
+            qualityStopReason = r
+            AppLog.w("建图", r)
+            Haptics.error()
+            stop(autoStopped: true)
+        }
+    }
+
+    /// 结束时出整个会话的质量结果：写 quality.json，记进 meta.json（要在 recorder.stopRecording 之前调）
+    private func finishQuality(autoStopped: Bool) -> CollectionQualityMonitor.Summary? {
+        guard let m = qualityMonitor, let dir = recorder.currentSessionDir else { return nil }
+        qualityMonitor = nil
+        quality = nil
+        let q = m.finish(tMs: lastPoseMs, autoStopped: autoStopped)
+        do { try q.write(to: dir) } catch { AppLog.e("建图", "写 quality.json 失败：\(error.localizedDescription)") }
+        recorder.extraMeta["quality_score"] = q.score
+        recorder.extraMeta["quality_grade"] = q.grade
+        recorder.extraMeta["quality_kept"] = q.kept
+        if let r = q.reason { recorder.extraMeta["quality_reason"] = r }
+        lastQuality = q
+        let dropped = q.droppedSpans.reduce(0) { $0 + ($1.count >= 2 ? $1[1] - $1[0] : 0) }
+        if q.kept {
+            AppLog.i("建图", "采集质量 \(q.score) 分（\(q.grade)）" + (dropped > 0 ? "，剔除 \(dropped) 秒质量差的数据" : ""))
+        } else {
+            AppLog.w("建图", "采集质量不合格（\(q.score) 分）：\(q.reason ?? "")。这次不上传、不参与生成磁场图")
+        }
+        return q
     }
 
     // MARK: 地磁定位（自动起点 / 精度测试）
@@ -1054,6 +1152,19 @@ final class SurveyEngine: ObservableObject {
 /// 只在 shadowQueue 上读写
 private final class ShadowBox: @unchecked Sendable {
     var sh: ShadowLocalizer?
+}
+
+/// 最新一个磁场样本（传感器线程写、主线程取）
+private final class MagBox: @unchecked Sendable {
+    struct Sample { var tMs: Int64; var totalUT: Double; var accuracy: Int }
+    private let lock = NSLock()
+    private var latest: Sample?
+    func set(tMs: Int64, totalUT: Double, accuracy: Int) {
+        lock.lock(); latest = Sample(tMs: tMs, totalUT: totalUT, accuracy: accuracy); lock.unlock()
+    }
+    /// 取走最新的（取过就清掉，同一个样本不算两次）
+    func take() -> Sample? { lock.lock(); defer { latest = nil; lock.unlock() }; return latest }
+    func reset() { lock.lock(); latest = nil; lock.unlock() }
 }
 
 /// 涂色图层：一张图（每格一个像素）+ 它在地图上的范围（cm）。2D 和 3D 共用。

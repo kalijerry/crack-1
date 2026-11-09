@@ -56,7 +56,12 @@ extension MultiSessionFusion {
     public func buildProduction(_ sessions: [SurveySession], ble: [[BLESample]], signs: [[SignSample]] = [],
                                 tagPositions: [String: Point2] = [:], options: ProductionOptions = .cloud) -> ProductionBuild? {
         let n = sessions.count
-        func bleOf(_ k: Int) -> [BLESample] { k < ble.count ? ble[k] : [] }
+        // 采集时质量打分判为差的时段，蓝牙读数也不用（磁场样本在 SurveyMapBuilder.prepare 里丢）
+        let bleIn: [[BLESample]] = (0..<n).map { k in
+            let b = k < ble.count ? ble[k] : []
+            return sessions[k].qualityDrops.isEmpty ? b : b.filter { !sessions[k].qualityDropped($0.tMs) }
+        }
+        func bleOf(_ k: Int) -> [BLESample] { bleIn[k] }
         // 第 1 遍：各会话原样对齐
         let r1 = fuse(sessions)
         // 货架标签：每条换成「人应该在那段货架前」的区域

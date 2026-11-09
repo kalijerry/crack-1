@@ -77,7 +77,9 @@ final class SurveyMapService: ObservableObject {
                   let meta = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
             return meta["purpose"] as? String == "test"
         }
-        let mine = dirs.filter { $0.hasDirectoryPath && SurveySessionLoader.isSurvey($0) && belongs($0) }
+        // 采集时质量打分判为不合格的会话直接剔除，不列出来、不能拿去建图
+        let mine = dirs.filter { $0.hasDirectoryPath && SurveySessionLoader.isSurvey($0) && belongs($0)
+            && SurveySessionLoader.qualityRejected($0) == nil }
         testItems = mine.filter(isTest).sorted { $0.lastPathComponent > $1.lastPathComponent }
             .map { Item(url: $0, sizeBytes: SessionsView.dirSize($0), hasMesh: false) }
         items = mine.filter { !isTest($0) }

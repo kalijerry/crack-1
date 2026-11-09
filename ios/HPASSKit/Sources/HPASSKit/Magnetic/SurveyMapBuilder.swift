@@ -28,6 +28,11 @@ public struct SurveySession {
     public var raw: [(tMs: Int64, v: (Double, Double, Double))]
     public var poses: [Pose]
     public var anchors: [Anchor]
+    /// 采集时质量打分判为差的时段（毫秒，含前后扩展，见 CollectionQualityMonitor / quality.json）：这些时刻的样本不用
+    public var qualityDrops: [ClosedRange<Int64>] = []
+
+    /// 这个时刻采集时被判为质量差
+    public func qualityDropped(_ t: Int64) -> Bool { qualityDrops.contains { $0.contains(t) } }
 
     public init(name: String, imu: [IMUSample], raw: [(tMs: Int64, v: (Double, Double, Double))],
                 poses: [Pose], anchors: [Anchor]) {
@@ -181,6 +186,7 @@ public final class SurveyMapBuilder {
                 rep.dropped["站着不动", default: 0] += 1
                 continue
             }
+            if s.qualityDropped(t) { rep.dropped["采集时质量差丢掉", default: 0] += 1; continue }
             if let keep = sampleFilter, !keep(t) { rep.dropped["质量筛选丢掉", default: 0] += 1; continue }
             samples.append((p, f))
             rep.sampleTimes.append(t)

@@ -60,6 +60,8 @@ do {
     var signSamples: [[SignSample]] = []
     var headingSamples: [[(tMs: Int64, deg: Double)]] = []
     for d in dirs {
+        // 采集时质量打分判为整个不能用的会话（App 不会上传，手动传上来的也跳过）
+        if let why = SurveySessionLoader.qualityRejected(d) { print("⚠️ 跳过 \(d.lastPathComponent)：采集质量不合格（\(why)）"); continue }
         do {
             sessions.append(try SurveySessionLoader.load(d, mapOriginOffsetCm: map.originOffsetCm)); bleSamples.append(SurveySessionLoader.loadBLE(d))
             signSamples.append(SignSample.load(d))

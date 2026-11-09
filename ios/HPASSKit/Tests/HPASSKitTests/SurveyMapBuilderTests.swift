@@ -58,6 +58,19 @@ final class SurveyMapBuilderTests: XCTestCase {
         return errs.sorted()[errs.count / 2]
     }
 
+    /// 采集时质量打分判为差的时段（quality.json → SurveySession.qualityDrops）：那段的样本不用
+    func testQualityDropsRemoveSamples() {
+        let s = session()
+        let all = SurveyMapBuilder(widthCm: 1000, heightCm: 4400, crosses: crosses).prepare(s)
+        var d = s
+        let T0: Int64 = 1_700_000_000_000
+        d.qualityDrops = [(T0 + 10_000)...(T0 + 20_000)]
+        let (rep, samples) = SurveyMapBuilder(widthCm: 1000, heightCm: 4400, crosses: crosses).prepare(d)
+        XCTAssertGreaterThan(rep.dropped["采集时质量差丢掉"] ?? 0, 0)
+        XCTAssertLessThan(samples.count, all.1.count * 3 / 4)
+        XCTAssertFalse(rep.sampleTimes.contains { (T0 + 10_000)...(T0 + 20_000) ~= $0 })
+    }
+
     func testSnapPullsTrackBackOntoCorridorAndImprovesField() {
         let s = session()
         let a = SurveyMapBuilder(widthCm: 1000, heightCm: 4400, crosses: crosses)

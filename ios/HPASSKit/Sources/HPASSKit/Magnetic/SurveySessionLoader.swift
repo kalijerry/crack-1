@@ -60,6 +60,21 @@ public enum SurveySessionLoader {
             return SurveySession.Anchor(tMs: t, kind: String(r[1]), map: Point2(mx, my) + shift, ar: Point2(ax, az),
                                         heading: Double(r[6]))
         }
-        return SurveySession(name: dir.lastPathComponent, imu: imu, raw: raw, poses: poses, anchors: anchors)
+        var session = SurveySession(name: dir.lastPathComponent, imu: imu, raw: raw, poses: poses, anchors: anchors)
+        session.qualityDrops = qualityDrops(dir)
+        return session
+    }
+
+    /// 采集时质量打分判为差的时段（quality.json 的 droppedSpansMs；没有 = 旧会话，不丢）
+    public static func qualityDrops(_ dir: URL) -> [ClosedRange<Int64>] {
+        (CollectionQualityMonitor.Summary.load(dir)?.droppedSpansMs ?? []).compactMap { r in
+            r.count >= 2 && r[0] <= r[1] ? r[0]...r[1] : nil
+        }
+    }
+
+    /// 采集时质量打分判为整个不能用（quality.json 的 kept = false）。返回原因，能用 / 没打分返回 nil
+    public static func qualityRejected(_ dir: URL) -> String? {
+        guard let q = CollectionQualityMonitor.Summary.load(dir), !q.kept else { return nil }
+        return q.reason ?? "采集质量不合格（\(q.score) 分）"
     }
 }

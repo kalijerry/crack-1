@@ -243,21 +243,36 @@ final class RoomGraphTests: XCTestCase {
 
     func testStationaryFreezeDetectorTiming() {
         var d = StationaryFreezeDetector()
-        XCTAssertNil(d.update(tMs: 0, still: true))
-        XCTAssertNil(d.update(tMs: 19_900, still: true))
-        XCTAssertEqual(d.update(tMs: 20_000, still: true), .freeze)
-        XCTAssertNil(d.update(tMs: 25_000, still: true))
-        XCTAssertNil(d.update(tMs: 25_100, still: false))       // 一下抖动不算起身
-        XCTAssertNil(d.update(tMs: 25_200, still: true))
-        XCTAssertNil(d.update(tMs: 26_000, still: false))
-        XCTAssertEqual(d.update(tMs: 26_500, still: false), .release)
+        XCTAssertNil(d.update(tMs: 0, still: true, stepCount: 0))
+        XCTAssertNil(d.update(tMs: 19_900, still: true, stepCount: 0))
+        XCTAssertEqual(d.update(tMs: 20_000, still: true, stepCount: 0), .freeze)
+        XCTAssertNil(d.update(tMs: 25_000, still: true, stepCount: 0))
+        // 坐着挪椅子、换坐姿：长时间「不静止」、偶尔一两步伪步，都不解冻（评审：这正是要冻住的时候）
+        for k in 0..<100 { XCTAssertNil(d.update(tMs: 25_100 + Int64(k) * 100, still: false, stepCount: 0)) }
+        XCTAssertNil(d.update(tMs: 35_200, still: false, stepCount: 1))
+        XCTAssertNil(d.update(tMs: 35_800, still: false, stepCount: 2))
+        XCTAssertNil(d.update(tMs: 38_000, still: false, stepCount: 2))
+        XCTAssertTrue(d.frozen)
+        // 起身走：连续三步、间隔像走路 → 解冻，那串步从第一步算起
+        XCTAssertNil(d.update(tMs: 40_000, still: false, stepCount: 3))
+        XCTAssertNil(d.update(tMs: 40_550, still: false, stepCount: 4))
+        XCTAssertEqual(d.update(tMs: 41_100, still: false, stepCount: 5), .release)
+        XCTAssertEqual(d.releaseWalkStartMs, 40_000)
         XCTAssertFalse(d.frozen)
         // 静止被打断要重新计时
-        XCTAssertNil(d.update(tMs: 30_000, still: true))
-        XCTAssertNil(d.update(tMs: 45_000, still: false))
-        XCTAssertNil(d.update(tMs: 46_000, still: true))
-        XCTAssertNil(d.update(tMs: 65_000, still: true))
-        XCTAssertEqual(d.update(tMs: 66_000, still: true), .freeze)
+        XCTAssertNil(d.update(tMs: 50_000, still: true, stepCount: 5))
+        XCTAssertNil(d.update(tMs: 65_000, still: false, stepCount: 5))
+        XCTAssertNil(d.update(tMs: 66_000, still: true, stepCount: 5))
+        XCTAssertNil(d.update(tMs: 85_000, still: true, stepCount: 5))
+        XCTAssertEqual(d.update(tMs: 86_000, still: true, stepCount: 5), .freeze)
+        // 没有步数：退回「不静止持续 releaseAfterS」
+        var n = StationaryFreezeDetector()
+        XCTAssertNil(n.update(tMs: 0, still: true))
+        XCTAssertEqual(n.update(tMs: 20_000, still: true), .freeze)
+        XCTAssertNil(n.update(tMs: 21_000, still: false))
+        XCTAssertNil(n.update(tMs: 24_900, still: false))
+        XCTAssertEqual(n.update(tMs: 25_000, still: false), .release)
+        XCTAssertNil(n.releaseWalkStartMs)
         // 不在房间里不冻结
         var o = StationaryFreezeDetector()
         XCTAssertNil(o.update(tMs: 0, still: true, inRoom: false))
@@ -276,29 +291,90 @@ final class RoomGraphTests: XCTestCase {
         var det = StationaryFreezeDetector()
         var events: [StationaryFreezeDetector.Event] = []
         for k in 0...210 {          // 21 s 静止，10 Hz
-            if let ev = loc.feedStationary(&det, tMs: Int64(k * 100), still: true) { events.append(ev) }
+            if let ev = loc.feedStationary(&det, tMs: Int64(k * 100), still: true, stepCount: 0) { events.append(ev) }
         }
         XCTAssertEqual(events, [.freeze])
         XCTAssertTrue(loc.stationaryFrozen)
         let c1 = loc.estimate().position
-        XCTAssertLessThanOrEqual(loc.weightedSpread(around: c1), 51)
+        // 收拢是向各自房间的中心（少数撒进走廊的粒子留在走廊、不穿墙进 A），所以相对估计点的散布比 50 cm 略大
+        XCTAssertLessThanOrEqual(loc.weightedSpread(around: c1), 65)
         XCTAssertEqual(loc.estimate().roomId, "A")
-        // 冻结期间（坐着）的伪步不推粒子
-        for _ in 0..<10 { loc.step(delta: Point2(30, 0), feature: nil) }
+        // 冻结期间（坐着挪动）的伪步不推粒子，也不解冻
+        for k in 0..<10 {
+            loc.feedStationary(&det, tMs: 21_100 + Int64(k) * 100, still: false, stepCount: k < 5 ? 0 : 1)
+            loc.step(delta: Point2(30, 0), feature: nil)
+        }
+        XCTAssertTrue(loc.stationaryFrozen)
         XCTAssertLessThan(loc.estimate().position.distance(to: c1), 1)
-        // 起身：解冻，散布放大 1.5 倍
+        // 起身走三步（每步 −x 60 cm）：第三步解冻，三步的位移都补上，散布放大 1.5 倍
         let before = loc.weightedSpread(around: c1)
-        for k in 0...10 { loc.feedStationary(&det, tMs: Int64(21_100 + k * 100), still: false) }
+        var ev: StationaryFreezeDetector.Event?
+        for k in 0..<3 {
+            ev = loc.feedStationary(&det, tMs: 30_000 + Int64(k) * 550, still: false, stepCount: 2 + k)
+            loc.step(delta: Point2(k < 2 ? -60 : 0, 0), feature: nil)
+        }
+        XCTAssertEqual(ev, .release)
         XCTAssertFalse(loc.stationaryFrozen)
-        XCTAssertEqual(loc.weightedSpread(around: loc.estimate().position), before * 1.5, accuracy: before * 0.15)
-        loc.step(delta: Point2(30, 0), feature: nil)
-        XCTAssertGreaterThan(loc.estimate().position.x, c1.x + 20)
+        XCTAssertLessThan(loc.estimate().position.x, c1.x - 90, "起身头几步的位移应补推：\(loc.estimate().position) 对 \(c1)")
+        XCTAssertEqual(loc.weightedSpread(around: loc.estimate().position), before * 1.5, accuracy: before * 0.3)
 
         // 开关关着：什么都不做
         let off = MagneticLocalizer(field: Self.emptyField(m), walkable: w, config: Self.config(rooms: true), seed: 11)
         off.reset(start: Point2(350, 300), spreadCm: 60)
         XCTAssertFalse(off.freezeStationary())
         XCTAssertFalse(off.stationaryFrozen)
+    }
+
+    /// 粒子在桌子两边（坐在桌边）：加权平均点落在桌子里。冻结后粒子和估计都不能在桌子里，解冻后还能走
+    func testStationaryFreezeAroundFurnitureStaysWalkable() throws {
+        let m = try Self.office()
+        let w = try XCTUnwrap(WalkableMap(roomsOf: m))
+        var c = Self.config(rooms: true)
+        c.stationaryFreeze = true
+        let loc = MagneticLocalizer(field: Self.emptyField(m), walkable: w, config: c, seed: 5)
+        loc.reset(start: Point2(200, 122), spreadCm: 4)
+        loc.moveParticlesForTesting(fraction: 0.5, to: Point2(200, 232), spreadCm: 4)
+        XCTAssertFalse(w.isWalkable(Point2(200, 177)), "桌子本体不可走（前提）")
+        XCTAssertTrue(loc.freezeStationary())
+        let e = loc.estimate()
+        XCTAssertTrue(w.isWalkable(e.position) || e.position.distance(to: Point2(200, 177)) > 40,
+                      "冻结后的估计点不该在桌子里：\(e.position)")
+        XCTAssertNil(w.rooms?.roomIndex(at: Point2(200, 175)), "桌子里的格子不算在房间里")
+        loc.releaseStationaryFreeze()
+        let p0 = loc.estimate().position
+        for _ in 0..<5 { loc.step(delta: Point2(-20, 0), feature: nil) }
+        XCTAssertLessThan(loc.estimate().position.x, p0.x - 50, "解冻后应该还能走（没卡在桌子里）")
+    }
+
+    /// 房间之争（六成在走廊、四成在 A）：不冻结，免得把它硬判成一个房间
+    func testStationaryFreezeRefusesAmbiguousRoom() throws {
+        let m = try Self.office()
+        let w = try XCTUnwrap(WalkableMap(roomsOf: m))
+        var c = Self.config(rooms: true)
+        c.stationaryFreeze = true
+        let loc = MagneticLocalizer(field: Self.emptyField(m), walkable: w, config: c, seed: 9)
+        loc.reset(start: Point2(600, 485), spreadCm: 20)
+        loc.moveParticlesForTesting(fraction: 0.4, to: Point2(200, 250), spreadCm: 20)
+        XCTAssertFalse(loc.freezeStationary())
+        XCTAssertFalse(loc.stationaryFrozen)
+        let e = loc.estimate()
+        XCTAssertEqual(e.roomId, "C")
+        XCTAssertEqual(e.roomRunnerUpId, "A")
+        XCTAssertEqual(e.roomRunnerUpMass, 0.4, accuracy: 0.06)
+    }
+
+    /// 报的房间是权重最多的房间，不是加权平均点所在的房间（平均点落在第三个房间时尤其）
+    func testRoomIdIsHeaviestRoomNotMeanPoint() throws {
+        let m = try Self.office()
+        let w = try XCTUnwrap(WalkableMap(roomsOf: m))
+        let loc = MagneticLocalizer(field: Self.emptyField(m), walkable: w, config: Self.config(rooms: true), seed: 9)
+        loc.reset(start: Point2(300, 150), spreadCm: 10)
+        loc.moveParticlesForTesting(fraction: 0.45, to: Point2(880, 540), spreadCm: 5)
+        let e = loc.estimate()
+        XCTAssertEqual(e.roomId, "A")
+        XCTAssertEqual(e.roomMass, 0.55, accuracy: 0.03)
+        XCTAssertTrue(e.roomOnly)
+        XCTAssertEqual(e.roomRunnerUpId, "C")
     }
 
     // MARK: 房间扫描 → map.json → 房间图

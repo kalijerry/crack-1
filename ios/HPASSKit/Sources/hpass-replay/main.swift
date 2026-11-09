@@ -66,8 +66,9 @@ if let far = truth.first(where: { $0.p.distance(to: start) >= 150 }) {
 
 let useVIO = CommandLine.arguments.contains("--vio")
 
-// 和 App 实时定位页、hpass-eval --motion pdr-imu 同一份惯导配置（FusionEngine.live），罗盘关
-let fusion = FusionEngine.live(corridors: storeMap.crosses, start: cold ? Point2(storeMap.width / 2, storeMap.height / 2) : start,
+// 和 App 实时定位页、hpass-eval --motion pdr-imu 同一份惯导配置（FusionEngine.live），罗盘关。
+// 有磁场图时惯导只当增量送粒子滤波：通道约束关（冷启动的绝对位置 / 航向是随便给的，投影到通道会剪掉增量）
+let fusion = FusionEngine.live(corridors: field == nil ? storeMap.crosses : [], start: cold ? Point2(storeMap.width / 2, storeMap.height / 2) : start,
                                headingRad: cold ? 0 : heading, compass: false)
 
 let extractor = MagneticFeatureExtractor()

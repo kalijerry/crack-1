@@ -183,15 +183,23 @@ final class CarryMotionTests: XCTestCase {
 
     // MARK: - 携带模式分类
 
-    private func classify(_ posture: CarryPosture, proximity: Bool? = nil) -> (modes: [CarryMode], state: CarryState) {
-        let d = simulate(straightScript(durationS: 12, postures: [.init(fromS: 0, posture: posture)]))
+    private func classify(_ posture: CarryPosture, proximity: Bool? = nil, stepHz: Double = 2.0,
+                          after prior: CarryPosture? = nil) -> (modes: [CarryMode], state: CarryState) {
+        // prior：先这样拿 6 s 再换成 posture（竖持只能从手持过来），统计换之后 6 s 起的判定
+        let off = prior == nil ? 0.0 : 6.0
+        var postures: [CarryScript.PostureSeg] = [.init(fromS: off, posture: posture)]
+        if let pr = prior { postures.insert(.init(fromS: 0, posture: pr), at: 0) }
+        var script = straightScript(durationS: 12 + off, postures: postures)
+        script.stepHz = stepHz
+        script.speedMS = 0.65 * stepHz
+        let d = simulate(script)
         let c = CarryModeClassifier()
         c.proximityNear = proximity
         var modes: [CarryMode] = []
         var last = c.state
         for s in d.samples {
             last = c.process(s)
-            if Double(s.tMs - CarrySim.t0) / 1000 > 6 { modes.append(last.mode) }
+            if Double(s.tMs - CarrySim.t0) / 1000 > 6 + off { modes.append(last.mode) }
         }
         return (modes, last)
     }
@@ -210,12 +218,18 @@ final class CarryMotionTests: XCTestCase {
             (.bag(yawDeg: 60, swayDeg: 15), .bag),
         ]
         for (p, expected) in cases {
-            let r = classify(p)
+            // 竖持只能从手持过来（一上来就竖着、陀螺小的按包里处理）
+            let r = expected == .upright ? classify(p, after: .texting(tiltDeg: 40)) : classify(p)
             XCTAssertGreaterThanOrEqual(share(r.modes, expected), 0.8,
                                         "\(p) → \(expected)：实际 \(Dictionary(grouping: r.modes, by: { $0 }).mapValues(\.count))，特征 \(r.state.features)")
         }
+        // 一上来就竖着、晃得少（包里 / 胸前口袋）：δ 未知，不能给竖持的紧先验（评审：1.5 Hz 的包里 100% 判成竖持）
+        for hz in [1.5, 2.0] {
+            XCTAssertEqual(share(classify(.upright(backDeg: 15), stepHz: hz).modes, .upright), 0, "\(hz) Hz")
+            XCTAssertEqual(share(classify(.bag(yawDeg: 60, swayDeg: 15), stepHz: hz).modes, .upright), 0, "\(hz) Hz")
+        }
         // 近距离传感器说贴着：竖直的手机一律算通话（竖持和通话的 δ 先验相反，宁可算通话）
-        let near = classify(.upright(backDeg: 15), proximity: true)
+        let near = classify(.upright(backDeg: 15), proximity: true, after: .texting(tiltDeg: 40))
         XCTAssertGreaterThanOrEqual(share(near.modes, .calling), 0.8)
         // 近距离传感器说没贴着：接近竖直的后仰手机算竖持
         let far = classify(.calling(tiltDeg: 40, rightEar: true, headTurnDeg: 15), proximity: false)
@@ -266,6 +280,27 @@ final class CarryMotionTests: XCTestCase {
         XCTAssertLessThanOrEqual(changes, 2, "携带姿态来回跳了 \(changes) 次")
     }
 
+    /// 稳定的口袋 / 摆臂走路不该触发「操作手机」：步频 1.4～2.2 Hz、大腿 / 手臂摆幅 15～40° 扫一遍，
+    /// 一开始判出模式之后（> 5 s）一次事件都不许有（评审：1.5 Hz 慢走时每 2 s 误报一次，整圆重撒、判丢被一直压着）
+    func testNoHandledEventsInSteadyCarryAcrossCadences() {
+        var bad: [String] = []
+        for hz in [1.4, 1.5, 1.6, 1.8, 2.0, 2.2] {
+            for amp in [15.0, 25.0, 35.0, 40.0] {
+                for posture in [CarryPosture.pocket(yawDeg: 35, thighDeg: amp), .swinging(armDeg: amp, wristYawDeg: 20)] {
+                    var script = straightScript(durationS: 30, postures: [.init(fromS: 0, posture: posture)])
+                    script.stepHz = hz
+                    script.speedMS = 0.65 * hz
+                    let d = simulate(script)
+                    let c = CarryModeClassifier()
+                    var n = 0
+                    for s in d.samples where c.process(s).handled && Double(s.tMs - CarrySim.t0) / 1000 > 5 { n += 1 }
+                    if n > 0 { bad.append("\(posture) @\(hz) Hz: \(n)") }
+                }
+            }
+        }
+        XCTAssertTrue(bad.isEmpty, "稳定携带误报操作手机：\(bad)")
+    }
+
     /// HoldClassifier 的公开接口不变，静止时按倾角映射（原有行为），走动时映射携带模式
     func testHoldClassifierShellMapsCarryModes() {
         let d = simulate(straightScript(durationS: 10, postures: [.init(fromS: 0, posture: .pocket(yawDeg: 35, thighDeg: 25))]))
@@ -285,6 +320,41 @@ final class CarryMotionTests: XCTestCase {
     }
 
     // MARK: - 计步
+
+    /// 自适应计步：毫秒时间戳抖动（19/20/21 ms）不改变计数；慢走（1.0 s/步）之后接正常步频（0.55 s/步）每步都数上
+    /// （评审：σ 窗按每个样本的 dt 改长度会被反复清空；步频锁的步周期卡在 1.1 s 时会一直只数一半）
+    func testAdaptiveStepDetectorJitterAndCadenceChange() {
+        /// 按给定的步周期序列生成 a_dyn（每步一个正弦周期，幅度 3 m/s²），返回 (样本, 真实步数)
+        func run(periods: [Double], jitter: Bool) -> (steps: Int, truth: Int) {
+            let det = FusionStepDetector()
+            det.adaptive = true
+            var t = 0.0, tMs: Int64 = 0, lastMs: Int64 = 0, steps = 0, k = 0
+            var bounds: [Double] = []
+            var acc = 0.0
+            for p in periods { acc += p; bounds.append(acc) }
+            while t < acc {
+                let i = bounds.firstIndex { t < $0 } ?? bounds.count - 1
+                let start = i == 0 ? 0 : bounds[i - 1]
+                let ph = (t - start) / periods[i]
+                let d = -3 * sin(2 * Double.pi * ph)
+                let s = IMUSample(tMs: tMs, ax: 0, ay: 0, az: FusionMath.gravity + d, gx: 0, gy: 0, gz: 0, mx: 20, my: 0, mz: -40)
+                let dt = k == 0 ? 0.02 : Double(tMs - lastMs) / 1000
+                if det.update(sample: s, dt: dt, minStepIntervalMs: 250, maxStepLengthM: 1.0) != nil { steps += 1 }
+                lastMs = tMs
+                let step: Int64 = jitter ? [19, 20, 21, 20, 21, 19][k % 6] : 20
+                tMs += step; t = Double(tMs) / 1000; k += 1
+            }
+            return (steps, periods.count)
+        }
+        let even = run(periods: Array(repeating: 0.55, count: 40), jitter: false)
+        let jit = run(periods: Array(repeating: 0.55, count: 40), jitter: true)
+        XCTAssertEqual(Double(jit.steps), Double(even.steps), accuracy: 1, "抖动：\(jit) 对 \(even)")
+        XCTAssertEqual(Double(jit.steps), 40, accuracy: 2)
+        let mixed = run(periods: Array(repeating: 1.0, count: 8) + Array(repeating: 0.55, count: 30), jitter: true)
+        XCTAssertEqual(Double(mixed.steps), Double(mixed.truth), accuracy: 2, "慢走接正常步频：\(mixed)")
+        let slowStart = run(periods: [1.2] + Array(repeating: 0.55, count: 30), jitter: false)
+        XCTAssertEqual(Double(slowStart.steps), Double(slowStart.truth), accuracy: 2, "慢起步：\(slowStart)")
+    }
 
     /// 自适应阈值 + 步频锁：大幅度（口袋）信号每步之后有一个 1.5 m/s² 的脚跟次峰，固定阈值会多计一倍，自适应不会；
     /// 小幅度（看屏）信号两者一样
@@ -588,6 +658,9 @@ final class CarryMotionTests: XCTestCase {
         var finalHeadingSpreadDeg = 0.0
         var teleportCm = 0.0          // 重撒那一帧估计位置相对上一帧的移动
         var events: [CarryMotionEvent] = []
+        var suppressedWhileCold = false
+        var calibrations = 0
+        var finalK = 0.0
         func err(at tS: Double) -> Double? {
             errs.first { Double($0.tMs - CarrySim.t0) / 1000 >= tS }?.errCm
         }
@@ -607,7 +680,8 @@ final class CarryMotionTests: XCTestCase {
         }
     }
 
-    private func runPipeline(_ data: (samples: [IMUSample], truth: [CarryTruth]), motionOn: Bool, seed: UInt64 = 7) -> PipelineRun {
+    private func runPipeline(_ data: (samples: [IMUSample], truth: [CarryTruth]), motionOn: Bool, seed: UInt64 = 7,
+                             coldStart: Bool = false, calibrateEveryCm: Double? = nil) -> PipelineRun {
         var fcfg = FusionConfig()
         fcfg.useMagneticHeading = false
         fcfg.useCorridorConstraint = false
@@ -615,15 +689,24 @@ final class CarryMotionTests: XCTestCase {
         let engine = FusionEngine(corridors: [], config: fcfg)
         engine.setInitialPosition(data.truth[0].position, headingRad: data.truth[0].headingRad)
         var mcfg = MagneticConfig.tracking(odometry: .pdr)
+        if coldStart {
+            // App 的只靠地磁冷启动：不知道起点和朝向，收敛门打开、没定到不报位置
+            mcfg = MagneticConfig.liveColdStart(visualOdometry: false)
+            mcfg.applyColdStartGate()
+            mcfg.uniformHeadingForInjection = true
+        }
         mcfg.carryModeAdaptive = motionOn
         let loc = MagneticLocalizer(field: corridorField(), walkable: corridorWalkable(), config: mcfg, seed: seed)
-        loc.reset(start: data.truth[0].position, spreadCm: TrackingProfile.startSpreadCm)
+        if coldStart { loc.reset(start: nil, headingUnknown: true) }
+        else { loc.reset(start: data.truth[0].position, spreadCm: TrackingProfile.startSpreadCm) }
         var run = PipelineRun()
         var pendingRespread = false
         engine.onCarryEvent = { ev in
             run.events.append(ev)
             if loc.apply(ev) { pendingRespread = true }
         }
+        let cal = StepScaleCalibrator()
+        if let c = calibrateEveryCm { cal.everyCm = c }
         let ex = MagneticFeatureExtractor()
         var feature: MagneticFeature?
         var lastPos: Point2?
@@ -634,14 +717,18 @@ final class CarryMotionTests: XCTestCase {
             let delta = lastPos.map { o.position - $0 } ?? .zero
             lastPos = o.position
             let e = loc.step(delta: delta, feature: feature)
+            if calibrateEveryCm != nil { cal.step(deltaCm: delta.distance(to: .zero), engine: engine, localizer: loc) }
             if pendingRespread, let le = lastEst {
                 run.teleportCm = max(run.teleportCm, e.position.distance(to: le))
                 pendingRespread = false
             }
             lastEst = e.position
             run.errs.append((o.tMs, e.position.distance(to: t.position), e.converged, o.carryMode))
+            if loc.lostSuppressed && !loc.isConverged { run.suppressedWhileCold = true }
         }
         run.respreads = loc.respreadCount
+        run.calibrations = cal.absorbed
+        run.finalK = engine.effectiveStepLengthK
         run.lost = loc.lostCount
         run.finalHeadingSpreadDeg = loc.weightedSpread().headingSpreadDeg
         return run
@@ -670,6 +757,65 @@ final class CarryMotionTests: XCTestCase {
         XCTAssertLessThan(r.final.errCm, 300, "口袋里走 30 m 后误差 \(r.final.errCm) cm")
         XCTAssertLessThan(r.maxErr(from: switchAt + 12, to: script.durationS), 400, "切换 12 s 之后不该再有大误差")
         XCTAssertLessThan(r.finalHeadingSpreadDeg, 45, "航向偏差应重新收紧：\(r.finalHeadingSpreadDeg)°")
+    }
+
+    /// 看屏 → 口袋 → 再拿出来看屏（罗盘关）：拿出来之后不能按 δ≈0 的紧先验重撒（引擎航向翻转后已不等于前向轴方位角），
+    /// 末端位置和航向都要找回（评审：texting→pocket→texting）
+    func testTextingPocketTextingRoundTrip() {
+        let a = 20.0 / 1.3, b = a + 15 / 1.3
+        let script = straightScript(durationS: b + 20 / 1.3,
+                                    postures: [.init(fromS: 0, posture: .texting(tiltDeg: 40)),
+                                               .init(fromS: a, posture: .pocket(yawDeg: 35, thighDeg: 25)),
+                                               .init(fromS: b, posture: .texting(tiltDeg: 40))])
+        let d = simulate(script)
+        let r = runPipeline(d, motionOn: true)
+        print("看屏→口袋→看屏：末端 \(Int(r.final.errCm)) cm 收敛 \(r.final.converged) 重撒 \(r.respreads) 判丢 \(r.lost) 航向散布 \(Int(r.finalHeadingSpreadDeg))°")
+        print("  轨迹：" + r.trajectory)
+        // 拿出来之后的 changed（→ texting）保留偏差、不是 δ≈0 的 15° 紧先验
+        let back = r.events.filter { $0.kind == .changed && $0.to == .texting && Double($0.tMs - CarrySim.t0) / 1000 > b - 1 }
+        XCTAssertFalse(back.isEmpty, "应有 →texting 事件：\(r.events.map { ($0.kind, $0.to) })")
+        XCTAssertTrue(back.allSatisfy { $0.keepBias || $0.headingSpreadDeg == nil }, "操作手机之后不能按紧先验重撒：\(r.events.map { (Double($0.tMs - CarrySim.t0) / 1000, $0.kind, $0.from, $0.to, $0.keepBias) })")
+        XCTAssertEqual(r.lost, 0)
+        XCTAssertTrue(r.final.converged)
+        XCTAssertLessThan(r.final.errCm, 300, "末端误差 \(r.final.errCm) cm")
+    }
+
+    /// 只靠地磁的冷启动中途换携带方式（看屏 → 口袋，会有 handled / changed 事件）：不进「刚重撒」保护期，
+    /// 收敛门照常起作用，报出来的位置（收敛后）不能是错的（> 5 m）
+    func testColdStartCarryEventsDoNotForceWrongFix() {
+        let switchAt = 8.0
+        let script = straightScript(durationS: 50 / 1.3,
+                                    postures: [.init(fromS: 0, posture: .texting(tiltDeg: 40)),
+                                               .init(fromS: switchAt, posture: .pocket(yawDeg: 35, thighDeg: 25))])
+        let d = simulate(script)
+        for seed: UInt64 in [3, 7, 11] {
+            let r = runPipeline(d, motionOn: true, seed: seed, coldStart: true)
+            XCTAssertTrue(r.events.contains { $0.kind == .handled || $0.kind == .changed }, "应有携带事件")
+            XCTAssertFalse(r.suppressedWhileCold, "冷启动没收敛时不该进保护期")
+            let wrong = r.errs.filter { $0.converged && $0.errCm > 500 }
+            XCTAssertTrue(wrong.isEmpty, "seed \(seed)：冷启动报了错位置 \(wrong.prefix(3).map { Int($0.errCm) }) cm")
+        }
+    }
+
+    /// 步频 / 速度和 K=0.45 不匹配（每人步长不同）：1.6～2.2 Hz、速度 1.3 m/s 走 55 m 看屏，量末端误差；
+    /// 打开在线 K 标定后误差不比不标定大，且 K 朝真实步长的方向走（评审：之前只在 2.0 Hz 正好匹配时测过）
+    func testStrideMismatchGridWithOnlineCalibration() {
+        var lines: [String] = []
+        for hz in [1.6, 1.8, 2.2] {
+            var script = straightScript(durationS: 55 / 1.3, postures: [.init(fromS: 0, posture: .texting(tiltDeg: 40))])
+            script.stepHz = hz
+            let d = simulate(script)
+            let off = runPipeline(d, motionOn: true)
+            let on = runPipeline(d, motionOn: true, calibrateEveryCm: 1500)
+            lines.append("\(hz) Hz: 不标定 末端 \(Int(off.final.errCm)) cm / 标定 \(Int(on.final.errCm)) cm（\(on.calibrations) 次，K \(String(format: "%.3f", on.finalK))）")
+            XCTAssertLessThanOrEqual(on.final.errCm, off.final.errCm + 100, "\(hz) Hz")
+            if on.calibrations > 0 {
+                // 步频低 → 真实步长（1.3/hz）比 K=0.45 给的长 → K 应该变大；步频高反之
+                let truthStepM = 1.3 / hz
+                XCTAssertEqual(on.finalK > 0.45, truthStepM > 0.65, "\(hz) Hz：K \(on.finalK)")
+            }
+        }
+        print("步长失配网格：" + lines.joined(separator: "；"))
     }
 
     /// 一开始就在口袋里、起点和朝向已知：第一次判出模式不重撒，直接按口袋参数跟踪

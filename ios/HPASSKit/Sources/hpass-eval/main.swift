@@ -10,6 +10,8 @@ import HPASSKit
 //   --motion poses|pdr-imu        粒子滤波的运动：位姿（默认）/ 真实 IMU 计步推算（同 App 实时定位页的 FusionEngine 配置）
 //   --start-heading truth|unknown 已知起点（--oracle-start）的起步朝向：真值前 1.5 m 方向（默认）/ 整圆撒开
 //   --track-out track.csv         每个运动节拍一行估计 + 参考（tools/lab/office_metrics.py 用）
+//   --carry-motion                pdr-imu 时打开携带无关的运动模型 + 粒子按携带模式重撒 + 步长 K 在线标定（App 同一套接法）
+//   --stationary-freeze           pdr-imu 时打开静止冻结（惯导说没在动就算静止；办公室坐着不动用，配合 --rooms）
 
 func arg(_ name: String) -> String? {
     guard let i = CommandLine.arguments.firstIndex(of: name), i + 1 < CommandLine.arguments.count else { return nil }
@@ -123,7 +125,12 @@ do {
     if motion == .pdrIMU { print("运动来源：真实 IMU 计步推算（FusionEngine）" + (CommandLine.arguments.contains("--oracle-start") ? "，起步朝向 \(startHeading.rawValue)" : "")) }
     // --track-out：每个运动节拍一行（会话、第几次、时刻、估计、是否有把握、不确定度、参考），给 tools/lab/office_metrics.py
     let trackOut = arg("--track-out")
-    var trackLines = ["session,run,t_ms,est_x,est_y,converged,unc_cm,ref_x,ref_y"]
+    var trackLines = ["session,run,t_ms,est_x,est_y,converged,unc_cm,ref_x,ref_y,room_id,room_mass,carry_mode,frozen"]
+    let carryMotion = CommandLine.arguments.contains("--carry-motion")
+    let stationaryFreeze = CommandLine.arguments.contains("--stationary-freeze")
+    if motion == .pdrIMU && (carryMotion || stationaryFreeze) {
+        print("运动模型：" + [carryMotion ? "携带无关（按携带模式重撒 + K 在线标定）" : nil, stationaryFreeze ? "静止冻结" : nil].compactMap { $0 }.joined(separator: "，"))
+    }
     for t in test {
         var rs: [EvalReport] = []
         for k in 0..<runs {
@@ -170,10 +177,12 @@ do {
                                                   // 冷启动收敛门：只在冷启动、还没用过蓝牙先验时起作用；--oracle-start 的跟踪从不用
                                                   coldStartGate: CommandLine.arguments.contains("--cold-gate"),
                                                   wifi: useWiFi ? built.wifi : nil, motion: motion, startHeading: startHeading,
+                                                  carryMotion: carryMotion, stationaryFreeze: stationaryFreeze,
                                                   onTrack: trackOut == nil ? nil : { p in
                 func f1(_ v: Double?) -> String { v.map { String(format: "%.1f", $0) } ?? "" }
                 trackLines.append("\(t.lastPathComponent),\(k + 1),\(p.tMs),\(f1(p.estimate?.x)),\(f1(p.estimate?.y)),"
-                                  + "\(p.converged ? 1 : 0),\(f1(p.uncertaintyCm.flatMap { $0.isFinite ? $0 : nil })),\(f1(p.reference.x)),\(f1(p.reference.y))")
+                                  + "\(p.converged ? 1 : 0),\(f1(p.uncertaintyCm.flatMap { $0.isFinite ? $0 : nil })),\(f1(p.reference.x)),\(f1(p.reference.y)),"
+                                  + "\(p.roomId ?? ""),\(p.roomId == nil ? "" : String(format: "%.3f", p.roomMass)),\(p.carryMode.rawValue),\(p.frozen ? 1 : 0)")
             })
             if runs == 1 { print(r.line) }
             rs.append(r)

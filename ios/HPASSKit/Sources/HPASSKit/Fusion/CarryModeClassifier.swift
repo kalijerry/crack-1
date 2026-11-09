@@ -43,10 +43,18 @@ public struct CarryModeThresholds {
     /// 线加速度标准差超过此值（m/s²）而陀螺不大：包里颠
     public var bagAccelStdMin = 3.0
 
-    // 「操作手机」事件：1 s 内陀螺峰值（rad/s）超过且向上方向转过的角度（度）超过
+    // 「操作手机」事件：一段 handledWindowS 的陀螺突增（峰值 rad/s 超过 handledGyroPeak，且超过之前一个步幅里陀螺 RMS 的
+    // handledGyroOverGait 倍），并且突增之前一个步幅、之后一个步幅「向上」方向的**步幅平均**转过 handledTiltChangeDeg 以上。
+    // 用步幅平均比较：口袋 / 摆臂走路时大腿、手臂每个步幅本来就来回摆几十度，只比较 1 s 前后的瞬时值，
+    // 步频不是正好 2 Hz 时会不停误报（每次误报整圆重撒、判丢一直被压着）。事件因此晚一个步幅（≈1 s）才发
     public var handledGyroPeak = 2.5
+    public var handledGyroOverGait = 1.5
     public var handledTiltChangeDeg = 40.0
     public var handledWindowS = 1.0
+    /// 步幅周期（两步）的范围（s）；不知道步频时用 handledDefaultStrideS
+    public var handledStrideMinS = 0.9
+    public var handledStrideMaxS = 1.5
+    public var handledDefaultStrideS = 1.0
     public var handledCooldownS = 1.5
     /// 事件之后认为手还在动的时长（s）：这段里不更新候选（陀螺突增会被误判成摆臂），结束时清掉窗口只看之后的样本
     public var handlingS = 1.2
@@ -115,6 +123,8 @@ public final class CarryModeClassifier {
     // 样本环形缓冲（50 Hz × windowS）
     private struct Row { var t: Int64; var tiltZ: Double; var tiltY: Double; var w: FusionVec3; var yaw: Double; var aLin: Double; var aV: Double; var aH: Double; var upv: FusionVec3 }
     private var rows: [Row] = []
+    /// 「操作手机」检测用的长一点的历史（向上方向、陀螺模长），约 5 s
+    private var hist: [(t: Int64, up: FusionVec3, w: Double)] = []
     private var lastT: Int64?
     private var sinceEval = 0
     private var candidate: CarryMode = .unknown
@@ -123,6 +133,7 @@ public final class CarryModeClassifier {
     /// 操作手机中（到这个时刻之前不更新候选）；结束时清窗口、进入快速重判期（到 fastUntil）
     private var handlingUntil: Int64 = Int64.min / 2
     private var handlingActive = false
+    private var clearBefore: Int64 = Int64.min / 2
     private var fastUntil: Int64 = Int64.min / 2
     private var needsRedecision = false
     private var decidedAt: Int64 = 0
@@ -137,10 +148,11 @@ public final class CarryModeClassifier {
         state = CarryState(mode: .unknown, activeMode: .unknown, handled: false, tiltDeg: 0, features: CarryFeatures())
         up = FusionVec3(0, 0, 1); hasUp = false
         rows.removeAll(keepingCapacity: true)
+        hist.removeAll(keepingCapacity: true)
         lastT = nil; sinceEval = 0
         candidate = .unknown; candidateSince = 0
         lastHandledT = Int64.min / 2
-        handlingUntil = Int64.min / 2; handlingActive = false; fastUntil = Int64.min / 2
+        handlingUntil = Int64.min / 2; handlingActive = false; fastUntil = Int64.min / 2; clearBefore = Int64.min / 2
         needsRedecision = false; decidedAt = 0
         current = .unknown; active = .unknown
     }
@@ -157,6 +169,7 @@ public final class CarryModeClassifier {
         if dt <= 0 || dt > 1 {
             // 第一次 / 时间倒退 / 断档：重新开始
             rows.removeAll(keepingCapacity: true)
+            hist.removeAll(keepingCapacity: true)
             hasUp = false
             dt = 0
         }
@@ -183,28 +196,24 @@ public final class CarryModeClassifier {
         let winMs = Int64(thresholds.windowS * 1000)
         while let f = rows.first, s.tMs - f.t > winMs { rows.removeFirst() }
 
+        hist.append((s.tMs, up, g.norm))
+        while let f = hist.first, s.tMs - f.t > 5000 { hist.removeFirst() }
+
         var handled = false
-        // 「操作手机」事件：每个样本都查（事件要及时）
-        if s.tMs - lastHandledT >= Int64(thresholds.handledCooldownS * 1000) {
-            let hw = Int64(thresholds.handledWindowS * 1000)
-            var peak = 0.0
-            var oldUp: FusionVec3?
-            for r in rows where s.tMs - r.t <= hw {
-                peak = max(peak, r.w.norm)
-                if oldUp == nil { oldUp = r.upv }
-            }
-            if let ou = oldUp, peak >= thresholds.handledGyroPeak,
-               FusionMath.degrees(ou.angle(to: up)) >= thresholds.handledTiltChangeDeg {
-                handled = true
-                lastHandledT = s.tMs
-                handlingUntil = s.tMs + Int64(thresholds.handlingS * 1000)
-                handlingActive = true
-                fastUntil = handlingUntil + Int64(thresholds.fastDecideS * 1000)
-            }
+        // 「操作手机」事件（见 CarryModeThresholds）：每个样本都查，突增之后一个步幅确认
+        if s.tMs - lastHandledT >= Int64(thresholds.handledCooldownS * 1000), let peakT = detectHandled(now: s.tMs) {
+            handled = true
+            lastHandledT = s.tMs
+            // 确认时已经过了一个步幅：「手还在动」从陀螺峰值算 handlingS，窗口只留那之后的样本
+            handlingUntil = max(s.tMs, peakT + Int64(thresholds.handlingS * 1000))
+            clearBefore = handlingUntil
+            handlingActive = true
+            fastUntil = handlingUntil + Int64(thresholds.fastDecideS * 1000)
         }
         if handlingActive, s.tMs >= handlingUntil {
             // 手停下来了：窗口里只留之后的样本，快速重判
-            rows.removeAll { $0.t < handlingUntil }
+            let cb = clearBefore
+            rows.removeAll { $0.t < cb }
             handlingActive = false
             needsRedecision = true
             candidate = .unknown
@@ -236,6 +245,31 @@ public final class CarryModeClassifier {
         feats.proximityNear = proximityNear
         state = CarryState(mode: current, activeMode: active, handled: handled, tiltDeg: tiltZ, features: feats, decidedAtMs: decidedAt)
         return state
+    }
+
+    /// 「操作手机」：确认了返回突增里陀螺峰值的时刻，否则 nil。
+    /// 时间轴（P = 步幅周期，B = handledWindowS）：[now−2P−B, now−P−B] 之前、[now−P−B, now−P] 突增、[now−P, now] 之后。
+    private func detectHandled(now: Int64) -> Int64? {
+        let t = thresholds
+        let fs = state.features.stepFreqHz
+        let strideS = fs > 0 ? FusionMath.clamp(2 / fs, t.handledStrideMinS, t.handledStrideMaxS) : t.handledDefaultStrideS
+        let p = Int64(strideS * 1000), b = Int64(t.handledWindowS * 1000)
+        guard let first = hist.first, first.t <= now - 2 * p - b + 40 else { return nil }
+        // 「之前」那段不能和上一次事件的突增 / 之后重叠（同一次操作只报一次）
+        guard now - 2 * p - b >= clearBefore else { return nil }
+        var before = FusionVec3(0, 0, 0), after = FusionVec3(0, 0, 0)
+        var nb = 0, na = 0, w2 = 0.0, peak = 0.0, peakT = now - p
+        for h in hist {
+            if h.t < now - 2 * p - b { continue }
+            if h.t < now - p - b { before = before + h.up; nb += 1; w2 += h.w * h.w }
+            else if h.t < now - p { if h.w > peak { peak = h.w; peakT = h.t } }
+            else { after = after + h.up; na += 1 }
+        }
+        guard nb >= 5, na >= 5, before.norm > 1e-6, after.norm > 1e-6 else { return nil }
+        let gaitRms = (w2 / Double(nb)).squareRoot()
+        guard peak >= max(t.handledGyroPeak, t.handledGyroOverGait * gaitRms) else { return nil }
+        guard FusionMath.degrees(before.normalized.angle(to: after.normalized)) >= t.handledTiltChangeDeg else { return nil }
+        return peakT
     }
 
     // MARK: - 特征
@@ -290,6 +324,9 @@ public final class CarryModeClassifier {
 
     // MARK: - 规则（占位，待数据学）
 
+    /// 能直接判成竖持的上一个携带姿态（手还拿着手机）
+    static let handheldLineage: Set<CarryMode> = [.texting, .upright, .calling]
+
     func classify(_ f: CarryFeatures) -> CarryMode {
         let t = thresholds
         if f.accelStd < t.stillAccelStd && f.gyroRms < t.stillGyroRms { return .still }
@@ -311,7 +348,9 @@ public final class CarryModeClassifier {
             // （把通话当竖持会用 δ ≈ 0 的紧先验，错 90°），所以近距离传感器说「贴着」一律算通话，
             // 没有近距离传感器时靠长轴倾斜的占位阈值
             if proximityNear == true { return .calling }
-            if f.tiltYDeg <= t.uprightTiltYMax { return .upright }
+            // 竖持的 δ≈0 是紧先验。包里 / 胸前口袋 / 背包侧袋的手机也常常竖着、陀螺也小，δ 却未知（常常 180°），
+            // 所以只有从手持（看屏 / 竖持 / 通话）过来的才认竖持，否则按 δ 未知的「包里」处理（整圆）。占位规则，待数据学
+            if f.tiltYDeg <= t.uprightTiltYMax { return CarryModeClassifier.handheldLineage.contains(active) ? .upright : .bag }
             if f.tiltYDeg >= t.callingTiltYMin && f.tiltYDeg <= t.callingTiltYMax && proximityNear != false { return .calling }
             return .bag
         }

@@ -111,6 +111,8 @@ public struct MagneticConfig {
     public var stationaryFreezeSpreadCm: Double = 50
     /// 解冻（起身）时粒子散布放大倍数。占位值（待自采 iPhone 双机数据标定）
     public var stationaryReleaseSpreadFactor: Double = 1.5
+    /// 权重最多的房间占比至少这么多才冻结（不然冻结会把房间之争定死）。占位值（待自采 iPhone 双机数据标定）
+    public var stationaryFreezeMinRoomMass: Double = 0.7
     /// 通道走向先验的标准差（度）。行走方向偏离通道轴线越多，扣分越多。
     public var corridorHeadingSigmaDeg: Double = 22
     /// 走向先验的整体强度，0 关闭。
@@ -282,6 +284,9 @@ public struct MagneticEstimate {
     public var roomMass: Double = 0
     /// 房间置信度不够（< `MagneticConfig.roomPointMassThreshold`）：只报房间级，不画点
     public var roomOnly: Bool = false
+    /// 权重第二多的房间和它的权重占比（两个房间势均力敌时界面可以都提）
+    public var roomRunnerUpId: String? = nil
+    public var roomRunnerUpMass: Double = 0
 }
 
 /// 可复现的随机数（测试要求结果稳定）。
@@ -411,7 +416,8 @@ public final class MagneticLocalizer {
     /// - `spreadDeg` nil：整圆均匀（夹角完全未知：口袋 / 包 / 摆臂）；
     /// - 否则偏差 = (keepBias ? 原偏差 : 0) + 随机选一个 `centersDeg` 里的中心 + N(0, spreadDeg)（通话 ±90° 双峰）；
     /// - 步长比例在原值附近再撒 N(0, scaleSigma ?? config.initialScaleSigma)。
-    /// 冷启动（没收敛）时也照做：粒子的航向偏差本来就还没定。
+    /// 冷启动（没收敛）时只重撒航向偏差 / 步长比例，**不进**「刚重撒」保护期：保护期里地磁按找位置的强度、不按残差相关长度折算，
+    /// 冷启动收敛门的温度是带着这个折算调的，冷启动时进保护期会过度自信地错定（评审；违反「只靠地磁冷启动不报错位置」）。
     public func carryModeChanged(spreadDeg: Double?, centersDeg: [Double] = [0], scaleSigma: Double? = nil,
                                  keepBias: Bool = false, suppressLostCm: Double = 1500) {
         guard !xs.isEmpty else { return }
@@ -426,7 +432,9 @@ public final class MagneticLocalizer {
             }
             scale[i] = min(max(scale[i] + rng.normal() * ss, config.scaleRange.lowerBound), config.scaleRange.upperBound)
         }
-        lostSuppressRemainingCm = max(lostSuppressRemainingCm, max(suppressLostCm, 0))
+        if !(coldStart && !hasConverged) {
+            lostSuppressRemainingCm = max(lostSuppressRemainingCm, max(suppressLostCm, 0))
+        }
         lowStreak = 0
         respreadCount += 1
     }
@@ -544,6 +552,7 @@ public final class MagneticLocalizer {
                       walkableTries: Int = 0) {
         pathSinceResetCm = start == nil ? 0 : 3000     // 已知起点：不用等走够路
         stationaryFrozen = false
+        frozenBuffer.removeAll()
         recentTotals = []
         magneticWeight = 1
         coldStart = start == nil
@@ -810,6 +819,10 @@ public final class MagneticLocalizer {
     @discardableResult
     public func step(delta: Point2, feature: MagneticFeature?, trust: Double = 1,
                      lateral: LateralObservation? = nil) -> MagneticEstimate {
+        if stationaryFrozen {
+            frozenBuffer.append((stationaryClockMs, delta))
+            if frozenBuffer.count > 600 { frozenBuffer.removeFirst(frozenBuffer.count - 600) }
+        }
         let dist = stationaryFrozen ? 0 : delta.length
         if let l = lateral {
             if let v = l.leftCm { latLeftSum += v; latLeftN += 1 }
@@ -1007,7 +1020,7 @@ public final class MagneticLocalizer {
         if config.adaptiveMagWeight { updateMagWeight(f) }
         // 携带模式刚重撒（航向偏差重新未知）：虽然还报位置，但证据权重按「找位置」给满，不打跟踪时的折扣，
         // 不然整圆撒开的航向要走很远才挑得出来
-        let reacquiring = lostSuppressRemainingCm > 0
+        let reacquiring = lostSuppressRemainingCm > 0 && hasConverged && !coldStartGateActive
         let mw = config.adaptiveMagWeight ? magneticWeight : (hasConverged && !reacquiring ? config.convergedMagWeight : 1)
         let rel = config.hybridOffset ? offsetEst == nil : config.offsetInvariant
         let fAbs = offsetEst.map { f - $0 } ?? f
@@ -1423,52 +1436,120 @@ public final class MagneticLocalizer {
         if config.zeroConfidenceOffMap && field.sample(at: c.center) == nil { conf = 0 }
         var e = MagneticEstimate(position: c.center, uncertaintyCm: c.unc, confidence: conf,
                                  effectiveRatio: lastEffectiveRatio, updates: updateCount, converged: hasConverged)
-        if config.reportRoom, let g = walkable?.rooms, let r = g.nearestRoomIndex(to: c.center, radiusCm: 100) {
-            e.roomId = g.rooms[r].id
-            e.roomMass = roomMass(of: r, in: g)
-            e.roomOnly = e.roomMass < config.roomPointMassThreshold
+        // 房间：所有房间的权重一次算完，报权重最多的房间（不是加权平均点所在的房间——粒子分在两个房间时，
+        // 平均点可能落在中间的走廊或离错的房间更近，正好是房间级兜底要管的情况）
+        if config.reportRoom, let g = walkable?.rooms {
+            let m = roomMasses(in: g)
+            let order = m.indices.filter { m[$0] > 0 }.sorted { m[$0] > m[$1] }
+            if let r = order.first {
+                e.roomId = g.rooms[r].id
+                e.roomMass = m[r]
+                e.roomOnly = e.roomMass < config.roomPointMassThreshold
+                if order.count > 1 { e.roomRunnerUpId = g.rooms[order[1]].id; e.roomRunnerUpMass = m[order[1]] }
+            }
         }
         return e
     }
 
-    /// 全部粒子里落在房间 r 的权重占比
-    private func roomMass(of r: Int, in g: RoomGraph) -> Double {
+    /// 每个房间的粒子权重占比（下标 = 房间编号；不在任何房间的粒子不计入任何房间，但计入总权重）
+    func roomMasses(in g: RoomGraph) -> [Double] {
         let mx = logw.max() ?? 0
-        var tot = 0.0, inR = 0.0
+        var m = [Double](repeating: 0, count: g.rooms.count)
+        var tot = 0.0
         for i in xs.indices {
             let w = exp(logw[i] - mx)
             tot += w
-            if g.roomIndex(at: Point2(xs[i], ys[i])) == r { inR += w }
+            if let r = g.roomIndex(at: Point2(xs[i], ys[i])) { m[r] += w }
         }
-        return tot > 0 ? inR / tot : 0
+        return tot > 0 ? m.map { $0 / tot } : m
     }
 
     // MARK: 静止冻结
 
     /// 正在静止冻结（`freezeStationary` 之后、`releaseStationaryFreeze` 之前）：step 不推粒子
     public private(set) var stationaryFrozen = false
+    /// 冻结期间收到的位移（时刻取最近一次 `noteStationaryTime`），解冻时按需补推
+    private var frozenBuffer: [(t: Int64, d: Point2)] = []
+    private var stationaryClockMs: Int64 = 0
 
-    /// 静止够久（在房间里坐着 / 站着不动）：粒子向估计点收拢，加权散布不超过 `stationaryFreezeSpreadCm`，
+    /// 静止够久（在房间里坐着 / 站着不动）：粒子向**各自房间**的加权中心收拢，加权散布不超过 `stationaryFreezeSpreadCm`，
     /// 之后 step 的位移不推粒子（坐着时口袋里的伪步），直到 `releaseStationaryFreeze`。
-    /// 只在 `config.stationaryFreeze` 打开、已经收敛、（有房间图时）估计点在房间里时生效；返回是否冻结了。
+    /// 只在 `config.stationaryFreeze` 打开、已经收敛、（有房间图时）权重最多的房间占比 ≥ `stationaryFreezeMinRoomMass` 时生效；
+    /// 返回是否冻结了。粒子不会被挪到别的房间（不穿墙、不把 60/40 的房间之争硬判成 100/0），也不会被收进墙 / 家具里。
     @discardableResult
     public func freezeStationary() -> Bool {
         guard config.stationaryFreeze, hasConverged, !stationaryFrozen, !xs.isEmpty else { return false }
-        let c = estimate().position
-        if let g = walkable?.rooms, g.roomIndex(at: c) == nil { return false }
-        let spread = weightedSpread(around: c)
+        if let g = walkable?.rooms {
+            guard let top = roomMasses(in: g).max(), top >= config.stationaryFreezeMinRoomMass else { return false }
+        }
+        let centers = roomCenters()
+        let spread = weightedSpread(toCenters: centers)
         if spread > config.stationaryFreezeSpreadCm {
-            rescaleParticles(around: c, factor: config.stationaryFreezeSpreadCm / spread)
+            rescaleParticles(centers: centers, factor: config.stationaryFreezeSpreadCm / spread)
         }
         stationaryFrozen = true
+        frozenBuffer.removeAll()
         return true
     }
 
-    /// 起身（不再静止）：解除冻结，粒子散布放大 `stationaryReleaseSpreadFactor` 倍（走不过去的粒子不动）。
-    public func releaseStationaryFreeze() {
+    /// 起身（真的在走了）：解除冻结，粒子散布（相对各自房间的中心）放大 `stationaryReleaseSpreadFactor` 倍（走不过去的粒子不动）；
+    /// `replaySinceMs` 给了时，把冻结期间这之后收到的位移补推一次（起身后头几步在判定「真的在走」之前就发生了，不能丢）。
+    public func releaseStationaryFreeze(replaySinceMs: Int64? = nil) {
         guard stationaryFrozen else { return }
         stationaryFrozen = false
-        rescaleParticles(around: estimate().position, factor: config.stationaryReleaseSpreadFactor)
+        rescaleParticles(centers: roomCenters(), factor: config.stationaryReleaseSpreadFactor)
+        let buf = frozenBuffer
+        frozenBuffer.removeAll()
+        if let since = replaySinceMs {
+            let d = buf.filter { $0.t >= since }.reduce(Point2.zero) { $0 + $1.d }
+            if d.length > 0 { step(delta: d, feature: nil) }
+        }
+    }
+
+    /// 告诉定位「现在几点」（冻结期间的位移缓冲按它打时间戳；`feedStationary` 会调）
+    public func noteStationaryTime(_ tMs: Int64) { stationaryClockMs = tMs }
+
+    /// 每个粒子 → 它所在房间的加权中心（中心落在墙 / 家具里或别的房间时，取该房间里权重最大的粒子，保证能走）；
+    /// 没有房间图时全部用估计点
+    private func roomCenters() -> [Point2] {
+        guard let g = walkable?.rooms else {
+            let c = estimate().position
+            return [Point2](repeating: c, count: xs.count)
+        }
+        let none = g.rooms.count
+        let mx = logw.max() ?? 0
+        var sw = [Double](repeating: 0, count: none + 1)
+        var sx = sw, sy = sw
+        var best = [(w: Double, p: Point2)](repeating: (-1, .zero), count: none + 1)
+        var rid = [Int](repeating: none, count: xs.count)
+        for i in xs.indices {
+            let p = Point2(xs[i], ys[i])
+            let r = g.roomIndex(at: p) ?? none
+            rid[i] = r
+            let w = exp(logw[i] - mx)
+            sw[r] += w; sx[r] += w * p.x; sy[r] += w * p.y
+            if w > best[r].w { best[r] = (w, p) }
+        }
+        var cs = [Point2](repeating: .zero, count: none + 1)
+        // 不在任何房间格里的粒子（门洞、墙缝）向估计点收拢
+        cs[none] = estimate().position
+        for r in cs.indices where sw[r] > 0 && r != none {
+            let c = Point2(sx[r] / sw[r], sy[r] / sw[r])
+            let ok = (walkable?.isWalkable(c) ?? true) && (r == none || g.roomIndex(at: c) == r)
+            cs[r] = ok ? c : best[r].p
+        }
+        return rid.map { cs[$0] }
+    }
+
+    private func weightedSpread(toCenters cs: [Point2]) -> Double {
+        let mx = logw.max() ?? 0
+        var sw = 0.0, s2 = 0.0
+        for i in xs.indices {
+            let w = exp(logw[i] - mx)
+            let dx = xs[i] - cs[i].x, dy = ys[i] - cs[i].y
+            sw += w; s2 += w * (dx * dx + dy * dy)
+        }
+        return sw > 0 ? (s2 / sw).squareRoot() : 0
     }
 
     /// 粒子相对 c 的加权 RMS 距离（cm）
@@ -1483,15 +1564,15 @@ public final class MagneticLocalizer {
         return sw > 0 ? (s2 / sw).squareRoot() : 0
     }
 
-    /// 每个粒子到 c 的偏移乘 factor。新位置不可走或换了房间时：收拢就退到 c，放大就留在原地
-    private func rescaleParticles(around c: Point2, factor: Double) {
+    /// 每个粒子到它自己那个中心的偏移乘 factor。新位置不可走或换了房间时：收拢就退到中心（中心能走、在同一房间），放大就留在原地
+    private func rescaleParticles(centers cs: [Point2], factor: Double) {
         let g = walkable?.rooms
         for i in xs.indices {
-            let old = Point2(xs[i], ys[i])
+            let old = Point2(xs[i], ys[i]), c = cs[i]
             var p = Point2(c.x + (old.x - c.x) * factor, c.y + (old.y - c.y) * factor)
             p = Point2(min(max(p.x, 0), field.widthCm), min(max(p.y, 0), field.heightCm))
             var ok = walkable?.isWalkable(p) ?? true
-            if ok, let g, let r1 = g.roomIndex(at: p), let r0 = g.roomIndex(at: factor < 1 ? c : old), r0 != r1 { ok = false }
+            if ok, let g, g.roomIndex(at: p) != g.roomIndex(at: old) { ok = false }
             if !ok { p = factor < 1 ? c : old }
             xs[i] = p.x
             ys[i] = p.y

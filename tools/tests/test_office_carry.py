@@ -89,6 +89,23 @@ class PairingTests(unittest.TestCase):
         self.assertIsNone(oc.classify({"purpose": "blind_test", "camera": True, "pair_id": "x"}, Path(".")))
         self.assertIsNone(oc.classify({"purpose": "blind_test", "camera": False}, Path(".")))
 
+    def test_app_companion_role_is_companion(self):
+        # App 的伴随真值机是建图测试会话（purpose = test、survey = true）加 role = gt_companion
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / "anchors.csv").write_text("t_ms,kind,map_x_cm,map_y_cm,ar_x_cm,ar_z_cm,heading_rad,note\n", encoding="utf-8")
+            meta = {"purpose": "test", "survey": True, "role": "gt_companion", "pair_id": "a1b2c3d4"}
+            self.assertEqual(oc.classify(meta, d), "companion")
+            self.assertEqual(oc.classify({"purpose": "test", "survey": True}, d), "test")
+
+    def test_sync_file_prefers_acc_raw(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / "imu.csv").write_text("t_ms,ax,ay,az\n", encoding="utf-8")
+            self.assertEqual(oc.sync_file(d).name, "imu.csv")
+            (d / "acc_raw.csv").write_text("t_ms,ax,ay,az\n1,0,0,9.8\n2,0,0,9.8\n", encoding="utf-8")
+            self.assertEqual(oc.sync_file(d).name, "acc_raw.csv")
+
     def test_unpaired(self):
         with tempfile.TemporaryDirectory() as td:
             dirs = make_raw(Path(td))

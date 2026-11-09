@@ -25,7 +25,9 @@ final class EvalMotionTests: XCTestCase {
     /// 测试会话：手机平放、朝 +y 直走（1.8 Hz、峰峰约 4 m/s² → 约 0.62 m/步 ≈ 112 cm/s），磁场按真实位置取。
     /// 写 imu.csv（50 Hz）、只有表头的 arkit_pose.csv / anchors.csv、truth.csv（10 Hz）
     /// preroll：真值开始之前先录这么多秒「原地晃出步子」（像敲击、把手机放进口袋），这段位移不该推粒子
-    private func writeIMUSession(_ dir: URL, from p0: Point2, seconds: Double = 11, preroll: Double = 0) throws {
+    /// prerollYawRad：预滚的前一半时间里手机原地转过这么多（平放，陀螺 gz），像敲完之后转身起步
+    private func writeIMUSession(_ dir: URL, from p0: Point2, seconds: Double = 11, preroll: Double = 0,
+                                 prerollYawRad: Double = 0) throws {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let T0: Int64 = 1_700_000_100_000, speed = 112.0, g = 9.80665
         var imu = "t_ms,ax,ay,az,gx,gy,gz,mx,my,mz\n", truth = "t_ms,x_cm,y_cm\n"
@@ -34,7 +36,9 @@ final class EvalMotionTests: XCTestCase {
             let f = SyntheticRoom.field(p0)
             for i in stride(from: Int(preroll * 50), to: 0, by: -1) {
                 let az = g + 2.0 * sin(2 * Double.pi * 1.8 * Double(i) * 0.02)
-                imu += "\(T0 - Int64(i * 20)),0,0,\(az),0,0,0,\(f.0),\(f.1),\(f.2)\n"
+                // 预滚的前一半时间匀速转 prerollYawRad
+                let gz = Double(i) * 0.02 > preroll / 2 ? prerollYawRad / (preroll / 2) : 0
+                imu += "\(T0 - Int64(i * 20)),0,0,\(az),0,0,\(gz),\(f.0),\(f.1),\(f.2)\n"
             }
         }
         for i in 0...n {
@@ -93,6 +97,48 @@ final class EvalMotionTests: XCTestCase {
                                                 walkable: SessionEvaluator.walkable(map), oracleStart: true, motion: .pdrIMU)
         XCTAssertGreaterThan(rep.points, 10)
         XCTAssertLessThan(rep.medianCm ?? .infinity, 150)      // 不然起点就被推出去约 4 s × 1.1 m/s
+    }
+
+    /// 预滚里转了 90°（敲完转身起步）：起步朝向在第一个参考点重新设，预滚的偏航不能变成之后每一步的航向误差（评审）
+    func testPrerollYawDoesNotBiasKnownStartHeading() throws {
+        let map = try bigMap()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("evalmotion_\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let b = root.appendingPathComponent("build1"), t = root.appendingPathComponent("test1")
+        try SyntheticRoom.writeSession(b, waypoints: buildRoute)
+        try writeIMUSession(t, from: Point2(550, 150), preroll: 4, prerollYawRad: Double.pi / 2)
+        let built = try SessionEvaluator.buildMaps(sessions: [b], map: map)
+        var track: [SessionEvaluator.TrackPoint] = []
+        let rep = try SessionEvaluator.evaluate(dir: t, map: map, field: built.field, ble: nil,
+                                                walkable: SessionEvaluator.walkable(map), oracleStart: true, motion: .pdrIMU,
+                                                onTrack: { track.append($0) })
+        XCTAssertGreaterThan(rep.points, 10)
+        XCTAssertLessThan(rep.medianCm ?? .infinity, 150, "预滚的 90° 偏航带进来了")
+        let last = try XCTUnwrap(track.last { $0.estimate != nil })
+        XCTAssertLessThan(last.estimate!.distance(to: last.reference), 250)
+    }
+
+    /// 回放的惯导引擎不带通道约束（只当增量用；冷启动 / 朝向未知时绝对位置是随便给的），哪怕地图有通道
+    func testReplayFusionHasNoCorridorConstraint() {
+        let f = SessionEvaluator.replayFusion(start: Point2(100, 100), headingRad: 0, carryMotion: false)
+        XCTAssertFalse(f.config.useCorridorConstraint)
+        XCTAssertFalse(f.config.useMagneticHeading)
+        XCTAssertFalse(f.config.motion.enabled)
+        XCTAssertTrue(SessionEvaluator.replayFusion(start: .zero, headingRad: 0, carryMotion: true).config.motion.enabled)
+    }
+
+    /// --carry-motion / --stationary-freeze 的回放能跑通，手持看屏直走时不比老路径差多少
+    func testPdrIMUWithCarryMotionAndFreeze() throws {
+        let (map, built, t, root) = try setup()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let walk = SessionEvaluator.walkable(map)
+        var modes = Set<CarryMode>()
+        let rep = try SessionEvaluator.evaluate(dir: t, map: map, field: built.field, ble: nil, walkable: walk,
+                                                oracleStart: true, motion: .pdrIMU, carryMotion: true, stationaryFreeze: true,
+                                                onTrack: { modes.insert($0.carryMode) })
+        XCTAssertGreaterThan(rep.points, 10)
+        XCTAssertLessThan(rep.medianCm ?? .infinity, 200)
+        XCTAssertFalse(modes.subtracting([.unknown]).isEmpty, "携带模式应该判出来：\(modes)")
     }
 
     func testPdrIMUUnknownStartHeadingAndColdStartRun() throws {

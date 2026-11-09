@@ -149,7 +149,8 @@ public final class RoomGraph {
 
     /// p 所在格的房间编号（rooms 下标）；墙缝、地图外、不可走单元返回 nil
     public func roomIndex(at p: Point2) -> Int? {
-        guard let k = index(p), label[k] >= 0 else { return nil }
+        // 墙、家具挡住的格子（open = false）不算在房间里：墙 / 家具那几步没清 label（门的连通、最近房间还要用它）
+        guard let k = index(p), label[k] >= 0, open[k] else { return nil }
         return Int(label[k])
     }
 
@@ -173,7 +174,7 @@ public final class RoomGraph {
                 let i = i0 + di, j = j0 + dj
                 guard i >= 0, i < cols, j >= 0, j < rows else { continue }
                 let k = j * cols + i
-                guard label[k] >= 0 else { continue }
+                guard label[k] >= 0, open[k] else { continue }
                 let d = Point2((Double(i) + 0.5) * cellCm, (Double(j) + 0.5) * cellCm).distance(to: p)
                 if d < bd { bd = d; best = Int(label[k]) }
             }

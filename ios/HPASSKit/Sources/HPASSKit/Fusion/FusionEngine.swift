@@ -160,6 +160,8 @@ public final class FusionEngine {
     private var externalCarry: CarryMode?
     /// 最近一次「操作手机」事件的时刻；分类器在它之后重判出携带姿态（哪怕同一个）就发一次 changed，按新模式先验收紧
     private var handledPendingT: Int64?
+    private var lastHandledEventT: Int64 = Int64.min / 2
+    private static let postHandledWindowMs: Int64 = 8000
     private var stepHeadSigmaCurrent: Double = FusionEngine.stepHeadSigma
     private var useStrideAverage = false
     /// 最近 3 s 的姿态航向（rad）；摆臂 / 口袋模式按一个步幅周期做圆平均。
@@ -495,6 +497,7 @@ public final class FusionEngine {
         activeCarry = .unknown
         externalCarry = nil
         handledPendingT = nil
+        lastHandledEventT = Int64.min / 2
         stepHeadSigmaCurrent = FusionEngine.stepHeadSigma
         useStrideAverage = false
         headingHist.removeAll()
@@ -535,16 +538,20 @@ public final class FusionEngine {
         carryModeValue = mode
         let prev = activeCarry
         if mode.isCarryPosture { activeCarry = mode }
+        // 「操作手机」之后几秒内（重判可能先过一个中间模式，例如摆臂）判出的模式都按「操作之后」处理
+        let afterHandled = handledPendingT != nil || tMs - lastHandledEventT <= FusionEngine.postHandledWindowMs
         if activeCarry != prev {
             applyCarryParameters()
-            emit(kind: prev.isCarryPosture ? .changed : .initial, from: prev, to: activeCarry, tMs: tMs)
+            emit(kind: prev.isCarryPosture ? .changed : .initial, from: prev, to: activeCarry, tMs: tMs,
+                 afterHandled: afterHandled && prev.isCarryPosture)
             if prev.isCarryPosture { handledPendingT = nil }
         } else if let hp = handledPendingT, mode.isCarryPosture, decidedAt > hp {
             handledPendingT = nil
-            emit(kind: .changed, from: prev, to: activeCarry, tMs: tMs)
+            emit(kind: .changed, from: prev, to: activeCarry, tMs: tMs, afterHandled: true)
         }
         if handled, config.motion.reportHandledEvents, activeCarry.isCarryPosture {
             handledPendingT = tMs
+            lastHandledEventT = tMs
             emit(kind: .handled, from: activeCarry, to: activeCarry, tMs: tMs)
         }
     }
@@ -562,7 +569,10 @@ public final class FusionEngine {
         }
     }
 
-    private func emit(kind: CarryMotionEvent.Kind, from: CarryMode, to: CarryMode, tMs: Int64) {
+    /// - afterHandled: 这次 changed 紧跟在「操作手机」之后。引擎航向是 ω·up 积出来的，大幅翻转手机后它和前向轴方位角
+    ///   不再一致（合成数据：看屏 → 口袋留下 90° 而不是几何上的 35°），所以即使新模式是 texting / upright，也不能按
+    ///   δ≈0 的紧先验重撒：保留 handled 撒开的偏差，只在附近再撒 `postHandledSpreadDeg`（nil = 整圆），交给地磁去挑。
+    private func emit(kind: CarryMotionEvent.Kind, from: CarryMode, to: CarryMode, tMs: Int64, afterHandled: Bool = false) {
         let p = config.motion.table[to]
         let ev: CarryMotionEvent
         switch kind {
@@ -570,6 +580,11 @@ public final class FusionEngine {
             ev = CarryMotionEvent(tMs: tMs, kind: .handled, from: from, to: to,
                                   headingSpreadDeg: config.motion.handledSpreadDeg, headingCentersDeg: [0],
                                   keepBias: config.motion.handledSpreadDeg != nil,
+                                  initialScaleSigma: p.initialScaleSigma, lostSuppressCm: max(p.lostSuppressCm, 1500))
+        case .changed where afterHandled && p.headingSpreadDeg != nil:
+            ev = CarryMotionEvent(tMs: tMs, kind: kind, from: from, to: to,
+                                  headingSpreadDeg: config.motion.postHandledSpreadDeg, headingCentersDeg: [0],
+                                  keepBias: config.motion.postHandledSpreadDeg != nil,
                                   initialScaleSigma: p.initialScaleSigma, lostSuppressCm: max(p.lostSuppressCm, 1500))
         case .changed, .initial:
             ev = CarryMotionEvent(tMs: tMs, kind: kind, from: from, to: to,

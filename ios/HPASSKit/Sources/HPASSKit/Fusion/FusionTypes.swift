@@ -141,9 +141,13 @@ public struct CarryMotionConfig {
     /// 默认整圆：手机被大幅转过之后夹角 δ 就是未知的（陀螺偏航积分对大幅翻转不保几何，实测 texting→pocket 之后引擎航向
     /// 偏了 90° 而不是口袋几何的 35°），只撒 30° 的话等分类器 2～3 s 后判出新模式时粒子已经全走偏、顶在墙上，
     /// 这时再整圆重撒位置已经错了几米，磁场在走廊里分不出「落后几米」和「走反」。整圆撒开让一部分粒子一直跟着真位置走，
-    /// 其余被墙 / 磁场淘汰；分类器判出新模式后再按该模式的先验重撒一次（texting / upright 收紧到 15°）。
+    /// 其余被墙 / 磁场淘汰；分类器判出新模式后再按该模式的先验重撒一次。
     public var reportHandledEvents = true
     public var handledSpreadDeg: Double? = nil
+    /// 「操作手机」之后判出的新模式即使是 texting / upright（δ 几何上≈0），也不按 15° 紧先验重撒：引擎航向是 ω·up 积分，
+    /// 翻转之后已经不等于前向轴方位角（评审）。保留 handled 撒开的偏差，只在附近再撒这么多（度，nil = 整圆）。
+    /// 占位值，待自采 iPhone 双机数据标定（等有了陀螺积分的完整姿态、能几何地重算前向轴方位角再收紧）
+    public var postHandledSpreadDeg: Double? = 30
 
     public init() {}
 }

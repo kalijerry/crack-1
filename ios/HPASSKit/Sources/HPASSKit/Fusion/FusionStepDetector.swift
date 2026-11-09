@@ -28,6 +28,9 @@ public struct StepDetectorTuning {
     /// 步频锁：距上一步不足 cadenceLockRatio × 当前步周期的峰不算步（快走时的双峰）。0 = 不用。
     /// 步周期只用 minPeriodS 以上的间隔估（更短的间隔不是人的步频，是次峰）。
     public var cadenceLockRatio = 0.6
+    /// 步频锁只丢间隔短于此（s）的峰：次峰一般在主峰后 0.1～0.35 s。没有这个上限时，慢走（≈1 s/步）或停顿后起步
+    /// 把步周期估到 1 s 以上，正常的 0.55 s 步会被一直当次峰丢掉、只数一半（评审）。占位值，待自采 iPhone 双机数据标定
+    public var cadenceLockMaxS = 0.45
     public var minPeriodS = 0.35
     /// 步周期 EMA 系数。
     public var periodAlpha = 0.3
@@ -110,6 +113,10 @@ final class FusionStepDetector {
     private var windowIdx = 0
     private var windowFilled = 0
 
+    /// σ 窗按名义 50 Hz 定长（只在 sigmaWindowS 改了时重建）。不能按每个样本自己的 dt 算：
+    /// 毫秒时间戳 19/20/21 ms 抖动会让长度在 142～157 之间来回变、每次变都清空窗口（评审）
+    private static let nominalHz = 50.0
+    private var sigWinS = 3.0
     /// 自适应阈值用的 σ 窗（3 s @ 50 Hz = 150 样本）：环形缓冲 + 运行和。
     private var sigWin = [Double](repeating: 0, count: 150)
     private var sigIdx = 0
@@ -190,8 +197,9 @@ final class FusionStepDetector {
         // 阈值：固定（原有）或随 σ_dyn 自适应
         var peakT = peakThresh, exitT = peakExitThresh, valleyT = valleyThresh
         if adaptive {
-            let n = Int(max(tuning.sigmaWindowS, 0.5) / max(dt, 1e-3))
-            if n != sigWin.count, n >= 10, n <= 1000 {
+            if tuning.sigmaWindowS != sigWinS {
+                sigWinS = tuning.sigmaWindowS
+                let n = Int(FusionMath.clamp(max(sigWinS, 0.5) * FusionStepDetector.nominalHz, 10, 1000))
                 sigWin = [Double](repeating: 0, count: n); sigIdx = 0; sigFilled = 0; sigSum = 0; sigSum2 = 0
             }
             let old = sigWin[sigIdx]
@@ -202,7 +210,11 @@ final class FusionStepDetector {
             if sigFilled < sigWin.count { sigFilled += 1 }
             let m = sigSum / Double(sigFilled)
             let sigma = max(sigSum2 / Double(sigFilled) - m * m, 0).squareRoot()
-            if hasStep, Double(s.tMs - lastStepTMs) / 1000 > tuning.rangeHoldS { recentRange = 0 }
+            if hasStep, Double(s.tMs - lastStepTMs) / 1000 > tuning.rangeHoldS {
+                // 停下来了：峰谷差和步周期都重新估（停顿 / 慢起步的长间隔不能把步频锁卡住）
+                recentRange = 0
+                stepPeriodS = nil
+            }
             peakT = FusionMath.clamp(max(tuning.peakFactor * sigma, tuning.rangeFactor * recentRange), tuning.peakMin, tuning.peakMax)
             exitT = tuning.exitRatio * peakT
             valleyT = -tuning.valleyRatio * peakT
@@ -223,7 +235,7 @@ final class FusionStepDetector {
                 let sinceS = hasStep ? Double(s.tMs - lastStepTMs) / 1000 : .infinity
                 var intervalOK = !hasStep || (s.tMs - lastStepTMs) >= max(minStepIntervalMs, 0)
                 if adaptive, intervalOK, hasStep, let p = stepPeriodS, tuning.cadenceLockRatio > 0,
-                   sinceS < tuning.cadenceLockRatio * p {
+                   sinceS < tuning.cadenceLockRatio * p, sinceS < tuning.cadenceLockMaxS {
                     intervalOK = false
                     cadenceRejects += 1
                 }

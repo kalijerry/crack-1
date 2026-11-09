@@ -1,8 +1,9 @@
 """自采办公室「盲测机 + 真值伴随机」流水线（lab.py prepare-private 的 office-carry 协议，docs/office-test.md）。
 
 - 盲测会话：meta.json 里 purpose = "blind_test"、camera = false、pair_id；按被测的携带方式（carry_mode）带着走，不建图、没有锚点。
-- 伴随真值会话：同一个 pair_id，purpose = "ground_truth"（或 "truth_companion"），竖持开 ARKit 的建图式会话（arkit_pose + anchors），
-  或者已经导出好的 truth.csv。
+- 伴随真值会话：同一个 pair_id，App 写的是 role = "gt_companion"（建图测试会话，purpose = "test"），也认 purpose = "ground_truth"
+  （或 "truth_companion"）；竖持开 ARKit 的建图式会话（arkit_pose + anchors），或者已经导出好的 truth.csv。
+- 对时用两机的 acc_raw.csv（App 双机测试模式写的 100 Hz 原始加速度计），没有就用 imu.csv。
 - 对时：两机叠在一起敲三下（开始、结束各一组），bump_sync.py 求偏移 + 漂移，残差 > 20 ms 的组不用、一组都没有就整段不用。
 - 真值：伴随机轨迹（tools/magmap.py 的锚点分段对齐，ARKit 跟踪受限的时刻不要）换到盲测机的时钟，再沿行进方向往后挪杆臂
   （lever_arm_cm，默认 25 cm：伴随机举在身前，盲测机在身上），只留开始敲击之后 3 s 到结束敲击之前，写成盲测会话的 truth.csv。
@@ -27,6 +28,7 @@ import bump_sync  # noqa: E402
 
 BLIND_PURPOSE = "blind_test"
 COMPANION_PURPOSES = ("ground_truth", "truth_companion")
+COMPANION_ROLES = ("gt_companion",)
 # 这些携带方式手机前向轴 ≈ 行走方向（δ≈0），已知起点时可以给真值起步朝向；其余整圆撒开
 HEADING_KNOWN_MODES = ("texting", "handheld", "reading", "upright")
 DEFAULT_LEVER_CM = 25.0             # 占位值，待自采 iPhone 双机数据标定；会话 meta 的 lever_arm_cm 优先
@@ -42,7 +44,7 @@ def classify(meta: dict, d: Path) -> str | None:
         if meta.get("camera") is False and meta.get("pair_id") and (d / "imu.csv").exists():
             return "blind"
         return None
-    if purpose in COMPANION_PURPOSES:
+    if purpose in COMPANION_PURPOSES or meta.get("role") in COMPANION_ROLES:
         if meta.get("pair_id") and ((d / "truth.csv").exists() or (d / "anchors.csv").exists()):
             return "companion"
         return None
@@ -66,6 +68,12 @@ def pair_sessions(blinds: list[tuple[Path, dict]], comps: list[tuple[Path, dict]
         c, cm = min(cands, key=lambda x: abs((first_imu_ms(x[0]) or 0) - t0))
         pairs.append((d, c, m, cm))
     return pairs, unpaired
+
+
+def sync_file(d: Path) -> Path:
+    """对时用的加速度文件：App 双机测试模式的 acc_raw.csv（100 Hz，列 t_ms,ax,ay,az），没有就 imu.csv"""
+    p = d / "acc_raw.csv"
+    return p if p.exists() and p.stat().st_size > 20 else d / "imu.csv"
 
 
 def first_imu_ms(d: Path) -> int | None:
@@ -154,7 +162,7 @@ def make_blind_session(blind: Path, comp: Path, bmeta: dict, cmeta: dict, dst: P
                        sync_params: bump_sync.SyncParams = bump_sync.SyncParams()) -> dict:
     """配好的一对 → dst（盲测会话 + truth.csv）。返回 {ok, reason, carry_mode, map_age_days, start_heading, sync}"""
     info = {"ok": False, "name": blind.name, "carry_mode": bmeta.get("carry_mode") or "unknown"}
-    sync = bump_sync.sync_files(blind / "imu.csv", comp / "imu.csv", sync_params)
+    sync = bump_sync.sync_files(sync_file(blind), sync_file(comp), sync_params)
     info["sync"] = {k: sync.get(k) for k in ("ok", "offset_ms", "drift_ppm", "reason")}
     if not sync["ok"]:
         info["reason"] = "对时失败：" + (sync.get("reason") or "")

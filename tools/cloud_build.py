@@ -65,7 +65,8 @@ def package_meta(map_id, secs=None):
 # ---- 房间的视觉特征地图（ARWorldMap）：纯函数在 cloud_build_lib.py（不读环境变量，单元测试直接 import）----
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cloud_build_lib import (WM_FILE, WM_META, WM_WARN, WM_MAX, map_align, map_frame_id,  # noqa: E402
-                             align_equivalent, worldmap_compatible, pick_worldmap)
+                             align_equivalent, worldmap_compatible, pick_worldmap,
+                             map_geometry_version, build_unchanged)
 
 
 def main():
@@ -126,19 +127,16 @@ def main():
         frame_id = map_frame_id(map_json)
         picked = pick_worldmap(wm_dirs.get(mid, []), mid, align, frame_id)
         wm_session = picked[1]["session"] if picked else None
-        # 上次融合用的会话
+        geometry_version = map_geometry_version(map_json)
+        # 上次融合的输入：会话、实时记录、特征地图会话、地图几何版本（手机接着扫 / 重扫后只有它变）都没变才跳过
         last = [r for r in reports if r["key"].startswith(f"reports/build_{mid}_")]
         if last and not FORCE:
             prev = get_json("/api/" + last[0]["key"])
-            # quality 里有全部建图会话（包括质量筛选没用上的），没有就用 sessions（旧报告）
-            used = [q["name"] for q in prev["quality"]] if prev.get("quality") else [s["name"] for s in prev.get("sessions", [])]
-            prev_names = sorted(used + prev.get("testSessions", []))
-            # 实时记录也算：有新的（或少了的）才重建，没变就不因为它们重跑
-            # 有了更新的特征地图也要重建（没有新的就不因为它重跑）
-            if (prev_names == names and sorted(prev.get("liveSessions", [])) == live_names
-                    and (wm_session is None or prev.get("worldMapSession") == wm_session)):
-                print("  会话没变，跳过")
+            if build_unchanged(prev, names, live_names, wm_session, geometry_version):
+                print("  会话和地图几何都没变，跳过")
                 continue
+            if prev.get("mapGeometryVersion") != geometry_version:
+                print(f"  地图几何版本 {prev.get('mapGeometryVersion')} → {geometry_version}（手机接着扫 / 重扫过），重建")
         map_path = os.path.join(work, f"map_{mid}.json")
         open(map_path, "wb").write(map_json)
         secs = package_sections(mid)
@@ -198,6 +196,7 @@ def main():
         report["liveSessions"] = live_names
         report["worldMapSession"] = wm_session
         report["worldMap"] = wm_info
+        report["mapGeometryVersion"] = geometry_version
         pkg = open(out, "rb").read()
         if DRY:
             print(f"  试运行：地图包 {len(pkg) // 1024} KB，不上传")

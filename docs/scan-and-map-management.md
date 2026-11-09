@@ -94,7 +94,7 @@ Documents/maps/<mapId>/
 - 本机墓碑（`Documents/maps/.tombstones.json`，`{mapId: {deletedAtMs, cloudVersion}}`）：删掉的地图云端那份不再自动下载 / 更新，云端列表显示「已删除 · 重新下载」（云端版本比删除时新则「已删除 · 云端有新版本」）；点了才清墓碑并安装。
 - 删除地图不删采集会话（本机没有「已上传」标记，删了会丢掉还没上传的采集）。
 - 云端更新不覆盖本机名字（只在首次安装时采用云端名字）；在用的地图不会被自动换成云端图（只在没有在用地图时自动用上）。
-- 云端包的几何版本（包里 map.json 的 `geometryVersion`）比本机小 → 整包不装（等云端用新几何重新融合），条目记 `skippedCloudVersion`，这一版不再反复下载（列表显示「本机较新」），并让本机 map.json 重新上传（`Telemetry.invalidateUploadedMap`）。云端几何和本机注册表版本不同 → 本机注册表作废，按新 map.json 重新生成基准段。
+- 云端包的几何版本（包里 map.json 的 `geometryVersion`）比本机小 → 整包不装（等云端用新几何重新融合：`tools/cloud_build.py` 把地图的 `geometryVersion` 记进报告 `mapGeometryVersion`，版本变了就算会话没变也重建），条目记 `skippedCloudVersion`，这一版不再反复下载（列表显示「本机较新」），并让本机 map.json 重新上传（`Telemetry.invalidateUploadedMap`）。云端几何和本机注册表版本不同 → 本机注册表作废，按新 map.json 重新生成基准段。
 
 ### 地图详情（`MapDetailView`）
 

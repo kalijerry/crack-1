@@ -86,5 +86,32 @@ class PickTest(unittest.TestCase):
             self.assertIsNone(cb.pick_worldmap(dirs, "m", None, "F"))
 
 
+
+class RebuildTest(unittest.TestCase):
+    PREV = {"sessions": [{"name": "b1"}], "testSessions": ["t1"], "liveSessions": ["l1"],
+            "worldMapSession": "b1", "mapGeometryVersion": 3}
+
+    def test_geometry_version_read(self):
+        root = {"mapElementList": [], "geometryVersion": 4}
+        self.assertEqual(cb.map_geometry_version(json.dumps(root).encode()), 4)
+        self.assertEqual(cb.map_geometry_version(json.dumps({"data": root}).encode()), 4)
+        self.assertIsNone(cb.map_geometry_version(map_json()))
+
+    def test_unchanged_skips(self):
+        self.assertTrue(cb.build_unchanged(self.PREV, ["t1", "b1"], ["l1"], "b1", 3))
+        self.assertTrue(cb.build_unchanged(self.PREV, ["t1", "b1"], ["l1"], None, 3))
+
+    def test_new_geometry_rebuilds(self):
+        # 接着扫 / 重扫后手机只上传了新的 map.json，会话一个没变也要重建
+        self.assertFalse(cb.build_unchanged(self.PREV, ["t1", "b1"], ["l1"], "b1", 4))
+        old_report = {k: v for k, v in self.PREV.items() if k != "mapGeometryVersion"}
+        self.assertFalse(cb.build_unchanged(old_report, ["t1", "b1"], ["l1"], "b1", 4))
+        self.assertTrue(cb.build_unchanged(old_report, ["t1", "b1"], ["l1"], "b1", None))
+
+    def test_sessions_changed_rebuilds(self):
+        self.assertFalse(cb.build_unchanged(self.PREV, ["t1", "b1", "b2"], ["l1"], "b1", 3))
+        self.assertFalse(cb.build_unchanged(self.PREV, ["t1", "b1"], [], "b1", 3))
+        self.assertFalse(cb.build_unchanged(self.PREV, ["t1", "b1"], ["l1"], "b2", 3))
+
 if __name__ == "__main__":
     unittest.main()

@@ -644,7 +644,8 @@ final class CloudMaps: ObservableObject {
             if try MapLibrary.shared.install(contents) {
                 message = "已装上「\(c.name)」（\(d.count / 1024) KB）"
             } else {
-                message = "「\(c.name)」本机的地图比云端这一版新，没有装；等云端用新地图重新生成后会自动更新"
+                message = "「\(c.name)」本机的地图比云端这一版新（接着扫 / 重扫过），没有装。本机地图会自动上传；"
+                    + "下次运行云端融合时会按新地图重建，之后这里会自动更新"
             }
         } catch {
             if Self.isCancelled(error) { return }

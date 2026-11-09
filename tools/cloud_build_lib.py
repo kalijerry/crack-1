@@ -46,6 +46,27 @@ def map_frame_id(map_json):
     return f if isinstance(f, str) and f else None
 
 
+def map_geometry_version(map_json):
+    """地图 JSON 里的 geometryVersion（扫描段注册表每次合成加一）；没有返回 None"""
+    v = _root(map_json).get("geometryVersion")
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return int(v)
+
+
+def build_unchanged(prev, names, live_names, wm_session, geometry_version):
+    """上次融合的报告 prev 和这次的输入一样（建图 / 测试会话、实时记录、特征地图会话、地图几何版本都没变）→ 可以跳过。
+    手机接着扫 / 重扫后只上传新的 map.json（geometryVersion 变大），没有新会话也要重建，
+    否则手机一直拒装旧几何的包、停在「本机较新」。旧报告没记几何版本：地图有版本号就重建一次把它记上。"""
+    used = [q["name"] for q in prev["quality"]] if prev.get("quality") else [s["name"] for s in prev.get("sessions", [])]
+    prev_names = sorted(used + prev.get("testSessions", []))
+    if prev_names != sorted(names) or sorted(prev.get("liveSessions", [])) != sorted(live_names):
+        return False
+    if wm_session is not None and prev.get("worldMapSession") != wm_session:
+        return False
+    return prev.get("mapGeometryVersion") == geometry_version
+
+
 def _to_map(t, x, y):
     phi, px, py, ax, ay = t
     dx, dy = x - ax, y - ay

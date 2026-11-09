@@ -200,13 +200,23 @@ final class MapLibrary: ObservableObject {
     ///
     /// 删掉地图目录（地图、扫描段、特征地图、建图进度、定位数据）。采集会话**不删**：本机没有「已上传」标记，
     /// 删了会丢掉还没上传的采集。记一条本机墓碑：这张地图云端那份不再自动下载 / 更新（云端列表里可以「重新下载」）。
-    func delete(_ id: String) {
-        guard let e = entries.first(where: { $0.id == id }) else { return }
+    /// 正在定位 / 采集：在用的地图不能删、不能换（换工作区会把引擎底下的磁场图、涂色换掉，
+    /// 之后写盘的采集数据会落到下一张地图里）
+    static var enginesBusy: Bool { AppEngines.shared.magnetic.phase != .idle || AppEngines.shared.survey.isRunning }
+
+    /// 删掉了返回 true；没删（正在用、切换失败）返回 false，原因在 lastError
+    @discardableResult
+    func delete(_ id: String) -> Bool {
+        guard let e = entries.first(where: { $0.id == id }) else { return false }
+        if id == activeId && Self.enginesBusy {
+            lastError = "「\(e.name)」正在定位或采集，先停下来再删除"
+            return false
+        }
         if id == activeId {
             if let next = nextActiveCandidate(excluding: id) {
                 do { try activate(next.id) } catch {
                     lastError = "删除前切换到「\(next.name)」失败：\(error.localizedDescription)"
-                    return
+                    return false
                 }
             } else {
                 deactivate()
@@ -219,6 +229,7 @@ final class MapLibrary: ObservableObject {
         lastError = nil
         geometryRevision += 1
         AppLog.w("地图库", "已删除地图「\(e.name)」（\(id)）；采集记录保留，云端那份不再自动下载")
+        return true
     }
 
     /// 不用任何地图：清掉 Documents 根目录的工作区和「场地数据」里的地图（否则下次启动又被收成一张图）
@@ -497,11 +508,12 @@ struct MapLibrarySection: View {
                     if e.id == lib.activeId {
                         Text("在用").font(.caption.bold()).foregroundStyle(.green)
                     } else {
-                        Button("切换") { try? lib.activate(e.id) }.buttonStyle(.bordered)
+                        Button("切换") { try? lib.activate(e.id) }.buttonStyle(.bordered).disabled(MapLibrary.enginesBusy)
                     }
                 }
                 .swipeActions {
                     Button("删除", role: .destructive) { confirmDelete = e }
+                        .disabled(e.id == lib.activeId && MapLibrary.enginesBusy)
                     Button("改名") { renaming = e; newName = e.name }.tint(.blue)
                     Button(e.bleEnabled ? "关蓝牙" : "开蓝牙") { lib.setBLE(e.id, !e.bleEnabled) }.tint(.orange)
                 }
@@ -550,9 +562,12 @@ struct MapDeleteConfirmation: ViewModifier {
             Button("删除这张地图", role: .destructive) {
                 if let e = entry {
                     AppLog.tap("删除地图", e.name)
-                    lib.delete(e.id)
-                    Haptics.success()
-                    onDeleted()
+                    if lib.delete(e.id) {
+                        Haptics.success()
+                        onDeleted()
+                    } else {
+                        Haptics.warning()
+                    }
                 }
                 entry = nil
             }

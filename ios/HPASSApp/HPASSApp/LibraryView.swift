@@ -117,6 +117,7 @@ struct LibraryView: View {
         }
         .swipeActions {
             Button("删除", role: .destructive) { confirmDelete = e }
+                .disabled(busy && e.id == lib.activeId)
             Button("重命名") { renaming = e; newName = e.name }.tint(DS.Palette.info)
             Button(e.bleEnabled ? "关信号" : "开信号") { lib.setBLE(e.id, !e.bleEnabled) }.tint(DS.Palette.warning)
         }

@@ -6,7 +6,8 @@
    实时定位记录（meta.live = true，App 定位时自动传）按同样的 map_id 归到地图，用 --live 传给 hpass-build：
    可信的路段低权重并进磁场图（地图自愈）；
    房间的视觉特征地图：会话目录里带 worldmap.arexperience + worldmap.json（App 在认出房间的会话结束时存，
-   见 WorldMapKeeper）。挑同一张地图里最新的、坐标系和地图 JSON 里 arAlign 等价的（规则同 WorldMapSidecar），
+   见 WorldMapKeeper）。挑同一张地图里最新的、坐标系和地图 JSON 一致的（两边都有 frameId 时比 frameId，
+   否则比 arAlign 等价；规则同 WorldMapSidecar，见 cloud_build_lib.py），
    用 --worldmap 打进包；没有就沿用云端旧包里的（同样要 arAlign 等价）。≤15 MB，>8 MB 报告里警告；
 3. 会话（含实时记录）和上次融合时一样就跳过；否则跑 hpass-build（多会话偏移联合求解 + 蓝牙 + 覆盖率 + 测试会话精度），
    上传地图包（版本 = 现在，盖过手机上生成的）和报告（/api/reports/build_<地图>_<时间>.json）。
@@ -61,80 +62,11 @@ def package_meta(map_id, secs=None):
     return json.loads(secs[0]) if secs else None
 
 
-# ---- 房间的视觉特征地图（ARWorldMap）----
-# 特征地图只在保存时的 AR 坐标系里有意义。会话带来的 worldmap.json 记着它的 arAlign（AR → 地图），
-# 只收和地图 JSON 里 arAlign 等价的：说明那个会话认出了房间，坐标系和房间扫描时一致。
-WM_FILE, WM_META = "worldmap.arexperience", "worldmap.json"
-WM_WARN, WM_MAX = 8 * 1024 * 1024, 15 * 1024 * 1024        # 与 WorldMapPolicy 一致
-
-
-def _align(a):
-    if not isinstance(a, dict) or "phi" not in a or "pRefX" not in a or "pRefY" not in a:
-        return None
-    try:
-        return tuple(float(a.get(k) or 0) for k in ("phi", "pRefX", "pRefY", "aRefX", "aRefY"))
-    except (TypeError, ValueError):
-        return None
-
-
-def map_align(map_json):
-    """地图 JSON 里的 arAlign；没有返回 None"""
-    try:
-        root = json.loads(map_json)
-        root = root.get("data", root) if isinstance(root, dict) else {}
-        return _align(root.get("arAlign"))
-    except ValueError:
-        return None
-
-
-def _to_map(t, x, y):
-    phi, px, py, ax, ay = t
-    dx, dy = x - ax, y - ay
-    c, s = math.cos(phi), math.sin(phi)
-    return (px + dx * c - dy * s, py + dx * s + dy * c)
-
-
-def align_equivalent(a, b, tol_cm=2.0):
-    """两个变换把 AR 平面上几个点映到地图上一致（同 WorldMapSidecar.equivalent）"""
-    if a is None or b is None:
-        return False
-    return all(math.dist(_to_map(a, x, y), _to_map(b, x, y)) <= tol_cm for x, y in ((0, 0), (1000, 0), (0, 1000)))
-
-
-def pick_worldmap(dirs, mid, align):
-    """会话目录里挑最新的有效特征地图 → (文件路径, 说明) 或 None"""
-    if align is None:
-        return None
-    best = None
-    for d in dirs:
-        f, m = os.path.join(d, WM_FILE), os.path.join(d, WM_META)
-        if not (os.path.exists(f) and os.path.exists(m)):
-            continue
-        name = os.path.basename(d)
-        try:
-            meta = json.load(open(m))
-            size = os.path.getsize(f)
-            head = open(f, "rb").read(8)
-        except (OSError, ValueError):
-            print(f"  特征地图 {name}：说明读不出来，跳过")
-            continue
-        if not isinstance(meta, dict) or meta.get("version") != 1:
-            print(f"  特征地图 {name}：说明版本不认识，跳过")
-        elif meta.get("mapId") and meta["mapId"] != mid:
-            print(f"  特征地图 {name}：属于别的地图，跳过")
-        elif not head.startswith(b"bplist"):
-            print(f"  特征地图 {name}：不是 ARWorldMap 归档，跳过")
-        elif size == 0 or size > WM_MAX:
-            print(f"  特征地图 {name}：{size / 1048576:.1f} MB，超过 {WM_MAX // 1048576} MB 或为空，跳过")
-        elif not align_equivalent(_align(meta.get("arAlign")), align):
-            print(f"  特征地图 {name}：坐标系和地图的 arAlign 对不上（会话没认出房间，或房间重新扫过），跳过")
-        else:
-            key = (int(meta.get("createdMs") or 0), name)
-            if best is None or key > best[0]:
-                best = (key, f, meta, size)
-    if best is None:
-        return None
-    return best[1], {"session": best[0][1], "createdMs": best[0][0], "bytes": best[3], "source": best[2].get("source")}
+# ---- 房间的视觉特征地图（ARWorldMap）：纯函数在 cloud_build_lib.py（不读环境变量，单元测试直接 import）----
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cloud_build_lib import (WM_FILE, WM_META, WM_WARN, WM_MAX, map_align, map_frame_id,  # noqa: E402
+                             align_equivalent, worldmap_compatible, pick_worldmap,
+                             map_geometry_version, build_unchanged)
 
 
 def main():
@@ -192,21 +124,19 @@ def main():
             print("  后台没有这张地图的 JSON（用这张地图的手机连一次后台就会上传），跳过")
             continue
         align = map_align(map_json)
-        picked = pick_worldmap(wm_dirs.get(mid, []), mid, align)
+        frame_id = map_frame_id(map_json)
+        picked = pick_worldmap(wm_dirs.get(mid, []), mid, align, frame_id)
         wm_session = picked[1]["session"] if picked else None
-        # 上次融合用的会话
+        geometry_version = map_geometry_version(map_json)
+        # 上次融合的输入：会话、实时记录、特征地图会话、地图几何版本（手机接着扫 / 重扫后只有它变）都没变才跳过
         last = [r for r in reports if r["key"].startswith(f"reports/build_{mid}_")]
         if last and not FORCE:
             prev = get_json("/api/" + last[0]["key"])
-            # quality 里有全部建图会话（包括质量筛选没用上的），没有就用 sessions（旧报告）
-            used = [q["name"] for q in prev["quality"]] if prev.get("quality") else [s["name"] for s in prev.get("sessions", [])]
-            prev_names = sorted(used + prev.get("testSessions", []))
-            # 实时记录也算：有新的（或少了的）才重建，没变就不因为它们重跑
-            # 有了更新的特征地图也要重建（没有新的就不因为它重跑）
-            if (prev_names == names and sorted(prev.get("liveSessions", [])) == live_names
-                    and (wm_session is None or prev.get("worldMapSession") == wm_session)):
-                print("  会话没变，跳过")
+            if build_unchanged(prev, names, live_names, wm_session, geometry_version):
+                print("  会话和地图几何都没变，跳过")
                 continue
+            if prev.get("mapGeometryVersion") != geometry_version:
+                print(f"  地图几何版本 {prev.get('mapGeometryVersion')} → {geometry_version}（手机接着扫 / 重扫过），重建")
         map_path = os.path.join(work, f"map_{mid}.json")
         open(map_path, "wb").write(map_json)
         secs = package_sections(mid)
@@ -218,7 +148,7 @@ def main():
             print(f"  视觉特征地图：{wm_info['session']}（{wm_info['bytes'] / 1048576:.1f} MB，{wm_info['source']}）")
         elif align is not None and secs and len(secs) > 4 and secs[4]:
             # 会话里没有：沿用云端旧包里的（它的地图 JSON 里 arAlign 要和现在一致）
-            if align_equivalent(map_align(secs[1]), align) and len(secs[4]) <= WM_MAX:
+            if worldmap_compatible(map_align(secs[1]), map_frame_id(secs[1]), align, frame_id) and len(secs[4]) <= WM_MAX:
                 wm_path = os.path.join(work, f"worldmap_{mid}.arexperience")
                 open(wm_path, "wb").write(secs[4])
                 wm_info = {"session": None, "bytes": len(secs[4]), "source": "旧包"}
@@ -266,6 +196,7 @@ def main():
         report["liveSessions"] = live_names
         report["worldMapSession"] = wm_session
         report["worldMap"] = wm_info
+        report["mapGeometryVersion"] = geometry_version
         pkg = open(out, "rb").read()
         if DRY:
             print(f"  试运行：地图包 {len(pkg) // 1024} KB，不上传")

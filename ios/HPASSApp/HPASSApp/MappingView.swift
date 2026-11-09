@@ -14,12 +14,13 @@ struct MappingView: View {
     @ObservedObject private var storeData = StoreDataStore.shared
     @ObservedObject private var tel = Telemetry.shared
     @ObservedObject private var mode = AppMode.shared
+    @ObservedObject private var lib = MapLibrary.shared
 
     @State private var note = ""
     @State private var showOptions = false
     @State private var summary: Summary?
     @State private var startFraction: Double?
-    @State private var showRoomScan = false
+    @State private var scanTarget: ScanTarget?
     @State private var confirmStop = false
     @State private var mapFollow = true
 
@@ -68,7 +69,7 @@ struct MappingView: View {
             .navigationBarTitleDisplayMode(.inline)
             .animation(.spring(response: 0.35, dampingFraction: 0.85), value: stepIndex)
         }
-        .sheet(isPresented: $showRoomScan) { RoomScanView() }
+        .sheet(item: $scanTarget) { t in RoomScanView(target: t) }
         .onAppear { AppEngines.shared.prepareIfNeeded() }
         .onChange(of: survey.isRunning) { isRunning in
             if isRunning {
@@ -105,14 +106,35 @@ struct MappingView: View {
             .buttonStyle(.dsPrimaryTint(DS.Palette.mapping))
             .disabled(!store.usesStoreMap)
             .accessibilityHint(store.usesStoreMap ? "开始采集，按提示走一遍场地" : "需要先有一张场地地图")
-            if mode.developer {
-                Button {
-                    showRoomScan = true
-                } label: {
-                    Label("扫描房间生成地图（激光雷达）", systemImage: "cube.transparent")
-                }
-                .buttonStyle(.dsSecondaryTint(DS.Palette.mapping))
+            scanButtons
+        }
+    }
+
+    /// 激光雷达扫描（两种模式都有）：在用的是房间地图时主按钮是「接着扫」，一次扫不完分几次扫进同一张图
+    @ViewBuilder private var scanButtons: some View {
+        if let a = lib.active, a.isRoom {
+            Button {
+                scanTarget = .append(a.id)
+            } label: {
+                Label("接着扫当前地图（扩大范围 / 重扫精细化）", systemImage: "plus.viewfinder")
             }
+            .buttonStyle(.dsSecondaryTint(DS.Palette.mapping))
+            .disabled(survey.isRunning)
+            Button {
+                scanTarget = .newMap
+            } label: {
+                Label("扫描一张新地图", systemImage: "cube.transparent")
+            }
+            .buttonStyle(.dsSecondaryTint(DS.Palette.mapping))
+            .disabled(survey.isRunning)
+        } else {
+            Button {
+                scanTarget = .newMap
+            } label: {
+                Label("扫描房间生成地图（激光雷达）", systemImage: "cube.transparent")
+            }
+            .buttonStyle(.dsSecondaryTint(DS.Palette.mapping))
+            .disabled(survey.isRunning)
         }
     }
 

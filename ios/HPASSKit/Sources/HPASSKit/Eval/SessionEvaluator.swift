@@ -93,7 +93,7 @@ public enum SessionEvaluator {
             let b = SurveyMapBuilder(widthCm: map.width, heightCm: map.height, crosses: map.crosses)
             var reps: [SurveySessionReport] = []
             for u in sessions {
-                let s = try SurveySessionLoader.load(u)
+                let s = try SurveySessionLoader.load(u, mapOriginOffsetCm: map.originOffsetCm)
                 let r = b.add(s)
                 _ = bb.add(samples: SurveySessionLoader.loadBLE(u), track: r.track)
                 if withWiFi { wb.add(scans: WiFiScan.group(SurveySessionLoader.loadWiFi(u)), track: r.track) }
@@ -104,7 +104,7 @@ public enum SessionEvaluator {
         case .production, .fusion:
             var loaded: [SurveySession] = [], bles: [[BLESample]] = [], signs: [[SignSample]] = []
             for u in sessions {
-                loaded.append(try SurveySessionLoader.load(u))
+                loaded.append(try SurveySessionLoader.load(u, mapOriginOffsetCm: map.originOffsetCm))
                 bles.append(SurveySessionLoader.loadBLE(u))
                 signs.append(SignSample.load(u))
             }
@@ -219,7 +219,7 @@ public enum SessionEvaluator {
         // 公开数据集基准 / 盲测会话：会话里有 truth.csv（t_ms,x_cm,y_cm）就直接当参考轨迹（位姿是合成的或根本没有，不能再对齐）；
         // 这时不需要 anchors.csv（盲测机不建图、没有锚点）
         let truth = Self.loadTruth(dir)
-        let s = try SurveySessionLoader.load(dir, requireAnchors: truth == nil)
+        let s = try SurveySessionLoader.load(dir, requireAnchors: truth == nil, mapOriginOffsetCm: map.originOffsetCm)
         // 参考轨迹：这个会话自己的对齐结果（只用它的锚点和贴通道，不用磁场）；给了标签位置时再用标签锚定修正一遍
         // （采集轨迹中途偏航时，不修正的参考本身就是错的）
         let refB = SurveyMapBuilder(widthCm: map.width, heightCm: map.height, crosses: map.crosses)

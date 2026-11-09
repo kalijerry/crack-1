@@ -1097,6 +1097,8 @@ final class MagneticEngine: ObservableObject {
             meta["thermal_end"] = ProcessInfo.processInfo.thermalState.rawValue
             meta["visual_fixes"] = visualFixes
         }
+        // 地图几何版本 / 原点平移（扫描段注册表）：回放时按它换算地图坐标
+        for (k, v) in MapLibrary.shared.sessionMapMeta { meta[k] = v }
         for (k, v) in liveExtraMeta?() ?? [:] { meta[k] = v }
         if let data = try? JSONSerialization.data(withJSONObject: meta, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: d.appendingPathComponent("meta.json"))

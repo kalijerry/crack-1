@@ -5,7 +5,11 @@ import Foundation
 /// 关键：特征地图只在「它保存时的 AR 坐标系」里有意义。房间扫描时的坐标系 + 地图里的 `arAlign` 是一对；
 /// 只有「载入了这张特征地图并且认出了房间」的会话，AR 坐标系才和它一致，这样的会话刷新出来的特征地图
 /// 才能沿用同一个 `arAlign`。没认出房间的会话坐标系是另一套，它存的特征地图不能顶替。
-/// 云端融合只收 `arAlign` 和地图 JSON 里的 `arAlign` 等价的特征地图（见 tools/cloud_build.py，规则与这里一致）。
+/// 云端融合只收 `arAlign` 和地图 JSON 里的 `arAlign` 等价的特征地图（见 tools/cloud_build_lib.py，规则与这里一致）。
+///
+/// `frameId`：地图基准 AR 坐标系的身份（扫描段注册表 `ScanRegistry.frameId`，也写在 map.json 里）。
+/// 两边都有 frameId 时只比它——地图原点平移（`MapFrameShift`）后 arAlign 的 pRef 变了，但特征地图仍属于同一个
+/// AR 坐标系，照样能用；任何一边没有 frameId 时沿用 arAlign 等价（2 cm）。`version` 保持 1（云端只认 1）。
 public struct WorldMapSidecar: Codable, Equatable {
     public struct Align: Codable, Equatable {
         public var phi: Double
@@ -27,7 +31,8 @@ public struct WorldMapSidecar: Codable, Equatable {
     public var version: Int = 1
     /// 生成时间（Unix 毫秒）
     public var createdMs: Int64
-    /// scan = 房间扫描时存的；refreshed = 认出房间后的会话刷新的；stored = 本机已有的原样带上；cloud = 云端包里的
+    /// scan = 房间扫描时存的；refreshed = 认出房间后的会话刷新的；stored = 本机已有的原样带上；cloud = 云端包里的；
+    /// scan-append = 接着扫（认出已扫区域后扫新房间）结束时取的、覆盖更大的那份
     public var source: String
     public var mapId: String?
     public var arAlign: Align
@@ -35,10 +40,20 @@ public struct WorldMapSidecar: Codable, Equatable {
     public var bytes: Int?
     /// 本机用：这份特征地图是否已经随会话传到后台（nil 当作没传）
     public var uploaded: Bool?
+    /// 基准 AR 坐标系的身份（见上）；老旁注没有
+    public var frameId: String?
 
-    public init(createdMs: Int64, source: String, mapId: String?, arAlign: MapARTransform, bytes: Int? = nil, uploaded: Bool? = nil) {
+    public init(createdMs: Int64, source: String, mapId: String?, arAlign: MapARTransform, bytes: Int? = nil, uploaded: Bool? = nil,
+                frameId: String? = nil) {
         self.createdMs = createdMs; self.source = source; self.mapId = mapId
-        self.arAlign = Align(arAlign); self.bytes = bytes; self.uploaded = uploaded
+        self.arAlign = Align(arAlign); self.bytes = bytes; self.uploaded = uploaded; self.frameId = frameId
+    }
+
+    /// 地图原点平移（地图坐标整体 + offset）之后的旁注：pRef 跟着平移，frameId 不变
+    public func shifted(by offset: Point2) -> WorldMapSidecar {
+        var s = self
+        s.arAlign = Align(arAlign.transform.translated(by: offset))
+        return s
     }
 
     public func encoded() throws -> Data {
@@ -53,6 +68,12 @@ public struct WorldMapSidecar: Codable, Equatable {
     /// 不直接比 pRef / aRef，因为同一个映射可以有不同的锚点写法。
     public func isCompatible(with mapAlign: MapARTransform, tolCm: Double = 2) -> Bool {
         WorldMapSidecar.equivalent(arAlign.transform, mapAlign, tolCm: tolCm)
+    }
+
+    /// 带 frameId 的兼容规则：两边都有 frameId → 相等即兼容；否则退回 arAlign 等价。
+    public func isCompatible(with mapAlign: MapARTransform, frameId mapFrameId: String?, tolCm: Double = 2) -> Bool {
+        if let a = frameId, !a.isEmpty, let b = mapFrameId, !b.isEmpty { return a == b }
+        return isCompatible(with: mapAlign, tolCm: tolCm)
     }
 
     public static func equivalent(_ a: MapARTransform, _ b: MapARTransform, tolCm: Double = 2) -> Bool {
@@ -70,6 +91,8 @@ public enum WorldMapPolicy {
     public static let maxBytes = 15 * 1024 * 1024
     /// 会话至少这么久（秒）才刷新：太短的覆盖没增加，还白占上传流量
     public static let minSessionSec = 30.0
+    /// 等「认出房间」（视觉重定位）最多多少秒，超时放弃特征地图、按普通跟踪继续（扫描页进入「先扫、后对齐」）
+    public static let relocalizeTimeoutSec = 45.0
     /// 相机落在地图外这么远（cm）以上，认为认错了
     public static let insideMarginCm = 300.0
 

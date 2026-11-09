@@ -632,6 +632,12 @@ final class MagneticEngine: ObservableObject {
         }
     }
 
+    /// 当前地图外框面积（m²）：小场地（办公室 / 房间）只靠地磁的冷启动也报位置（MagneticConfig.liveColdStart）
+    private static var mapAreaM2: Double {
+        let s = MagMapStore.shared
+        return s.widthCm * s.heightCm / 10_000
+    }
+
     /// 不知道自己在哪：粒子撒满整张可走区域，沿通道走十几米后自动收敛。收敛之前不显示位置。
     func startColdSearch() {
         guard phase == .live, !isTracking else { return }
@@ -680,7 +686,7 @@ final class MagneticEngine: ObservableObject {
         locState = .searching
         position = nil
         trail = []
-        AppLog.i("地磁", "自动定位：冷启动，运动 计步，地图朝向 " + (store.mapUpBearingDeg.map { "\(Int($0))°（一半粒子按罗盘，一半全方向）" } ?? "未设置（全方向猜）"))
+        AppLog.i("地磁", "自动定位：冷启动，运动 计步，" + (MagneticConfig.magOnlyColdStartAllowed(mapAreaM2: Self.mapAreaM2) ? "小场地只靠地磁也报，" : "") + "地图朝向 " + (store.mapUpBearingDeg.map { "\(Int($0))°（一半粒子按罗盘，一半全方向）" } ?? "未设置（全方向猜）"))
     }
 
     /// 冷启动的惯导 + 粒子：有地图朝向时用罗盘给一个大致方向，一半粒子信它、一半全方向；
@@ -745,8 +751,9 @@ final class MagneticEngine: ObservableObject {
             cfg = MagneticConfig.tracking(odometry: .pdr, headingKnown: !headingUnknown)
         } else {
             // 冷启动配置档（HPASSKit MagneticConfig.liveColdStart，评估的冷启动同一套）：
-            // 只靠地磁不报位置，等蓝牙 / 贴近标签 / 货架标识牌给出外部先验，或用户指起点
-            cfg = MagneticConfig.liveColdStart(visualOdometry: false)
+            // 大场地只靠地磁不报位置，等蓝牙 / 贴近标签 / 货架标识牌给出外部先验，或用户指起点；
+            // 小场地（办公室 / 房间，没有蓝牙标签）只靠地磁也报
+            cfg = MagneticConfig.liveColdStart(visualOdometry: false, mapAreaM2: Self.mapAreaM2)
         }
         cfg.lateralWeight = depthMode == .fuse ? 1 : 0
         cfg.carryModeAdaptive = Self.carryMotionEnabled
@@ -1418,7 +1425,7 @@ final class MagneticEngine: ObservableObject {
                 return "视觉增强：手机竖着对着墙和家具时会顺便认房间（只当位置观测）。" +
                     (MagMapStore.shared.field != nil ? "同时在用地磁找。" : "")
             }
-            if bleTagsHeard == 0 {
+            if bleTagsHeard == 0 && !MagneticConfig.magOnlyColdStartAllowed(mapAreaM2: Self.mapAreaM2) {
                 // 冷启动配置档（MagneticConfig.liveColdStart）只靠地磁不报位置：要等外部先验或用户定点
                 return "没听到蓝牙标签：只靠地磁自动定位很容易定到长得像的别处，所以先不显示位置。长按地图定点，或走到货架标识牌 / 蓝牙标签旁。"
             }

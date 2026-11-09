@@ -201,6 +201,11 @@ final class Telemetry: ObservableObject {
         send(raw: m)
     }
 
+    /// 地图几何改了（接着扫、重扫、改单元）：下次 `mapChanged()` 重新上传这张地图的 map.json
+    func invalidateUploadedMap(_ id: String) {
+        uploadedMaps.remove(id)
+    }
+
     /// 换了地图：重新打招呼，看板换地图
     func mapChanged() {
         guard enabled else { return }

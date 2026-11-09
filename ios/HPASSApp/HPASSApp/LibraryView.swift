@@ -39,14 +39,7 @@ struct LibraryView: View {
             .alert("没能切换地图", isPresented: Binding(get: { switchError != nil }, set: { if !$0 { switchError = nil } })) {
                 Button("好") { switchError = nil }
             } message: { Text(switchError ?? "") }
-            .confirmationDialog("删除「\(confirmDelete?.name ?? "")」？这张地图的采集进度也会一起删掉。",
-                                isPresented: Binding(get: { confirmDelete != nil }, set: { if !$0 { confirmDelete = nil } }),
-                                titleVisibility: .visible) {
-                Button("删除", role: .destructive) {
-                    if let e = confirmDelete { lib.delete(e.id); Haptics.success() }
-                    confirmDelete = nil
-                }
-            }
+            .mapDeleteConfirmation($confirmDelete)
         }
         .onAppear { Task { await cloud.refresh() } }
     }
@@ -98,8 +91,8 @@ struct LibraryView: View {
             if lib.visibleEntries.isEmpty && !demo {
                 EmptyStateView(systemImage: "map",
                                title: "还没有地图",
-                               message: tel.enabled ? "从下面的云端地图下载一张，或者到「建图」生成。"
-                                                    : "先在「设置 → 云端连接」里连上云端，就能下载场地地图。",
+                               message: tel.enabled ? "从下面的云端地图下载一张，或者到「建图」扫描生成。"
+                                                    : "到「建图」用激光雷达扫描生成；或者在「设置 → 云端连接」里连上云端下载。",
                                actionTitle: tel.enabled ? nil : "打开设置",
                                action: tel.enabled ? nil : { tab = .settings })
                     .frame(maxWidth: .infinity)
@@ -112,11 +105,24 @@ struct LibraryView: View {
         } header: {
             Text("本机地图")
         } footer: {
-            Text("每张地图有自己的定位数据和建图进度，切换不会互相覆盖。左滑可以重命名、删除或开关无线信号辅助。")
+            Text("每张地图有自己的定位数据和建图进度，切换不会互相覆盖。点一张地图看详情、接着扫、管理扫描段。左滑可以重命名、删除（在用的也能删，会先换到别的地图）或开关无线信号辅助。")
         }
     }
 
     private func entryRow(_ e: MapLibrary.Entry) -> some View {
+        NavigationLink {
+            MapDetailView(mapId: e.id)
+        } label: {
+            entryLabel(e)
+        }
+        .swipeActions {
+            Button("删除", role: .destructive) { confirmDelete = e }
+            Button("重命名") { renaming = e; newName = e.name }.tint(DS.Palette.info)
+            Button(e.bleEnabled ? "关信号" : "开信号") { lib.setBLE(e.id, !e.bleEnabled) }.tint(DS.Palette.warning)
+        }
+    }
+
+    private func entryLabel(_ e: MapLibrary.Entry) -> some View {
         HStack(spacing: DS.Spacing.m) {
             Image(systemName: e.isRoom ? "cube.transparent" : "building.2")
                 .font(.title3)
@@ -125,7 +131,14 @@ struct LibraryView: View {
                 .frame(width: 32)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text(e.name).font(.body.weight(e.id == lib.activeId ? .semibold : .regular))
+                HStack(spacing: 6) {
+                    Text(e.name).font(.body.weight(e.id == lib.activeId ? .semibold : .regular))
+                    Text(MapLibrarySection.originText(e))
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 6).padding(.vertical, 1)
+                        .background((e.isCloudFused ? DS.Palette.info : DS.Palette.mapping).opacity(0.15), in: Capsule())
+                        .foregroundStyle(e.isCloudFused ? DS.Palette.info : DS.Palette.mapping)
+                }
                 Text((e.isRoom ? "房间" : "场地") + " · " + MapLibrarySection.versionText(e) + (e.bleEnabled ? "" : " · 不用无线信号"))
                     .font(.caption).foregroundStyle(DS.Palette.textSecondary)
             }
@@ -143,15 +156,6 @@ struct LibraryView: View {
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
-        .swipeActions {
-            if mode.developer {
-                if e.id != lib.activeId {
-                    Button("删除", role: .destructive) { confirmDelete = e }
-                }
-                Button("重命名") { renaming = e; newName = e.name }.tint(DS.Palette.info)
-            }
-            Button(e.bleEnabled ? "关信号" : "开信号") { lib.setBLE(e.id, !e.bleEnabled) }.tint(DS.Palette.warning)
-        }
     }
 
     // MARK: 云端
@@ -195,7 +199,7 @@ struct LibraryView: View {
                 if cloud.busy { ProgressView().controlSize(.small) }
             }
         } footer: {
-            Text("正式地图由云端把所有采集记录合在一起生成；手机上已有的地图在云端更新后会自动更新。下拉可刷新。")
+            Text("正式地图由云端把所有采集记录合在一起生成；手机上已有的地图在云端更新后会自动更新。在这台手机上删掉的不会再自动下载，需要时点「重新下载」。下拉可刷新。")
         }
     }
 
@@ -214,15 +218,21 @@ struct LibraryView: View {
                     .font(.caption).foregroundStyle(DS.Palette.textSecondary)
             }
             Spacer()
-            if st == "已是最新" {
-                Text("最新").font(.caption.weight(.semibold)).foregroundStyle(DS.Palette.success)
-            } else {
-                Button(st == "本机没有" ? "下载" : "更新") {
-                    Haptics.tap()
-                    Task { await cloud.download(c) }
+            if let a = st.action {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Button(a) {
+                        Haptics.tap()
+                        Task { await cloud.download(c) }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(cloud.busy || busy)
+                    if case .deleted = st {
+                        Text(st.text).font(.caption2).foregroundStyle(DS.Palette.textSecondary)
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(cloud.busy || busy)
+            } else {
+                Text(st.text).font(.caption.weight(.semibold))
+                    .foregroundStyle(st == .latest ? DS.Palette.success : DS.Palette.textSecondary)
             }
         }
         .accessibilityElement(children: .combine)

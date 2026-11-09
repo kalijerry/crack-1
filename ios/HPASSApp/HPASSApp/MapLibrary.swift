@@ -29,21 +29,32 @@ final class MapLibrary: ObservableObject {
         /// 这张地图用不用蓝牙（标签）：nil = 按类型——场地用，房间 / 办公室不用（标签可能堆在一处，会把位置拉过去）
         var useBLE: Bool?
         var bleEnabled: Bool { useBLE ?? !isRoom }
+        /// 云端这个版本的包没装：本机几何更新（接着扫 / 重扫过），等云端用新几何重新生成
+        var skippedCloudVersion: Int64?
+    }
+
+    /// 本机墓碑：删掉的地图（云端那份不再自动下载 / 更新）
+    struct Tombstone: Codable, Equatable {
+        var deletedAtMs: Int64
+        /// 删除时本机对应的云端版本
+        var cloudVersion: Int64?
     }
 
     @Published private(set) var entries: [Entry] = []
     @Published private(set) var activeId: String?
-    @Published private(set) var lastError: String?
+    @Published var lastError: String?
+    @Published private(set) var tombstones: [String: Tombstone] = [:]
+    /// 地图几何改了（接着扫、关掉 / 删除扫描段、改单元、删地图、装云端包）就加 1，详情页据此重读
+    @Published var geometryRevision = 0
 
     var active: Entry? { entries.first { $0.id == activeId } }
 
-    /// 当前模式下能看到的地图：正常模式只有云端融合的
-    var visibleEntries: [Entry] { AppMode.shared.developer ? entries : entries.filter(\.isCloudFused) }
+    /// 地图库列出的地图：两种模式都是全部（本机扫描、导入的也要能看到、能管理），云端正式版在前
+    var visibleEntries: [Entry] { entries.filter(\.isCloudFused) + entries.filter { !$0.isCloudFused } }
 
-    /// 正常模式下，当前地图不是云端融合的就换到一张云端融合的（没有就不动，界面提示去下载）
+    /// 没有在用的地图时，挑一张云端正式版用上（不会把用户自己选的本机地图换掉）
     func ensureCloudActive() {
-        guard !AppMode.shared.developer, active?.isCloudFused != true,
-              let e = entries.first(where: \.isCloudFused) else { return }
+        guard active == nil, let e = entries.first(where: \.isCloudFused) else { return }
         try? activate(e.id)
     }
 
@@ -51,13 +62,18 @@ final class MapLibrary: ObservableObject {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("maps", isDirectory: true)
     }
-    private static var docs: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0] }
+    static var docs: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0] }
     /// 工作区文件（都在 Documents 根目录，按地图收放）
-    private static let workspaceFiles = ["magmap.json", "survey-coverage.json", "survey-paint.bin", "ble-fingerprint.json", "build-state.json", "live-monitor.json"]
-    private static let fieldSourceKey = "magFieldSource"
+    static let workspaceFiles = ["magmap.json", "survey-coverage.json", "survey-paint.bin", "ble-fingerprint.json", "build-state.json", "live-monitor.json"]
+    static let fieldSourceKey = "magFieldSource"
     private static let activeKey = "mapLibraryActive"
+    private static var tombstoneURL: URL { root.appendingPathComponent(".tombstones.json") }
 
-    private func dir(_ id: String) -> URL { Self.root.appendingPathComponent(id, isDirectory: true) }
+    func dir(_ id: String) -> URL { Self.root.appendingPathComponent(id, isDirectory: true) }
+    /// 工作区目录：在用的地图在 Documents 根目录，其余在地图目录的 workspace/
+    func workspaceDir(_ id: String) -> URL {
+        id == activeId ? Self.docs : dir(id).appendingPathComponent("workspace", isDirectory: true)
+    }
     func mapURL(_ id: String) -> URL { dir(id).appendingPathComponent("map.json") }
     /// 云端融合确认过的采集涂色（地图包带的）
     func cloudPaintURL(_ id: String) -> URL { dir(id).appendingPathComponent("cloud-paint.bin") }
@@ -89,6 +105,23 @@ final class MapLibrary: ObservableObject {
         }.sorted { $0.created < $1.created }
         activeId = UserDefaults.standard.string(forKey: Self.activeKey)
         if let a = activeId, !entries.contains(where: { $0.id == a }) { activeId = nil }
+        tombstones = (try? Data(contentsOf: Self.tombstoneURL)).flatMap { try? dec.decode([String: Tombstone].self, from: $0) } ?? [:]
+    }
+
+    // MARK: 墓碑
+
+    /// 本机删掉过、现在也没有的地图
+    func isDeleted(_ id: String) -> Bool { tombstones[id] != nil && !entries.contains { $0.id == id } }
+
+    func clearTombstone(_ id: String) {
+        guard tombstones.removeValue(forKey: id) != nil else { return }
+        saveTombstones()
+    }
+
+    private func saveTombstones() {
+        let e = JSONEncoder()
+        e.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try? e.encode(tombstones).write(to: Self.tombstoneURL, options: .atomic)
     }
 
     /// 第一次用地图库：把现在「场地数据」里的地图收进来当第一张，当前工作区就归它
@@ -105,14 +138,21 @@ final class MapLibrary: ObservableObject {
 
     // MARK: 增删改
 
+    /// 新地图的编号：kind_时间（和已有的、墓碑里的、目录都不重）
+    func newMapId(kind: String) -> String {
+        let df = DateFormatter()
+        df.dateFormat = "yyyyMMdd_HHmmss"
+        var id = "\(kind)_\(df.string(from: Date()))"
+        while entries.contains(where: { $0.id == id }) || tombstones[id] != nil
+                || FileManager.default.fileExists(atPath: dir(id).path) { id += "_1" }
+        return id
+    }
+
     /// 加一张地图（不切换）。
     @discardableResult
     func add(data: Data, name: String, kind: String, extraFiles: [URL] = [], id fixedId: String? = nil) throws -> Entry {
         _ = try StoreDataLoader.loadMap(data)            // 先确认能解析
-        let df = DateFormatter()
-        df.dateFormat = "yyyyMMdd_HHmmss"
-        var id = fixedId ?? "\(kind)_\(df.string(from: Date()))"
-        while fixedId == nil && entries.contains(where: { $0.id == id }) { id += "_1" }
+        let id = fixedId ?? newMapId(kind: kind)
         let e = Entry(id: id, name: name, kind: kind, created: Date())
         try FileManager.default.createDirectory(at: dir(id), withIntermediateDirectories: true)
         try data.write(to: mapURL(id))
@@ -150,12 +190,48 @@ final class MapLibrary: ObservableObject {
         try? writeMeta(entries[i])
     }
 
-    /// 删除（当前在用的不能删）。会话文件不删。
+    /// 删掉 `id` 之后接着用哪张：云端正式版优先，其次最近建的
+    func nextActiveCandidate(excluding id: String) -> Entry? {
+        let rest = entries.filter { $0.id != id }
+        return rest.first(where: \.isCloudFused) ?? rest.max { $0.created < $1.created }
+    }
+
+    /// 删除一张地图（在用的也能删：先切到下一张，没有别的就清空当前地图）。
+    ///
+    /// 删掉地图目录（地图、扫描段、特征地图、建图进度、定位数据）。采集会话**不删**：本机没有「已上传」标记，
+    /// 删了会丢掉还没上传的采集。记一条本机墓碑：这张地图云端那份不再自动下载 / 更新（云端列表里可以「重新下载」）。
     func delete(_ id: String) {
-        guard id != activeId else { lastError = "当前在用的地图不能删除，先切换到别的地图"; return }
+        guard let e = entries.first(where: { $0.id == id }) else { return }
+        if id == activeId {
+            if let next = nextActiveCandidate(excluding: id) {
+                do { try activate(next.id) } catch {
+                    lastError = "删除前切换到「\(next.name)」失败：\(error.localizedDescription)"
+                    return
+                }
+            } else {
+                deactivate()
+            }
+        }
         try? FileManager.default.removeItem(at: dir(id))
         entries.removeAll { $0.id == id }
-        AppLog.w("地图库", "已删除地图 \(id)")
+        tombstones[id] = Tombstone(deletedAtMs: Fmt.nowMs(), cloudVersion: e.cloudVersion)
+        saveTombstones()
+        lastError = nil
+        geometryRevision += 1
+        AppLog.w("地图库", "已删除地图「\(e.name)」（\(id)）；采集记录保留，云端那份不再自动下载")
+    }
+
+    /// 不用任何地图：清掉 Documents 根目录的工作区和「场地数据」里的地图（否则下次启动又被收成一张图）
+    func deactivate() {
+        let fm = FileManager.default
+        for f in Self.workspaceFiles { try? fm.removeItem(at: Self.docs.appendingPathComponent(f)) }
+        UserDefaults.standard.removeObject(forKey: Self.fieldSourceKey)
+        activeId = nil
+        UserDefaults.standard.removeObject(forKey: Self.activeKey)
+        StoreDataStore.shared.delete(.map)
+        MagMapStore.shared.reloadFromDisk()
+        MagMapStore.shared.adopt(map: nil)
+        AppLog.i("地图库", "现在没有在用的地图")
     }
 
     /// 场地数据页下载 / 更新了地图：同步进当前这张
@@ -181,7 +257,7 @@ final class MapLibrary: ObservableObject {
         AppLog.i("地图库", "切换地图：\(e.name)")
     }
 
-    private func setActive(_ id: String) {
+    func setActive(_ id: String) {
         activeId = id
         UserDefaults.standard.set(id, forKey: Self.activeKey)
     }
@@ -237,15 +313,45 @@ final class MapLibrary: ObservableObject {
         try? writeMeta(entries[i])
     }
 
+    /// map.json 里的几何版本（接着扫 / 重扫 / 改单元时递增）；老地图没有
+    static func geometryVersion(of json: Data?) -> Int64? {
+        guard let d = json, let root = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+              let v = root["geometryVersion"] as? NSNumber else { return nil }
+        return v.int64Value
+    }
+
     /// 装上一个云端包：本机没有就新建（同一个编号），有就更新地图、磁场、蓝牙。在用的那张立刻生效。
-    func install(_ c: MapPackage.Contents) throws {
+    ///
+    /// 本机的几何比包里的新（手机刚接着扫 / 重扫过，云端还没用新几何重新生成）→ 整包不装：包里的磁场图、涂色
+    /// 是按旧几何的，装上也会因尺寸不符被清掉。返回 false，并让本机地图重新上传。
+    @discardableResult
+    func install(_ c: MapPackage.Contents) throws -> Bool {
         let m = c.meta
         let fm = FileManager.default
         if let i = entries.firstIndex(where: { $0.id == m.id }) {
+            let localJSON = try? Data(contentsOf: mapURL(m.id))
+            let localGV = Self.geometryVersion(of: localJSON), pkgGV = Self.geometryVersion(of: c.mapJSON)
+            if let l = localGV, (pkgGV ?? 0) < l {
+                entries[i].skippedCloudVersion = m.version
+                try? writeMeta(entries[i])
+                Telemetry.shared.invalidateUploadedMap(m.id)
+                if m.id == activeId { Telemetry.shared.mapChanged() }
+                AppLog.w("地图库", "「\(entries[i].name)」本机的地图比云端这一版新（接着扫 / 重扫过），这次不装，"
+                         + "等云端用新地图重新生成；本机地图会重新上传")
+                return false
+            }
+            // 云端几何和本机注册表不是同一版：注册表作废，下次需要时按新的 map.json 重新生成
+            if localJSON != c.mapJSON, let reg = (try? Data(contentsOf: registryURL(m.id))).flatMap(ScanRegistry.decode),
+               reg.geometryVersion != pkgGV {
+                try? fm.removeItem(at: registryURL(m.id))
+                try? fm.removeItem(at: scansDir(m.id))
+                AppLog.w("地图库", "「\(entries[i].name)」云端的地图和本机扫描段不是同一版，扫描段按云端地图重新开始")
+            }
             try c.mapJSON.write(to: mapURL(m.id))
-            entries[i].name = m.name
+            // 名字：用户在本机改过的不覆盖（只在第一次装的时候用云端的名字）
             entries[i].cloudVersion = m.version
             entries[i].cloudInfo = m
+            entries[i].skippedCloudVersion = nil
             try writeMeta(entries[i])
         } else {
             var e = try add(data: c.mapJSON, name: m.name, kind: m.kind, id: m.id)
@@ -305,11 +411,20 @@ final class MapLibrary: ObservableObject {
         } else {
             try Data(src.utf8).write(to: ws.appendingPathComponent("field-source.txt"))
         }
-        if !AppMode.shared.developer && active?.isCloudFused != true && m.origin == "cloud" { try? activate(m.id) }
+        // 没有在用的地图时直接用上；已经有在用的就不换（不会把用户正在用的本机地图换掉）
+        if activeId == nil { try? activate(m.id) }
+        geometryRevision += 1
         AppLog.i("地图库", "装上云端地图：\(m.name)（磁场 \(m.fieldCells ?? 0) 格，蓝牙 \(m.bleTags ?? 0) 个标签）")
+        return true
     }
 
-    private func writeMeta(_ e: Entry) throws {
+    /// 改 / 加地图库条目（扫描流程用）
+    func upsert(_ e: Entry) {
+        if let i = entries.firstIndex(where: { $0.id == e.id }) { entries[i] = e } else { entries.append(e) }
+        try? writeMeta(e)
+    }
+
+    func writeMeta(_ e: Entry) throws {
         try JSONEncoder().encode(e).write(to: dir(e.id).appendingPathComponent("meta.json"))
     }
 }
@@ -357,22 +472,25 @@ struct MapLibrarySection: View {
             + (i.sessions.map { " · \($0) 个会话" } ?? "")
     }
 
+    /// 来源徽标：云端正式版 / 本机
+    static func originText(_ e: MapLibrary.Entry) -> String { e.isCloudFused ? "云端正式版" : "本机" }
+
     @ObservedObject private var lib = MapLibrary.shared
     @State private var renaming: MapLibrary.Entry?
     @State private var newName = ""
+    @State private var confirmDelete: MapLibrary.Entry?
 
     var body: some View {
         Section {
             if lib.visibleEntries.isEmpty {
-                Text(AppMode.shared.developer ? "地图库是空的：导入场地地图，或者到「房间扫描」扫一个房间。"
-                     : "还没有云端地图：在下面「云端地图」里下载。").font(.footnote).foregroundStyle(.secondary)
+                Text("地图库是空的：从云端下载，或者到「房间扫描」扫一张。").font(.footnote).foregroundStyle(.secondary)
             }
             ForEach(lib.visibleEntries) { e in
                 HStack {
                     Image(systemName: e.isRoom ? "cube.transparent" : "building.2").foregroundStyle(.secondary)
                     VStack(alignment: .leading) {
                         Text(e.name)
-                        Text((e.isRoom ? "房间" : "场地") + " · " + Self.versionText(e) + (e.bleEnabled ? "" : " · 不用蓝牙"))
+                        Text(Self.originText(e) + " · " + (e.isRoom ? "房间" : "场地") + " · " + Self.versionText(e) + (e.bleEnabled ? "" : " · 不用蓝牙"))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -383,22 +501,71 @@ struct MapLibrarySection: View {
                     }
                 }
                 .swipeActions {
-                    if AppMode.shared.developer {
-                        if e.id != lib.activeId { Button("删除", role: .destructive) { lib.delete(e.id) } }
-                        Button("改名") { renaming = e; newName = e.name }.tint(.blue)
-                    }
+                    Button("删除", role: .destructive) { confirmDelete = e }
+                    Button("改名") { renaming = e; newName = e.name }.tint(.blue)
                     Button(e.bleEnabled ? "关蓝牙" : "开蓝牙") { lib.setBLE(e.id, !e.bleEnabled) }.tint(.orange)
                 }
             }
             if let err = lib.lastError { Text(err).font(.footnote).foregroundStyle(.red) }
         } header: { Text("地图库") } footer: {
-            Text("每张地图有自己的磁场图、点位、采集进度和采集会话，切换不会互相覆盖。左滑改名 / 删除 / 开关蓝牙（房间、办公室默认不用蓝牙）。")
+            Text("每张地图有自己的磁场图、点位、采集进度，切换不会互相覆盖。左滑改名 / 删除（在用的也能删，会先换到别的地图）/ 开关蓝牙（房间、办公室默认不用蓝牙）。")
         }
         .alert("改名", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("名字", text: $newName)
             Button("保存") { if let r = renaming { lib.rename(r.id, to: newName) }; renaming = nil }
             Button("取消", role: .cancel) { renaming = nil }
         }
+        .mapDeleteConfirmation($confirmDelete)
+    }
+}
+
+extension MapLibrary {
+    /// 删除确认框里的说明：会删掉什么、留下什么、在用的会换到哪张
+    func deleteDescription(_ e: Entry) -> String {
+        var parts = ["会删掉这张地图本身、它的扫描段、视觉特征地图、建图进度和定位数据。采集记录保留（还没上传的不会丢）。"]
+        if e.id == activeId {
+            if let n = nextActiveCandidate(excluding: e.id) {
+                parts.append("它正在使用，删除后自动换到「\(n.name)」。")
+            } else {
+                parts.append("它正在使用，删除后暂时没有地图，可以下载或重新扫描。")
+            }
+        }
+        if e.cloudInfo != nil || e.cloudVersion != nil {
+            parts.append("云端那份不会被删除，但以后不再自动下载到这台手机；需要时在云端列表里点「重新下载」。")
+        }
+        return parts.joined(separator: "\n")
+    }
+}
+
+/// 删除地图的确认框（地图库、场地数据页、地图详情共用同一个）
+struct MapDeleteConfirmation: ViewModifier {
+    @Binding var entry: MapLibrary.Entry?
+    var onDeleted: () -> Void = {}
+    @ObservedObject private var lib = MapLibrary.shared
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog("删除「\(entry?.name ?? "")」？",
+                                   isPresented: Binding(get: { entry != nil }, set: { if !$0 { entry = nil } }),
+                                   titleVisibility: .visible) {
+            Button("删除这张地图", role: .destructive) {
+                if let e = entry {
+                    AppLog.tap("删除地图", e.name)
+                    lib.delete(e.id)
+                    Haptics.success()
+                    onDeleted()
+                }
+                entry = nil
+            }
+            Button("取消", role: .cancel) { entry = nil }
+        } message: {
+            Text(entry.map(lib.deleteDescription) ?? "")
+        }
+    }
+}
+
+extension View {
+    func mapDeleteConfirmation(_ entry: Binding<MapLibrary.Entry?>, onDeleted: @escaping () -> Void = {}) -> some View {
+        modifier(MapDeleteConfirmation(entry: entry, onDeleted: onDeleted))
     }
 }
 
@@ -428,14 +595,18 @@ final class CloudMaps: ObservableObject {
             }
             // 本机已有、云端更新了的地图自动更新（在用的那张正在定位 / 采集时也会立刻生效，所以只在空闲时调用）；
             // 正常模式下本机没有的云端正式地图也自动装上（重装 App 后不用一张张点下载，采集人员一打开就有地图和已采涂色）
+            // 本机删掉过的（墓碑）不自动装、不自动更新，只在列表里显示「已删除 · 重新下载」；
+            // 本机几何比云端新、这一版已经跳过的也不再下载（等云端用新地图重新生成）
             if autoUpdate {
-                for c in list {
-                    if let e = MapLibrary.shared.entries.first(where: { $0.id == c.id }) {
+                let lib = MapLibrary.shared
+                for c in list where !lib.isDeleted(c.id) {
+                    if let e = lib.entries.first(where: { $0.id == c.id }) {
+                        if let s = e.skippedCloudVersion, s >= c.version { continue }
                         // 旧版 App 装的包没存云端涂色 / 方向图：同一版本也重新装一次
-                        let missing = c.kind == "store" && !FileManager.default.fileExists(atPath: MapLibrary.shared.cloudPaintURL(c.id).path)
-                        if (e.cloudVersion ?? 0) < c.version || missing { await download(c) }
+                        let missing = c.kind == "store" && !FileManager.default.fileExists(atPath: lib.cloudPaintURL(c.id).path)
+                        if (e.cloudVersion ?? 0) < c.version || missing { await download(c, explicit: false) }
                     } else if !AppMode.shared.developer && c.isCloudFused {
-                        await download(c)
+                        await download(c, explicit: false)
                     }
                 }
             }
@@ -462,14 +633,19 @@ final class CloudMaps: ObservableObject {
         }
     }
 
-    func download(_ c: Telemetry.CloudMap) async {
+    /// - Parameter explicit: 用户点的「下载 / 重新下载」：清掉本机墓碑再装
+    func download(_ c: Telemetry.CloudMap, explicit: Bool = true) async {
         busy = true
         defer { busy = false }
         do {
+            if explicit { MapLibrary.shared.clearTombstone(c.id) }
             let d = try await Telemetry.shared.downloadPackage(c.id)
             let contents = try MapPackage.decode(d)
-            try MapLibrary.shared.install(contents)
-            message = "已装上「\(c.name)」（\(d.count / 1024) KB）"
+            if try MapLibrary.shared.install(contents) {
+                message = "已装上「\(c.name)」（\(d.count / 1024) KB）"
+            } else {
+                message = "「\(c.name)」本机的地图比云端这一版新，没有装；等云端用新地图重新生成后会自动更新"
+            }
         } catch {
             if Self.isCancelled(error) { return }
             message = "下载失败：\(error)"
@@ -481,11 +657,37 @@ final class CloudMaps: ObservableObject {
         error is CancellationError || (error as? URLError)?.code == .cancelled
     }
 
-    /// 本机状态：没有 / 旧 / 最新
-    func status(_ c: Telemetry.CloudMap) -> String {
-        guard let e = MapLibrary.shared.entries.first(where: { $0.id == c.id }) else { return "本机没有" }
-        let v = e.cloudVersion ?? 0
-        return v >= c.version ? "已是最新" : "有更新"
+    enum Status: Equatable {
+        case missing, deleted(newer: Bool), localNewer, latest, outdated
+        /// 按钮文字；nil = 不显示按钮
+        var action: String? {
+            switch self {
+            case .missing: return "下载"
+            case .deleted: return "重新下载"
+            case .outdated: return "更新"
+            case .latest, .localNewer: return nil
+            }
+        }
+        var text: String {
+            switch self {
+            case .missing: return "本机没有"
+            case .deleted(let newer): return newer ? "已删除 · 云端有新版本" : "已删除"
+            case .localNewer: return "本机较新"
+            case .latest: return "最新"
+            case .outdated: return "有更新"
+            }
+        }
+    }
+
+    /// 本机状态：没有 / 删掉了 / 本机较新 / 旧 / 最新
+    func status(_ c: Telemetry.CloudMap) -> Status {
+        let lib = MapLibrary.shared
+        guard let e = lib.entries.first(where: { $0.id == c.id }) else {
+            if let t = lib.tombstones[c.id] { return .deleted(newer: (t.cloudVersion ?? 0) < c.version) }
+            return .missing
+        }
+        if let s = e.skippedCloudVersion, s >= c.version { return .localNewer }
+        return (e.cloudVersion ?? 0) >= c.version ? .latest : .outdated
     }
 }
 
@@ -519,11 +721,14 @@ struct CloudMapsSection: View {
                         }
                         Spacer()
                         let st = cloud.status(c)
-                        if st == "已是最新" {
-                            Text(st).font(.caption).foregroundStyle(.green)
+                        if let a = st.action {
+                            VStack(alignment: .trailing, spacing: 2) {
+                                Button(a) { Task { await cloud.download(c) } }
+                                    .buttonStyle(.bordered).disabled(cloud.busy || busyElsewhere)
+                                if case .deleted = st { Text(st.text).font(.caption2).foregroundStyle(.secondary) }
+                            }
                         } else {
-                            Button(st == "本机没有" ? "下载" : "更新") { Task { await cloud.download(c) } }
-                                .buttonStyle(.bordered).disabled(cloud.busy || busyElsewhere)
+                            Text(st.text).font(.caption).foregroundStyle(st == .latest ? Color.green : Color.secondary)
                         }
                     }
                 }

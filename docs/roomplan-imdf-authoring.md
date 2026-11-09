@@ -26,7 +26,8 @@ RoomPlan 多房间扫描 ──► map.json（每层一份：units / floorPolygo
 2. 设当前楼层（IMDF 的 ordinal）：地面层 0，往上 1、2…，地下 −1、−2…。
 3. 之后坐电梯、走楼梯、乘扶梯换层，气压计（`FloorDetector`）会自动加减楼层，并显示判断出的方式（电梯 / 扶梯 / 楼梯）。
    按 4 m 层高量化；商场层高 5～6 m 时可能判少一层，看到不对就手动改。
-4. 同一层可以分几次扫（每次一份 map.json，ordinal 相同），导出时自动合成一层。
+4. 同一层可以分几次扫：推荐「接着扫」进同一张地图（每次是一个扫描段，自动对齐、合成一张 map.json，
+   见 [scan-and-map-management.md](scan-and-map-management.md)）；也可以分成几张地图（ordinal 相同），导出时自动合成一层。
 
 ## 3. 扫描一层
 
@@ -41,7 +42,7 @@ RoomPlan 多房间扫描 ──► map.json（每层一份：units / floorPolygo
 5. 扫完自动生成地图、加进地图库并切换过去。RoomPlan 的 `StructureBuilder` 把各个房间拼成一个整体；
    万一拼接失败，会直接按同一个 AR 坐标系合并（扫描期间 AR 没停，坐标本来就一致）。
 
-保存在 `Documents/room-scans/room_<时间>/`：`map.json`、`room.usdz`（3D）、`captured_room.json`（原始结果）、视觉特征地图。
+保存在地图库 `Documents/maps/<地图编号>/scans/<扫描段>/`：`map.json`、`room.usdz`（3D）、`captured_room.json`（原始结果）、视觉特征地图；地图目录里的 `map.json` 是各段合成的结果。（旧版本存在 `Documents/room-scans/`，房间扫描页「旧版扫描记录」里还能加进地图库。）
 
 ## 4. 房间类别和名称
 
@@ -70,7 +71,7 @@ RoomPlan 多房间扫描 ──► map.json（每层一份：units / floorPolygo
 
 ## 6. 导出 IMDF
 
-- **手机上**：扫描列表按场馆分组，点「导出为 IMDF」，生成 `Documents/imdf/<场馆名>_imdf.zip`，可以直接分享。
+- **手机上**：房间扫描页的房间地图按场馆分组，点「导出为 IMDF」，生成 `Documents/imdf/<场馆名>_imdf.zip`，可以直接分享。
   有扫描缺 `geoRef`（没记入口）时会列出来，补上再导出。
 - **电脑上**：
 

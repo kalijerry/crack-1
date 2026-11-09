@@ -106,6 +106,11 @@ struct SettingsView: View {
             Toggle(isOn: $mode.developer) {
                 DSRowLabel(title: "开发者模式", systemImage: "hammer", tint: DS.Palette.warning)
             }
+            // 房间扫描两种模式都能用（办公室分几次扫进同一张图）
+            Button { showRoomScan = true } label: {
+                DSRowLabel(title: "房间扫描", systemImage: "cube.transparent", tint: .teal, subtitle: "激光雷达扫描生成地图、接着扫、重扫精细化")
+            }
+            .foregroundStyle(DS.Palette.textPrimary)
             if mode.developer {
                 NavigationLink {
                     MagneticView()
@@ -119,10 +124,6 @@ struct SettingsView: View {
                     DSRowLabel(title: "场地数据与导入", systemImage: "square.and.arrow.down", tint: DS.Palette.info,
                                subtitle: "地图文件、服务器下载、蓝牙标签列表")
                 }
-                Button { showRoomScan = true } label: {
-                    DSRowLabel(title: "房间扫描", systemImage: "cube.transparent", tint: .teal, subtitle: "激光雷达扫描生成房间地图")
-                }
-                .foregroundStyle(DS.Palette.textPrimary)
                 if Features.bluetooth {
                     Button { showBLECollect = true } label: {
                         DSRowLabel(title: "蓝牙信号采集", systemImage: "antenna.radiowaves.left.and.right", tint: DS.Palette.info)

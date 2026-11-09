@@ -85,13 +85,33 @@ Documents/maps/<mapId>/
 
 `frameId`、`originOffsetCm`、`geometryVersion`、`scans`（`[{id, name, enabled, alignment, mode}]` 只读摘要）。老 App、hpass-build、云端融合、网页编辑器、IMDF 导出原样忽略或透传。hpass-build 从 `--map` 读 `originOffsetCm` 换算会话坐标。
 
-## 9. 地图管理与删除（App / 后台，待做）
+## 9. 地图管理与删除（App）
 
-- 地图库普通模式也能重命名、删除（含在用的：先切到下一张，没有就清空当前地图和根目录工作区并删 `store-data/map.json`，否则下次启动又被收成一张图）；普通模式也列出本机扫描的地图（徽标区分「云端正式版 / 本机」）。
-- 本机墓碑（`Documents/maps/.tombstones.json`）：删掉的云端地图不再自动下载，云端列表显示「已删除 · 重新下载」；云端出了更新版本也只提示，不自动装。
+以前「删不掉、删了又回来」的原因（都已修）：删除 / 改名只在开发者模式出现（脚注却说左滑可删）；在用的地图不能删，普通模式又会强制切回云端图；普通模式只列云端图，本机扫的地图看不到；云端刷新会把「本机没有」的云端图自动装回来；删除只删地图目录、`store-data/map.json` 还在，下次启动又被收成一张图。
+
+- 地图库两种模式都列出全部地图（云端正式版在前，徽标区分「云端正式版 / 本机」），左滑重命名、删除、开关信号；点一张进**地图详情**。
+- 删除（含在用的）：先切到下一张（云端正式版优先，否则最近建的）；没有别的就清空当前地图、根目录工作区并删 `store-data/map.json`。确认框列出会删什么、会换到哪张。地图库、场地数据页、地图详情共用同一个确认框。
+- 本机墓碑（`Documents/maps/.tombstones.json`，`{mapId: {deletedAtMs, cloudVersion}}`）：删掉的地图云端那份不再自动下载 / 更新，云端列表显示「已删除 · 重新下载」（云端版本比删除时新则「已删除 · 云端有新版本」）；点了才清墓碑并安装。
 - 删除地图不删采集会话（本机没有「已上传」标记，删了会丢掉还没上传的采集）。
-- 云端改名不覆盖本机名字（只在首次安装时采用云端名字）。
-- 云端包的几何版本（包里 map.json 的 `geometryVersion`）比本机小 → 整包不装（等云端用新几何重新融合），并让本机 map.json 重新上传。
+- 云端更新不覆盖本机名字（只在首次安装时采用云端名字）；在用的地图不会被自动换成云端图（只在没有在用地图时自动用上）。
+- 云端包的几何版本（包里 map.json 的 `geometryVersion`）比本机小 → 整包不装（等云端用新几何重新融合），条目记 `skippedCloudVersion`，这一版不再反复下载（列表显示「本机较新」），并让本机 map.json 重新上传（`Telemetry.invalidateUploadedMap`）。云端几何和本机注册表版本不同 → 本机注册表作废，按新 map.json 重新生成基准段。
+
+### 地图详情（`MapDetailView`）
+
+预览、来源 / 版本 / 范围、使用这张地图；房间地图另有「接着扫（扩大范围）」「重扫某块（精细化）」、**扫描段列表**（每段：时间、房间数、对齐方式和偏差、合并方式；开关 = 启用 / 关掉，左滑改名 / 删除；唯一启用的一段不能关）、「房间类别和名称」；导出 map.json、重命名、删除。
+
+### 扫描流程（`RoomScanView` / `ScanMergeView`）
+
+- 扫描入口两种模式都有：「建图」页（在用的是房间地图时主按钮是「接着扫当前地图」）、「设置 → 房间扫描」、地图详情。
+- 新建地图：第一段直接开始；写到 `maps/<id>/scans/<scanId>/`，`ScanRegistry.newMap` + 合成，加进地图库并切换。
+- 接着扫（iOS 17、地图有特征地图）：自建 `ARSession`（`worldAlignment = .gravity`，载入 `MapLibrary.relocalizationWorldMap`：最近一段在基准坐标系里扫的段自己存的完整特征地图，没有就用地图目录的），显示已扫范围和进度；经过「重定位中」→ 正常、位姿连续 1 秒无跳变才算认出（`ScanRelocalizer`）。**认出后只提示，用户走到新房间门口再点「开始扫」**，这时才用 `RoomCaptureView(frame:arSession:)` 在同一个会话上扫。
+- RoomPlan 自检：开始扫后 3 秒内位姿跳 > 0.5 m 或跟踪回到「启动中」→ 判定 RoomPlan 重置了坐标系，这一段改为几何对齐。
+- 认不出（45 秒超时、或用户点「认不出，先扫后对齐」）、iOS 16、地图没有特征地图：用 RoomPlan 自带的会话照常扫，扫完几何对齐。
+- 「这段扫完」前检查 `worldMappingStatus`，不是 mapped / extending 提示再转一圈（只提示一次）。
+- 合并预览：视觉认出的段 `toMap = 段 arAlign⁻¹ ∘ frameAlign`，再用 `MapComposer.consistency` 核对（重合 < 1 m 或偏差 > 30 cm 标黄）；其余 `RigidAlign2D.auto`，有歧义标黄，对不上必须手动两点对齐（`twoPoints` → `snapToAxes(5°)` → `refine`）。合并方式默认按 `suggestedMode`，可选「追加补充 / 替换这块」。也可以「另存为新地图」或「放弃」。
+- 视觉认出的段确认合并后，它结束时的特征地图顶替地图在用的那份（旁注 `source = scan-append`、基准 `frameId`、`uploaded = false`）；超过 15 MB 不顶替（只影响上传），接着扫仍用段目录里的完整那份。
+- 「房间类别和名称」改走注册表（`unitLabels`、楼层名 / 序号）再重新合成；IMDF 导出读地图库里各张房间地图的 map.json。
+- 会话 meta 新键：`map_origin_offset_cm`、`map_geometry_version`、`map_frame_id`（采集和实时定位都写）；手机本地生成磁场图时按地图当前偏移换算。
 
 ## 10. 实现状态
 
@@ -99,7 +119,7 @@ Documents/maps/<mapId>/
 |---|---|
 | HPASSKit：`ScanRegistry`、`MapComposer`、`RigidAlign2D`、`MapGeometry`、`MapFrameShift`、`MapARTransform` 代数、旁注 `frameId`、会话偏移换算、`RoomMapBuilder` 段级参数 / `roomUnit` | 已实现，单元测试覆盖 |
 | 云端融合特征地图的 `frameId` 规则 | 已实现（`tools/cloud_build_lib.py`） |
-| App：扫描流程（新建 / 接着扫、重定位门禁、RoomPlan 自检降级）、合并预览与手动对齐、地图库删除 / 改名 / 墓碑 / 地图详情、`UnitEditorView` 改走注册表、会话 meta 新键 | 待做（只能在 macOS CI + 真机验证） |
+| App：扫描流程（新建 / 接着扫、重定位门禁、RoomPlan 自检降级）、合并预览与手动对齐、地图库删除 / 改名 / 墓碑 / 地图详情、`UnitEditorView` 改走注册表、会话 meta 新键 | 已实现（macOS CI 编译；RoomPlan 挂在自建会话上的行为要真机验证） |
 | 后台：删除包、墓碑过滤；cloud_build 跳过已删除地图 | 第二步（单手机办公室测试先用本机墓碑） |
 
 iOS 16：没有多房间也没有自定义 ARSession，只能单房间 + 几何 / 手动对齐；单元多边形来自墙端点凸包，匹配时按质心互含 + 面积比容忍差异。

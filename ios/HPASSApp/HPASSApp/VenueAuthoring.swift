@@ -287,8 +287,11 @@ struct UnitCanvas: View {
 }
 
 /// 扫完以后：点选房间，选 IMDF 类别、填名字；改楼层序号 / 楼层名。
+///
+/// 改的是地图库里这张地图：类别 / 名字记进扫描段注册表（`unitLabels`），再重新合成 map.json
+/// （直接改 map.json 会在下次接着扫、关掉一段时被覆盖）。
 struct UnitEditorView: View {
-    let item: RoomScanItem
+    let mapId: String
     var onSaved: () -> Void = {}
 
     @ObservedObject private var lib = MapLibrary.shared
@@ -389,47 +392,42 @@ struct UnitEditorView: View {
     }
 
     private func load() {
-        json = (try? Data(contentsOf: item.mapURL)) ?? Data()
+        json = (try? Data(contentsOf: lib.mapURL(mapId))) ?? Data()
         units = RoomMapBuilder.units(json)
         let root = (try? JSONSerialization.jsonObject(with: json)) as? [String: Any]
         floorName = root?["floorName"] as? String ?? ""
         ordinal = (root?["ordinal"] as? NSNumber)?.intValue ?? 0
     }
 
-    private func write(_ data: Data) {
+    /// 改完重新读合成后的地图
+    private func saved(_ text: String) {
+        json = (try? Data(contentsOf: lib.mapURL(mapId))) ?? json
+        units = RoomMapBuilder.units(json)
+        message = text
+        onSaved()
+    }
+
+    private func saveUnit(_ id: String) {
         do {
-            try data.write(to: item.mapURL)
-            json = data
-            units = RoomMapBuilder.units(data)
-            // 已经加进地图库的：库里那份也更新；正在用的话当前地图也换掉
-            if let id = item.libraryId, lib.entries.contains(where: { $0.id == id }) {
-                try? data.write(to: lib.mapURL(id))
-                if id == lib.activeId { try? StoreDataStore.shared.save(data, as: .map) }
-            }
-            onSaved()
+            try lib.relabelUnit(mapId, unit: id, category: category, name: name)
+            saved("已保存：\(name.isEmpty ? id : name)（\(IMDFUnitCategory.label(category))）")
         } catch {
             message = "保存失败：\(error.localizedDescription)"
         }
     }
 
-    private func saveUnit(_ id: String) {
-        guard let d = try? RoomMapBuilder.relabel(json, unitId: id, category: category, name: name) else { return }
-        write(d)
-        message = "已保存：\(name.isEmpty ? id : name)（\(IMDFUnitCategory.label(category))）"
-    }
-
     private func saveLevel() {
         let fn = floorName.trimmingCharacters(in: .whitespaces), o = ordinal
-        guard let d = try? RoomMapBuilder.update(json, { root in
-            if !fn.isEmpty { root["floorName"] = fn }
-            root["ordinal"] = o
-        }) else { return }
-        write(d)
-        message = "楼层已保存：\(fn)（ordinal \(o)）"
+        do {
+            try lib.setLevel(mapId, floorName: fn, ordinal: o)
+            saved("楼层已保存：\(fn)（ordinal \(o)）")
+        } catch {
+            message = "保存失败：\(error.localizedDescription)"
+        }
     }
 }
 
-/// 一个场馆的多层扫描 → IMDF 压缩包（Documents/imdf/<场馆名>.zip）
+/// 一个场馆的多层地图（地图库里各张房间地图的 map.json）→ IMDF 压缩包（Documents/imdf/<场馆名>.zip）
 enum VenueExporter {
     static func export(items: [RoomScanItem], venueName: String, category: String?) throws -> URL {
         let files = items.compactMap { try? Data(contentsOf: $0.mapURL) }

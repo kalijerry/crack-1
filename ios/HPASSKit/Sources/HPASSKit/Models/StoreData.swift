@@ -57,6 +57,10 @@ public struct StoreMap {
     public var floor: [[Point2]] = []
     /// 房间扫描的地图：ARKit 世界坐标（扫描时的、也是视觉特征地图的）→ 地图坐标。视觉重定位后直接用它算位置。
     public var arAlign: MapARTransform?
+    /// 地图原点累计平移了多少（cm，见 `MapFrameShift`）。会话里记着录制时的值，读会话时按差值换算地图坐标
+    public var originOffsetCm: Point2 = .zero
+    /// 基准 AR 坐标系的身份（扫描段注册表写入）；老地图没有
+    public var frameId: String?
 
     public init(mapId: Int? = nil, floorId: Int? = nil, floorName: String? = nil,
                 width: Double, height: Double, shelves: [ShelfRect], crosses: [CrossSegment],
@@ -249,6 +253,10 @@ public enum StoreDataLoader {
         if let a = root["arAlign"] as? [String: Any], let phi = num(a["phi"]), let x = num(a["pRefX"]), let y = num(a["pRefY"]) {
             map.arAlign = MapARTransform(pRef: Point2(x, y), aRef: Point2(num(a["aRefX"]) ?? 0, num(a["aRefY"]) ?? 0), phi: phi)
         }
+        if let o = root["originOffsetCm"] as? [Any], o.count >= 2, let ox = num(o[0]), let oy = num(o[1]) {
+            map.originOffsetCm = Point2(ox, oy)
+        }
+        map.frameId = root["frameId"] as? String
         return map
     }
 

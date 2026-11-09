@@ -10,6 +10,8 @@ IMDF 是一组 GeoJSON：venue / level / unit / opening / fixture / amenity / oc
     floorName, ordinal       楼层名、IMDF 的 ordinal（0 = 地面层，负数 = 地下）
     floorPolygons            可走单元的多边形 [[x0,y0,x1,y1,…], …]（StoreDataLoader 直接能读）
     obstaclePolygons         不可走单元（结构、柱子、非公共区等）
+    units                    全部单元 [{id, category, name?, polygon}]（同 RoomMapBuilder 的格式；HPASSKit 的房间约束
+                             RoomGraph 用它给每个房间 / 走廊编号，开口当门；MultiPolygon 的每块用同一个 id）
     mapElementList           开口 → MapOpening（中心 + 宽度 + 方向），连接体 → MapConnector，
                              有名字的单元 → MapLabel（地标，OCR / 搜索用）
     connectors               电梯 / 扶梯 / 楼梯 / 坡道：{id, category, x, y, polygon}
@@ -165,7 +167,7 @@ def convert(src: Path, out: Path, margin_cm: float = 200) -> dict:
         units = [u for u in feats.get("unit", []) if u.get("properties", {}).get("level_id") == lid]
         openings = [o for o in feats.get("opening", []) if o.get("properties", {}).get("level_id") == lid]
 
-        walk, obst, elements, connectors = [], [], [], []
+        walk, obst, elements, connectors, unit_docs = [], [], [], [], []
         xs, ys = [], []
         for ring in _rings(lv.get("geometry")):
             for lon, lat in ring:
@@ -185,6 +187,11 @@ def convert(src: Path, out: Path, margin_cm: float = 200) -> dict:
                 ys += [p[1] for p in poly]
                 flat = [_r1(v) for p in poly for v in p]
                 cx, cy = _centroid(poly)
+                ud = {"id": u.get("id"), "category": cat or "unspecified", "polygon": flat}
+                nm_u = occupant_by_anchor.get(u.get("id")) or _name(up)
+                if nm_u:
+                    ud["name"] = nm_u
+                unit_docs.append(ud)
                 if cat in NON_WALKABLE:
                     obst.append(flat)
                     continue
@@ -221,7 +228,7 @@ def convert(src: Path, out: Path, margin_cm: float = 200) -> dict:
         doc = {
             "width": _r1(width), "height": _r1(height), "floorName": name, "ordinal": ordinal,
             "source": "imdf", "levelId": lid,
-            "floorPolygons": walk, "obstaclePolygons": obst,
+            "floorPolygons": walk, "obstaclePolygons": obst, "units": unit_docs,
             "mapElementList": elements, "connectors": connectors,
             "geoRef": {"lon0": lon_min, "lat0": lat_max, "marginCm": margin_cm,
                        "mPerDegLon": proj.m_per_deg_lon, "mPerDegLat": proj.m_per_deg_lat},

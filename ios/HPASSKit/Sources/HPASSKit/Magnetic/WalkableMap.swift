@@ -18,6 +18,8 @@ public struct WalkableMap {
     /// 通道走向，弧度，范围 [0, π)。只在 state == 2 时有意义。
     private var axis: [Float]
     private var walkableIndices: [Int] = []
+    /// 房间约束（办公室地图：单元 + 门 + 墙建出来的）。通道地图、普通房间地面为 nil
+    public private(set) var rooms: RoomGraph?
 
     /// - Parameters:
     ///   - marginCm: 在通道宽度之外再放宽多少，容忍地图中心线与真实通道的偏差。
@@ -104,6 +106,34 @@ public struct WalkableMap {
         for k in 0..<state.count where state[k] != 0 { walkableIndices.append(k) }
     }
 
+    /// 办公室：单元（房间 / 走廊）多边形里能走，墙挡住，门 / 开口打通，家具挡住；带房间编号（`rooms`），没有通道走向。
+    /// 规则见 `RoomGraph`。
+    public init(units: [MapUnit], doors: [MapRect], walls: [MapRect], obstacles: [ShelfRect],
+                obstaclePolygons: [[Point2]] = [], widthCm: Double, heightCm: Double,
+                config: RoomGraph.Config = .init()) {
+        self.init(rooms: RoomGraph(units: units, doors: doors, walls: walls, obstacles: obstacles,
+                                   obstaclePolygons: obstaclePolygons, widthCm: widthCm, heightCm: heightCm, config: config))
+    }
+
+    /// 用建好的房间图（可走格 = 房间图里能走的格）
+    public init(rooms g: RoomGraph) {
+        widthCm = g.widthCm
+        heightCm = g.heightCm
+        cellCm = g.cellCm
+        cols = g.cols
+        rows = g.rows
+        state = (0..<(g.cols * g.rows)).map { g.isOpen(index: $0) ? 1 : 0 }
+        axis = [Float](repeating: 0, count: g.cols * g.rows)
+        rooms = g
+        for k in 0..<state.count where state[k] != 0 { walkableIndices.append(k) }
+    }
+
+    /// 地图的房间约束版可走区域（单元来自 `StoreMap.roomUnits`）；地图没有单元返回 nil。
+    public init?(roomsOf map: StoreMap, config: RoomGraph.Config = .init()) {
+        guard let g = RoomGraph(map: map, config: config) else { return nil }
+        self.init(rooms: g)
+    }
+
     /// 格心落在 [minX, maxX] × [minY, maxY]（cm）里的格子的列、行范围（含两端，裁到地图内，稍放宽一格）；没有返回 nil
     private func cellRange(minX: Double, maxX: Double, minY: Double, maxY: Double) -> (Int, Int, Int, Int)? {
         guard minX.isFinite, maxX.isFinite, minY.isFinite, maxY.isFinite,
@@ -133,9 +163,10 @@ public struct WalkableMap {
         return state[k] != 0
     }
 
-    /// p 所在格的通道走向（弧度，[0, π)）。不可走或路口返回 nil。
+    /// p 所在格的通道走向（弧度，[0, π)）。不可走、路口或在房间里（有房间编号）返回 nil：房间里不施加通道走向先验。
     public func axisAngle(at p: Point2) -> Double? {
         guard let k = index(p), state[k] == 2 else { return nil }
+        if let g = rooms, g.roomIndex(at: p) != nil { return nil }
         return Double(axis[k])
     }
 

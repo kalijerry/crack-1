@@ -104,6 +104,24 @@ class ImdfConvertTests(unittest.TestCase):
         self.assertEqual(len(groups), 1)
         self.assertEqual([m["level"] for m in groups[0]["members"]], ["L0", "L1"])
 
+    def test_units_for_room_graph(self):
+        """每个单元（含不可走的）都带 id / category / polygon，房间约束靠它给房间编号；名字取 occupant。"""
+        venue = imdf_convert.convert(self.src, self.out, margin_cm=0)
+        doc = json.loads((self.out / venue["levels"][0]["file"]).read_text(encoding="utf-8"))
+        units = {u["id"]: u for u in doc["units"]}
+        self.assertEqual(set(units), {"L0-hall", "L0-shop", "L0-elev", "L0-col"})
+        self.assertEqual(units["L0-hall"]["category"], "walkway")
+        self.assertEqual(units["L0-col"]["category"], "column")
+        self.assertEqual(units["L0-shop"]["name"], "咖啡店")
+        self.assertNotIn("name", units["L0-hall"])
+        shop = units["L0-shop"]["polygon"]
+        self.assertEqual(len(shop), 8)
+        self.assertAlmostEqual(min(shop[0::2]), 1000, delta=2)
+        self.assertAlmostEqual(max(shop[1::2]), 800, delta=2)
+        # 可走单元的多边形和 floorPolygons 一致
+        walk = [u["polygon"] for u in doc["units"] if u["category"] not in imdf_convert.NON_WALKABLE]
+        self.assertEqual(walk, doc["floorPolygons"])
+
     def test_geo_ref_round_trip(self):
         venue = imdf_convert.convert(self.src, self.out, margin_cm=0)
         doc = json.loads((self.out / venue["levels"][0]["file"]).read_text(encoding="utf-8"))

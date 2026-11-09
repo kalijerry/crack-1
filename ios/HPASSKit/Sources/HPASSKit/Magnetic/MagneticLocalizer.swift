@@ -94,6 +94,23 @@ public struct MagneticConfig {
     public var wallSlide = false
     /// 贴墙滑过去的粒子的对数惩罚（比原地不动轻：方向偏了一点，但不是穿墙）。
     public var wallSlidePenalty: Double = -1
+    /// 房间约束（办公室地图，可走区域要用 `WalkableMap(roomsOf:)` / `WalkableMap(units:doors:walls:obstacles:)` 建，带 `rooms`）：
+    /// 粒子一步换了房间却没经过连接两个房间的门洞，就当穿墙：原地不动，扣 `blockedPenalty` 之外再扣 `roomCrossingPenalty`；
+    /// 重采样抖动跨了房间也退回来源粒子。false = 原有行为（墙缝本来就不可走，但 IMDF 地图相邻单元贴着，没有这条就能直接穿过去）。
+    public var roomConstraints = false
+    /// 不经门换房间的额外对数惩罚（在 `blockedPenalty` 之外）。占位值（待自采 iPhone 双机数据标定）
+    public var roomCrossingPenalty: Double = -4
+    /// 估计结果带房间：`MagneticEstimate.roomId`、`roomMass`、`roomOnly`。false 时这几个字段为 nil / 0 / false
+    public var reportRoom = false
+    /// 房间置信度（roomMass）低于这个值时只报房间级（`MagneticEstimate.roomOnly`），UI 不画点。占位值（待自采 iPhone 双机数据标定）
+    public var roomPointMassThreshold: Double = 0.7
+    /// 静止冻结（见 `StationaryFreezeDetector`、`MagneticLocalizer.freezeStationary`）：在房间里静止够久就把粒子收拢、
+    /// 冻结期间不推粒子（坐着时的伪步不推）；起身后散布放大。false 时 freezeStationary 什么都不做
+    public var stationaryFreeze = false
+    /// 冻结时粒子散布（加权 RMS，cm）收拢到不超过这个值。占位值（待自采 iPhone 双机数据标定）
+    public var stationaryFreezeSpreadCm: Double = 50
+    /// 解冻（起身）时粒子散布放大倍数。占位值（待自采 iPhone 双机数据标定）
+    public var stationaryReleaseSpreadFactor: Double = 1.5
     /// 通道走向先验的标准差（度）。行走方向偏离通道轴线越多，扣分越多。
     public var corridorHeadingSigmaDeg: Double = 22
     /// 走向先验的整体强度，0 关闭。
@@ -251,6 +268,12 @@ public struct MagneticEstimate {
     public var updates: Int
     /// 是否已经收敛（冷启动时从 false 变 true）。
     public var converged: Bool
+    /// 估计点所在的房间（map.json 单元 id）。没有房间图或没打开 `MagneticConfig.reportRoom` 时为 nil
+    public var roomId: String? = nil
+    /// 房间置信度：全部粒子里落在 `roomId` 这个房间的权重占比（0...1）
+    public var roomMass: Double = 0
+    /// 房间置信度不够（< `MagneticConfig.roomPointMassThreshold`）：只报房间级，不画点
+    public var roomOnly: Bool = false
 }
 
 /// 可复现的随机数（测试要求结果稳定）。
@@ -411,6 +434,7 @@ public final class MagneticLocalizer {
     public func reset(start: Point2?, spreadCm: Double = 150, headingUnknown: Bool = false, priorFraction: Double = 0,
                       walkableTries: Int = 0) {
         pathSinceResetCm = start == nil ? 0 : 3000     // 已知起点：不用等走够路
+        stationaryFrozen = false
         recentTotals = []
         magneticWeight = 1
         coldStart = start == nil
@@ -675,7 +699,7 @@ public final class MagneticLocalizer {
     @discardableResult
     public func step(delta: Point2, feature: MagneticFeature?, trust: Double = 1,
                      lateral: LateralObservation? = nil) -> MagneticEstimate {
-        let dist = delta.length
+        let dist = stationaryFrozen ? 0 : delta.length
         if let l = lateral {
             if let v = l.leftCm { latLeftSum += v; latLeftN += 1 }
             if let v = l.rightCm { latRightSum += v; latRightN += 1 }
@@ -773,6 +797,9 @@ public final class MagneticLocalizer {
 
     private var meanMotion = Point2.zero
 
+    /// 房间约束打开且可走区域带房间图时的房间图
+    private var roomGraph: RoomGraph? { config.roomConstraints ? walkable?.rooms : nil }
+
     private func predict(delta: Point2, dist: Double) {
         pathSinceResetCm += dist
         if !hasConverged { searchPathCm += dist }
@@ -805,13 +832,16 @@ public final class MagneticLocalizer {
                     let slide = config.wallSlide
                         ? [Point2(np.x, old.y), Point2(old.x, np.y)].first { $0 != old && w.isWalkable($0) && w.isSegmentClear(from: old, to: $0) }
                         : nil
-                    if let sp = slide {
+                    if let sp = slide, !(roomGraph?.crossesWithoutDoor(from: old, to: sp) ?? false) {
                         np = sp
                         logw[i] += config.wallSlidePenalty
                     } else {
                         np = old                      // 不能穿货架：原地不动并扣分
                         logw[i] += config.blockedPenalty
                     }
+                } else if let g = roomGraph, g.crossesWithoutDoor(from: old, to: np) {
+                    np = old                          // 不经门换房间：当穿墙，原地不动，再多扣一笔
+                    logw[i] += config.blockedPenalty + config.roomCrossingPenalty
                 } else if useHeading, let ax = w.axisAngle(at: np) {
                     // 行走方向相对通道轴线的夹角（模 π：沿轴线正反两个方向都可以）
                     let walk = atan2(dy, dx)
@@ -1196,6 +1226,10 @@ public final class MagneticLocalizer {
                     p = anchor[i] ?? w.nearestWalkable(to: p, radiusCm: 300) ?? p
                 }
             }
+            // 抖动跨了房间（没经过门）：同样退回来源粒子
+            if src[i] >= 0, let g = roomGraph, g.crossesWithoutDoor(from: Point2(xs[src[i]], ys[src[i]]), to: p) {
+                p = Point2(xs[src[i]], ys[src[i]])
+            }
             nx[i] = p.x
             ny[i] = p.y
         }
@@ -1257,7 +1291,80 @@ public final class MagneticLocalizer {
         // 估计点本身落在没有磁场数据的地方：地磁说了不算，置信度归零
         // （跟踪配置档关掉：没采过的地方本来就该纯推算，不算丢）
         if config.zeroConfidenceOffMap && field.sample(at: c.center) == nil { conf = 0 }
-        return MagneticEstimate(position: c.center, uncertaintyCm: c.unc, confidence: conf,
-                                effectiveRatio: lastEffectiveRatio, updates: updateCount, converged: hasConverged)
+        var e = MagneticEstimate(position: c.center, uncertaintyCm: c.unc, confidence: conf,
+                                 effectiveRatio: lastEffectiveRatio, updates: updateCount, converged: hasConverged)
+        if config.reportRoom, let g = walkable?.rooms, let r = g.nearestRoomIndex(to: c.center, radiusCm: 100) {
+            e.roomId = g.rooms[r].id
+            e.roomMass = roomMass(of: r, in: g)
+            e.roomOnly = e.roomMass < config.roomPointMassThreshold
+        }
+        return e
+    }
+
+    /// 全部粒子里落在房间 r 的权重占比
+    private func roomMass(of r: Int, in g: RoomGraph) -> Double {
+        let mx = logw.max() ?? 0
+        var tot = 0.0, inR = 0.0
+        for i in xs.indices {
+            let w = exp(logw[i] - mx)
+            tot += w
+            if g.roomIndex(at: Point2(xs[i], ys[i])) == r { inR += w }
+        }
+        return tot > 0 ? inR / tot : 0
+    }
+
+    // MARK: 静止冻结
+
+    /// 正在静止冻结（`freezeStationary` 之后、`releaseStationaryFreeze` 之前）：step 不推粒子
+    public private(set) var stationaryFrozen = false
+
+    /// 静止够久（在房间里坐着 / 站着不动）：粒子向估计点收拢，加权散布不超过 `stationaryFreezeSpreadCm`，
+    /// 之后 step 的位移不推粒子（坐着时口袋里的伪步），直到 `releaseStationaryFreeze`。
+    /// 只在 `config.stationaryFreeze` 打开、已经收敛、（有房间图时）估计点在房间里时生效；返回是否冻结了。
+    @discardableResult
+    public func freezeStationary() -> Bool {
+        guard config.stationaryFreeze, hasConverged, !stationaryFrozen, !xs.isEmpty else { return false }
+        let c = estimate().position
+        if let g = walkable?.rooms, g.roomIndex(at: c) == nil { return false }
+        let spread = weightedSpread(around: c)
+        if spread > config.stationaryFreezeSpreadCm {
+            rescaleParticles(around: c, factor: config.stationaryFreezeSpreadCm / spread)
+        }
+        stationaryFrozen = true
+        return true
+    }
+
+    /// 起身（不再静止）：解除冻结，粒子散布放大 `stationaryReleaseSpreadFactor` 倍（走不过去的粒子不动）。
+    public func releaseStationaryFreeze() {
+        guard stationaryFrozen else { return }
+        stationaryFrozen = false
+        rescaleParticles(around: estimate().position, factor: config.stationaryReleaseSpreadFactor)
+    }
+
+    /// 粒子相对 c 的加权 RMS 距离（cm）
+    public func weightedSpread(around c: Point2) -> Double {
+        let mx = logw.max() ?? 0
+        var sw = 0.0, s2 = 0.0
+        for i in xs.indices {
+            let w = exp(logw[i] - mx)
+            let dx = xs[i] - c.x, dy = ys[i] - c.y
+            sw += w; s2 += w * (dx * dx + dy * dy)
+        }
+        return sw > 0 ? (s2 / sw).squareRoot() : 0
+    }
+
+    /// 每个粒子到 c 的偏移乘 factor。新位置不可走或换了房间时：收拢就退到 c，放大就留在原地
+    private func rescaleParticles(around c: Point2, factor: Double) {
+        let g = walkable?.rooms
+        for i in xs.indices {
+            let old = Point2(xs[i], ys[i])
+            var p = Point2(c.x + (old.x - c.x) * factor, c.y + (old.y - c.y) * factor)
+            p = Point2(min(max(p.x, 0), field.widthCm), min(max(p.y, 0), field.heightCm))
+            var ok = walkable?.isWalkable(p) ?? true
+            if ok, let g, let r1 = g.roomIndex(at: p), let r0 = g.roomIndex(at: factor < 1 ? c : old), r0 != r1 { ok = false }
+            if !ok { p = factor < 1 ? c : old }
+            xs[i] = p.x
+            ys[i] = p.y
+        }
     }
 }

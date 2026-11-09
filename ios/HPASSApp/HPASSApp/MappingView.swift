@@ -354,6 +354,10 @@ struct MappingView: View {
             if survey.speedMS > SurveyEngine.maxSpeedMS {
                 StatusPill(text: "走太快了，放慢一点", systemImage: "tortoise.fill", tone: .warning)
             }
+            if survey.needsAnchor {
+                StatusPill(text: "走了 \(Int(survey.walkedSinceAnchorM)) m 没修正：到墙角 / 门口时长按地图上你的位置",
+                           systemImage: "hand.tap.fill", tone: .warning)
+            }
             if survey.lowSampleRate {
                 StatusPill(text: "传感器采样率低，保持 App 在前台", systemImage: "waveform.path.ecg", tone: .warning)
             }

@@ -371,8 +371,16 @@ final class SurveyEngine: ObservableObject {
 
     /// 走出多远（cm）才用位移方向对齐朝向
     private static let alignCm = 150.0
-    /// 建议每隔多少米修正一次位置
+    /// 建议每隔多少米修正一次位置（场地：有通道可以自动贴，30 m 够）
     static let anchorEveryM = 30.0
+    /// 房间：没有通道可贴，只能靠长按修正。2026-11-09 办公室四段采集途中一次没修正，全被判「轨迹不可信」
+    static let roomAnchorEveryM = 10.0
+    /// 这次采集该隔多少米修正一次
+    var anchorIntervalM: Double { MapLibrary.shared.active?.isRoom == true ? Self.roomAnchorEveryM : Self.anchorEveryM }
+    /// 走过修正间隔还没修正（界面上提醒长按）
+    var needsAnchor: Bool { stage == .tracking && walkedSinceAnchorM > anchorIntervalM }
+    /// 上次震动提醒时「距上次修正」的米数，每多走一个间隔再震一次
+    private var lastAnchorNagM = 0.0
     /// 长按时吸附到路点 / 点位的半径（cm）
     private static let snapCm = 60.0
 
@@ -957,6 +965,12 @@ final class SurveyEngine: ObservableObject {
         let step = lastMapPos.map { p - $0 } ?? .zero
         if step.length >= 15 {
             walkedSinceAnchorM += step.length / 100
+            if walkedSinceAnchorM < lastAnchorNagM { lastAnchorNagM = 0 }   // 刚修正过
+            if walkedSinceAnchorM - lastAnchorNagM >= anchorIntervalM {
+                lastAnchorNagM = walkedSinceAnchorM
+                UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                AppLog.i("建图", "已走 \(Int(walkedSinceAnchorM)) m 没修正，提醒长按修正")
+            }
             totalWalkedM += step.length / 100
             trail.append(p)
             if trail.count > 1500 { trail.removeFirst(trail.count - 1500) }

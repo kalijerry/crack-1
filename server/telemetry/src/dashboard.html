@@ -42,6 +42,16 @@
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
   td, th { border-bottom: 1px solid var(--line); padding: 4px; text-align: left; }
   a { color: var(--accent); }
+  /* 签名安装包：一行一个大按钮，手机上一眼能认出、好点 */
+  .build { display: flex; align-items: center; gap: 12px; padding: 10px 4px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .build.latest { background: rgba(96,165,250,.08); border-radius: 8px; }
+  .install { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 18px; border-radius: 10px;
+             background: #2563eb; color: #fff !important; font-size: 16px; font-weight: 700; text-decoration: none; white-space: nowrap; }
+  .install:active { background: #1d4ed8; }
+  .install svg { width: 20px; height: 20px; flex: none; }
+  .build .meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .build .ver { font-weight: 600; font-size: 14px; }
+  .tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: #16a34a; color: #fff; margin-left: 6px; }
 </style>
 </head>
 <body>
@@ -76,7 +86,7 @@
       <div id="logs"></div>
     </div>
     <div id="tab-sessions" hidden><button id="reloadSessions">刷新</button><table id="sessions"></table></div>
-    <div id="tab-builds" hidden><button id="reloadBuilds">刷新</button> <button id="dlTags">下载标签位置表（标签 → 通道 / 段 / 层 / 货架图 / 商品）</button><table id="builds"></table></div>
+    <div id="tab-builds" hidden><button id="reloadBuilds">刷新</button> <button id="dlTags">下载标签位置表（标签 → 通道 / 段 / 层 / 货架图 / 商品）</button><div id="builds"></div></div>
     <div id="tab-reports" hidden><button id="reloadReports">刷新</button><div id="reports"></div></div>
   </section>
 </main>
@@ -193,16 +203,15 @@ async function loadSessions() {
 $("reloadSessions").onclick = loadSessions;
 async function loadBuilds() {
   const r = await api("/api/builds"); if (!r.ok) return;
-  const list = await r.json();
-  $("builds").innerHTML = list.length ? "<tr><th>安装包</th><th>提交</th><th>大小</th><th>构建时间</th></tr>" + list.map((o) =>
-    `<tr><td>${o.install ? `<a href="${esc(o.install)}" style="font-weight:600">📲 在 iPhone 上安装</a> ` : ""}<a href="#" data-ipa="${esc(o.name)}">${esc(o.name)}</a>${o.signed ? ` <span class="kv">（签名 ${esc(o.version || "")} #${esc(o.number || "")}）</span>` : ` <span class="kv">（未签名，Sideloadly 用）</span>`}</td><td title="${esc(o.message)}">${esc(o.sha.slice(0, 7))} ${esc(o.message.slice(0, 40))}</td>` +
-    `<td>${(o.size / 1e6).toFixed(1)} MB</td><td>${new Date(o.uploaded).toLocaleString("zh-CN")}</td></tr>`).join("")
-    : '<tr><td class="kv">还没有。main 分支 CI 构建完会自动传上来。</td></tr>';
-  for (const a of document.querySelectorAll("[data-ipa]")) a.onclick = async (e) => {
-    e.preventDefault();
-    const r = await api("/api/builds/" + encodeURIComponent(a.dataset.ipa)); if (!r.ok) return;
-    const u = URL.createObjectURL(await r.blob()); const x = document.createElement("a"); x.href = u; x.download = a.dataset.ipa; x.click(); URL.revokeObjectURL(u);
-  };
+  // 后台只收签名（Ad Hoc）包；这里再过滤一次，旧的未签名包不显示
+  const list = (await r.json()).filter((o) => o.install);
+  const icon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M12 7v7m-3-3 3 3 3-3"/><path d="M10.5 18.5h3"/></svg>';
+  $("builds").innerHTML = list.length ? list.map((o, i) =>
+    `<div class="build${i === 0 ? " latest" : ""}"><a class="install" href="${esc(o.install)}">${icon}安装到 iPhone</a>` +
+    `<div class="meta"><span class="ver">版本 ${esc(o.version || "")}（${esc(o.number || "")}）${i === 0 ? '<span class="tag">最新</span>' : ""}</span>` +
+    `<span class="kv">${new Date(o.uploaded).toLocaleString("zh-CN")} · ${(o.size / 1e6).toFixed(1)} MB · ${esc(o.sha.slice(0, 7))} ${esc(o.message.slice(0, 40))}</span></div></div>`).join("") +
+    '<div class="kv" style="margin-top:8px">用 iPhone 自带的 Safari 打开本页再点按钮；只能装到已在开发者网站登记的手机上。</div>'
+    : '<div class="kv">还没有签名安装包。GitHub Actions 里的「iOS Ad Hoc (signed)」跑完会自动传上来。</div>';
 }
 $("reloadBuilds").onclick = loadBuilds;
 $("dlTags").onclick = async () => {

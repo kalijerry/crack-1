@@ -24,7 +24,9 @@ npx wrangler deploy                      # 输出 https://hpass-telemetry.<你�
 
 ## 看板
 
-浏览器打开部署地址，输入口令，点「连接」。左边设备列表，中间地图（滚轮缩放、拖动），右边日志 / 会话 / 评估。
+浏览器打开部署地址，输入口令，点「连接」。左边设备列表，中间地图（滚轮缩放、拖动），右边日志 / 会话 / 评估 / 下载。
+
+「下载」只放签名（Ad Hoc）安装包：GitHub Actions 的「iOS Ad Hoc (signed)」跑完自动传上来，用 iPhone 的 Safari 打开看板点「安装到 iPhone」即可（手机要先在开发者网站登记）。未签名包后台不收，只在 CI 运行的 Artifacts 里（见 `docs/sideload.md`）。
 
 ## 评估报告
 

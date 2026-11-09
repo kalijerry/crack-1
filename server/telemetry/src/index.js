@@ -7,7 +7,7 @@
 // - PUT  /api/maps/<id>          上传地图 JSON（看板画地图用）；GET /api/maps/<id>
 // - PUT  /api/reports/<名字>.json 上传评估报告（hpass-eval 的 --json）；GET /api/reports 列表
 // - GET  /api/logs?day=YYYY-MM-DD 某天的日志分块列表；GET /api/logs/<key> 取一块
-// - PUT  /api/builds/<名字>.ipa   CI 上传安装包；GET /api/builds 列表；GET /api/builds/<名字> 下载
+// - PUT  /api/builds/<名字>.ipa   CI 上传签名（Ad Hoc）安装包，未签名的拒收；GET /api/builds 列表（只列签名包）；GET /api/builds/<名字> 下载
 // - GET  /ota/<签名>/<名字>.plist|.ipa  签名的 Ad Hoc 包给 iPhone 直接安装（itms-services 不能带口令，用 HMAC 签名的
 //                                    不可猜链接代替；签名只在登录后的 /api/builds 列表里给出）
 //
@@ -159,6 +159,7 @@ export default {
       const key = "packages/" + id + ".hpmp";
       if (request.method === "PUT") {
         const h = (k) => request.headers.get(k) || "";
+        if (h("x-build-signed") !== "adhoc") return json({ error: "只收签名（Ad Hoc）安装包" }, 400);
         const version = Number(h("x-map-version") || 0);
         const old = await env.DATA.head(key);
         if (old && Number(old.customMetadata?.version || 0) > version) {
@@ -199,7 +200,7 @@ export default {
       return new Response(o.body, { headers: { "content-type": "text/csv; charset=utf-8" } });
     }
 
-    // 安装包：CI 每次 main 构建完把未签名 ipa 传上来，看板「安装包」里下载
+    // 安装包：只收「iOS Ad Hoc (signed)」传上来的签名包，看板「下载」里一键安装到 iPhone
     if (path === "/api/builds" && request.method === "GET") {
       const out = [];
       let cursor;
@@ -207,6 +208,7 @@ export default {
         const r = await env.DATA.list({ prefix: "builds/", cursor, include: ["customMetadata"] });
         for (const o of r.objects) {
           const m = o.customMetadata || {};
+          if (m.signed !== "adhoc") continue; // 只给签名包；未签名的在 GitHub Actions 的 artifact 里
           const name = o.key.slice("builds/".length);
           const item = { name, size: o.size, uploaded: o.uploaded, sha: m.sha || "",
                          message: m.message ? decodeURIComponent(m.message) : "", run: m.run || "", signed: m.signed || "" };

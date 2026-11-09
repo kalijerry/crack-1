@@ -18,7 +18,7 @@ npx wrangler deploy                      # 输出 https://hpass-telemetry.<你�
 ## 自动部署
 
 main 上 `server/telemetry` 有改动时，GitHub Actions「Deploy telemetry worker」自动 `wrangler deploy`（也可以在 Actions 页手动跑）。
-要先在仓库 Settings → Secrets and variables → Actions 里加 `CLOUDFLARE_API_TOKEN`（Cloudflare 后台 My Profile → API Tokens，「Edit Cloudflare Workers」模板）；账号不止一个时再加 `CLOUDFLARE_ACCOUNT_ID`。
+要先在仓库 Settings → Secrets and variables → Actions 里加 `CLOUDFLARE`（API 令牌）（Cloudflare 后台 My Profile → API Tokens，「Edit Cloudflare Workers」模板）；账号不止一个时再加 `CLOUDFLARE_ACCOUNT_ID`。
 
 ## App 里
 

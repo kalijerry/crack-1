@@ -77,12 +77,20 @@ class ScenarioTargetTests(unittest.TestCase):
         by_id = {s["id"]: s for s in SUITE["scenarios"]}
         for sid in ("public/pdr/cold-mag", "public/vio/cold-mag"):
             self.assertEqual(by_id[sid].get("target"), {"wrong_fix": 0.2, "no_fix_ok": True})
-            # 「不报位置」是明说的产品开关，不是藏在收敛门里的
+            # 「不报位置」是明说的产品开关（App 冷启动配置档 MagneticConfig.liveColdStart），不是藏在收敛门里的
             self.assertIn("--no-mag-only-cold-fix", by_id[sid]["flags"])
-        # 冷启动搜索本身还有一个照常报位置、只监看的场景（不拦），共用的冷启动代码坏了能看出来
-        mon = by_id["public/pdr/cold-mag-search"]
-        self.assertFalse(mon["gate"])
-        self.assertNotIn("--no-mag-only-cold-fix", mon["flags"])
+            # 一个位置都不报的场景按构造只能「达标」：不当退步门槛
+            self.assertFalse(by_id[sid]["gate"])
+        # 冷启动搜索本身（照常报位置）才是拦退步的：共用的冷启动代码坏了 PR 就失败
+        for sid in ("public/pdr/cold-mag-search", "public/vio/cold-mag-search"):
+            self.assertTrue(by_id[sid]["gate"])
+            self.assertNotIn("--no-mag-only-cold-fix", by_id[sid]["flags"])
+            self.assertIsNone(by_id[sid].get("target"))
+        self.assertIn("pr", by_id["public/pdr/cold-mag-search"]["tiers"])
+        # 凡是拦退步的场景都可能报位置（没有 no_fix_ok）
+        for s in SUITE["scenarios"]:
+            if s.get("gate"):
+                self.assertFalse((s.get("target") or {}).get("no_fix_ok"), s["id"])
         # 跟踪场景没有场景目标，照旧用完整档位
         self.assertIsNone(by_id["public/pdr/track-mag"].get("target"))
 
@@ -248,7 +256,7 @@ class EndToEndTests(unittest.TestCase):
             ids = [r["id"] for r in res["results"]]
             self.assertEqual(ids, [s["id"] for s in SUITE["scenarios"] if "pr" in s["tiers"]])
             self.assertTrue(all("metrics" in r for r in res["results"]))
-            cold = next(r for r in res["results"] if r["id"] == "public/pdr/cold-mag")["metrics"]
+            cold = next(r for r in res["results"] if r["id"] == "public/pdr/cold-mag-search")["metrics"]
             self.assertAlmostEqual(cold["wrong_fix"], 0.1)
             self.assertEqual(cold["replays"], SUITE["runs"]["pr"])
 

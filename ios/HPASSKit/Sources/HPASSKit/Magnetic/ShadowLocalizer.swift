@@ -54,13 +54,11 @@ public final class ShadowLocalizer {
     ///   （蓝牙粗定位 / 标签范围）时起作用，走够路、峰够突出才宣布定到，宁可不报也不报错的。默认关（原有行为）。
     public init(field: MagneticFieldMap, walkable: WalkableMap?, useRawMag: Bool,
                 configure: ((inout MagneticConfig) -> Void)? = nil, seed: UInt64 = 1, coldStartGate: Bool = false) {
-        var cfg = MagneticConfig()
-        cfg.initialHeadingBiasSigmaDeg = 30
-        // 和实时定位页视觉里程计模式一致
-        cfg.featureWeights = (0.5, 1.0, 0.25)
-        cfg.jumpConfirmUpdates = 15
-        cfg.convergedPositionNoiseFraction = 0.03
-        cfg.hybridOffset = true          // 实测同会话 P90 258→131 cm、首次定位 7→4 m（见 docs/roadmap.md）
+        // 和实时定位页视觉里程计模式的冷启动同一份配置档（hybridOffset 实测同会话 P90 258→131 cm、首次定位 7→4 m，见 docs/roadmap.md），
+        // 只有一处不同：采集时的影子定位 / 自动起点、评估默认照旧在只靠地磁时也报位置；
+        // App 的行为（只靠地磁不报）用 hpass-eval --no-mag-only-cold-fix（Lab 的冷启动场景都这样跑）
+        var cfg = MagneticConfig.liveColdStart(visualOdometry: true)
+        cfg.magOnlyColdStartReports = true
         if coldStartGate {
             cfg.applyColdStartGate()
             cfg.uniformHeadingForInjection = true   // 冷启动不知道朝向：注入的新粒子朝向也全方向

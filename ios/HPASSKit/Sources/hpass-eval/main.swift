@@ -127,6 +127,7 @@ do {
                 if let v = arg("--offset-window").flatMap(Int.init) { cfg.offsetMedianWindow = v }
                 if let v = arg("--lost-updates").flatMap(Int.init) { cfg.lostUpdates = v }
                 if let v = arg("--lost-confidence").flatMap(Double.init) { cfg.lostConfidence = v }
+                if let v = arg("--lost-confidence-prior").flatMap(Double.init) { cfg.lostConfidenceWithExternalPrior = v }
                 if let v = arg("--confidence-scale").flatMap(Double.init) { cfg.confidenceScaleCm = v }
                 if let v = arg("--cluster-radius").flatMap(Double.init) { cfg.clusterRadiusCm = v }
                 if CommandLine.arguments.contains("--hard-ble-tracking") { cfg.bleSoftTracking = false }

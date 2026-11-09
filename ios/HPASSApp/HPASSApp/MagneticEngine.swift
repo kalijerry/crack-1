@@ -675,20 +675,9 @@ final class MagneticEngine: ObservableObject {
             let odometry: OdometrySource = useVisualOdometry && ARKitLogger.isSupported ? .vio : .pdr
             cfg = MagneticConfig.tracking(odometry: odometry, headingKnown: !headingUnknown)
         } else {
-            cfg = MagneticConfig()
-            // 冷启动时航向只来自罗盘，偏差可能很大
-            cfg.initialHeadingBiasSigmaDeg = 30
-            if useVisualOdometry && ARKitLogger.isSupported {
-                // 视觉里程计时：
-                // - 以垂直分量 Bz 为主：人掉头时，手机偏置的估计误差会让水平分量 Bh 和总强度 |B| 的误差反过来，Bz 不受影响；
-                // - 跳到远处另一个簇要连续确认 15 次（约 7.5 m）：视觉里程计一路漂移不到 1%，地磁只该做小修正；
-                // - 收敛后粒子噪声调小，不会沿着「长得像」的通道滑走。
-                cfg.featureWeights = (0.5, 1.0, 0.25)
-                cfg.jumpConfirmUpdates = 15
-                cfg.convergedPositionNoiseFraction = 0.03
-            }
-            // 每次读数的整体水平会差 10～16 µT（磁力计偏置估计不同）：没定到按起伏找，定到后估出偏移再按绝对值比
-            cfg.hybridOffset = true
+            // 冷启动配置档（HPASSKit MagneticConfig.liveColdStart，评估的冷启动同一套）：
+            // 只靠地磁不报位置，等蓝牙 / 贴近标签 / 货架标识牌给出外部先验，或用户指起点
+            cfg = MagneticConfig.liveColdStart(visualOdometry: useVisualOdometry && ARKitLogger.isSupported)
         }
         cfg.lateralWeight = depthMode == .fuse ? 1 : 0
         let loc = MagneticLocalizer(field: field, walkable: MagMapStore.shared.walkableMap(), config: cfg)
@@ -1245,6 +1234,10 @@ final class MagneticEngine: ObservableObject {
                 if phase == .live { return nil }           // 实时定位页由 VisualRelocalizeBanner 显示
                 return "正在认房间：拿着手机对着墙和家具慢慢转一圈（视觉定位，一般几秒）。" +
                     (MagMapStore.shared.field != nil ? "同时也在用地磁找。" : "")
+            }
+            if bleTagsHeard == 0 {
+                // 冷启动配置档（MagneticConfig.liveColdStart）只靠地磁不报位置：要等外部先验或用户定点
+                return "没听到蓝牙标签：只靠地磁自动定位很容易定到长得像的别处，所以先不显示位置。长按地图定点，或走到货架标识牌 / 蓝牙标签旁。"
             }
             if let s = searchStarted, Date().timeIntervalSince(s) > 45 {
                 return "找了 \(Int(Date().timeIntervalSince(s))) 秒还没定到：可能不在采集过的区域（地图上绿色涂过的地方才能自动定位），或这里磁场太平。可以走到采集过的通道再走一段，或者长按地图手动定点。"

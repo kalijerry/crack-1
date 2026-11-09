@@ -109,7 +109,7 @@ def target_thresholds(target: dict) -> dict:
 
 def target_metric(m: dict, k: str, no_fix_ok: bool = False):
     """场景目标里用的指标值。一个位置都没报时错定率没有定义：只有场景目标明说 "no_fix_ok": true
-    （产品决定「宁可不报」，例如只靠地磁冷启动不报位置）才按 0 算；否则是 None，算没达标 / 退步。"""
+    （「宁可不报」，例如 App 冷启动配置档 MagneticConfig.liveColdStart 只靠地磁不报位置）才按 0 算；否则是 None，算没达标 / 退步。"""
     v = m.get(k)
     if v is None and no_fix_ok and k == "wrong_fix" and m.get("points") == 0 and m.get("replays"):
         return 0.0

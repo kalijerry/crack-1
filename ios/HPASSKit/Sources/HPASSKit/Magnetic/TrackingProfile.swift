@@ -55,6 +55,10 @@ public enum TrackingProfile {
     /// 地磁按相关长度变软之后粒子云如实地宽了，0.2 会在位置其实没错的路段频繁判丢（Lab：误差中位 0.8 m 时 16% 的时间
     /// 不报位置，App 里就是位置冻住）。0.1 时公开基准覆盖 94～100%，错定 ≤ 1%（计步）。
     public static let lostConfidence: Double = 0.1
+    /// 用过外部位置先验（蓝牙 / 区域观测）之后的「丢了」门限：照旧 0.2。有蓝牙时判丢 → 局部找回 / 蓝牙拉回很快，
+    /// 而门限放宽到 0.1 会让锁错的位置多显示很久（Lab public/pdr/track-mag-radio：0.1 时错定 8.9%、P90 4.1 m，
+    /// 0.2 时 4.4%、3.0 m，覆盖 99% → 92%；0.12 / 0.14 / 0.16 在中间，单调）。
+    public static let lostConfidenceWithExternalPrior: Double = 0.2
 }
 
 public extension MagneticConfig {
@@ -87,6 +91,7 @@ public extension MagneticConfig {
         c.offsetWarmupUpdates = TrackingProfile.offsetWarmupUpdates
         c.offsetMedianWindow = TrackingProfile.offsetMedianWindow
         c.lostConfidence = TrackingProfile.lostConfidence
+        c.lostConfidenceWithExternalPrior = TrackingProfile.lostConfidenceWithExternalPrior
         c.bleSoftTracking = true
         return c
     }
@@ -119,6 +124,34 @@ public extension MagneticConfig {
             scaleWalkPerM = d.scaleWalkPerM
             convergedMagWeight = pinnedConvergedMagWeight ?? 0.2
         }
+    }
+}
+
+public extension MagneticConfig {
+    /// 实时定位页「未知起点」冷启动的配置档（MagneticEngine.makeLocalizer，start == nil）。评估的冷启动
+    /// （ShadowLocalizer）用视觉里程计这一套为底，所以 Lab 冷启动场景量到的就是 App 的配置。
+    ///
+    /// 产品决定：只靠地磁冷启动不报位置（`magOnlyColdStartReports = false`）。公开商场楼层上只靠地磁冷启动的错定
+    /// 91～100%（Lab public/pdr/cold-mag-search），宁可不报，等外部位置先验（蓝牙粗定位 / 标签范围 / 贴近标签 /
+    /// 货架标识牌，都会标 `MagneticLocalizer.externalPriorApplied`）或用户在图上指起点。
+    /// - Parameter visualOdometry: 视觉里程计在推粒子（ARKit 可用且打开了）。
+    static func liveColdStart(visualOdometry: Bool) -> MagneticConfig {
+        var c = MagneticConfig()
+        // 冷启动时航向只来自罗盘，偏差可能很大
+        c.initialHeadingBiasSigmaDeg = 30
+        if visualOdometry {
+            // 视觉里程计时：
+            // - 以垂直分量 Bz 为主：人掉头时，手机偏置的估计误差会让水平分量 Bh 和总强度 |B| 的误差反过来，Bz 不受影响；
+            // - 跳到远处另一个簇要连续确认 15 次（约 7.5 m）：视觉里程计一路漂移不到 1%，地磁只该做小修正；
+            // - 收敛后粒子噪声调小，不会沿着「长得像」的通道滑走。
+            c.featureWeights = (0.5, 1.0, 0.25)
+            c.jumpConfirmUpdates = 15
+            c.convergedPositionNoiseFraction = 0.03
+        }
+        // 每次读数的整体水平会差 10～16 µT（磁力计偏置估计不同）：没定到按起伏找，定到后估出偏移再按绝对值比
+        c.hybridOffset = true
+        c.magOnlyColdStartReports = false
+        return c
     }
 }
 

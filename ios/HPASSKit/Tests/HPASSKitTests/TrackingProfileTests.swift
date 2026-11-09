@@ -313,4 +313,75 @@ final class TrackingProfileTests: XCTestCase {
             XCTAssertEqual(cfg.trackingOdometry, odo)
         }
     }
+
+    /// 跟踪档的「丢了」门限：只有地磁时 0.1；用过外部位置先验（蓝牙 / 区域观测）之后照旧 0.2。
+    func testLostConfidenceTightensAfterExternalPrior() {
+        let cfg = MagneticConfig.tracking(odometry: .pdr)
+        XCTAssertEqual(cfg.lostConfidenceWithExternalPrior, TrackingProfile.lostConfidenceWithExternalPrior)
+        XCTAssertGreaterThan(TrackingProfile.lostConfidenceWithExternalPrior, TrackingProfile.lostConfidence)
+        XCTAssertNil(MagneticConfig().lostConfidenceWithExternalPrior)
+        let loc = MagneticLocalizer(field: world(), config: cfg, seed: 3)
+        loc.reset(start: Point2(500, 200), spreadCm: TrackingProfile.startSpreadCm)
+        XCTAssertEqual(loc.effectiveLostConfidence, TrackingProfile.lostConfidence)
+        loc.applyPositionPrior(Point2(500, 200), sigmaCm: 400, weight: 0.5)
+        XCTAssertEqual(loc.effectiveLostConfidence, TrackingProfile.lostConfidenceWithExternalPrior)
+        loc.reset(start: Point2(500, 200), spreadCm: TrackingProfile.startSpreadCm)
+        XCTAssertEqual(loc.effectiveLostConfidence, TrackingProfile.lostConfidence)
+        // 不是跟踪档：没有单独的门限，用过先验也不变
+        let d = MagneticLocalizer(field: world(), config: MagneticConfig(), seed: 3)
+        d.reset(start: Point2(500, 200))
+        d.applyPositionPrior(Point2(500, 200), sigmaCm: 400, weight: 0.5)
+        XCTAssertEqual(d.effectiveLostConfidence, MagneticConfig().lostConfidence)
+    }
+
+    /// App 冷启动配置档（MagneticEngine.makeLocalizer，start == nil）：只靠地磁不报位置；
+    /// 评估的冷启动（ShadowLocalizer）用视觉里程计这一套，只有「只靠地磁报不报」不同（--no-mag-only-cold-fix 改成 App 的）。
+    func testLiveColdStartProfile() {
+        let v = MagneticConfig.liveColdStart(visualOdometry: true)
+        let p = MagneticConfig.liveColdStart(visualOdometry: false)
+        for c in [v, p] {
+            XCTAssertFalse(c.magOnlyColdStartReports)
+            XCTAssertTrue(c.hybridOffset)
+            XCTAssertEqual(c.initialHeadingBiasSigmaDeg, 30)
+            XCTAssertNil(c.trackingOdometry)
+            XCTAssertFalse(c.coldStartGateEnabled)
+        }
+        XCTAssertEqual(v.jumpConfirmUpdates, 15)
+        XCTAssertEqual(v.convergedPositionNoiseFraction, 0.03)
+        XCTAssertEqual(v.featureWeights.0, 0.5)
+        XCTAssertEqual(p.jumpConfirmUpdates, MagneticConfig().jumpConfirmUpdates)
+
+        let sh = ShadowLocalizer(field: world(), walkable: nil, useRawMag: false).localizer.config
+        XCTAssertTrue(sh.magOnlyColdStartReports)
+        XCTAssertEqual(sh.initialHeadingBiasSigmaDeg, v.initialHeadingBiasSigmaDeg)
+        XCTAssertEqual(sh.jumpConfirmUpdates, v.jumpConfirmUpdates)
+        XCTAssertEqual(sh.convergedPositionNoiseFraction, v.convergedPositionNoiseFraction)
+        XCTAssertEqual(sh.hybridOffset, v.hybridOffset)
+        XCTAssertEqual([sh.featureWeights.0, sh.featureWeights.1, sh.featureWeights.2],
+                       [v.featureWeights.0, v.featureWeights.1, v.featureWeights.2])
+        let app = ShadowLocalizer(field: world(), walkable: nil, useRawMag: false,
+                                  configure: { $0.magOnlyColdStartReports = false }).localizer
+        XCTAssertTrue(app.magOnlyColdStartSuppressed)
+    }
+
+    /// App 冷启动时能解除「只靠地磁不报」的外部先验都会标 externalPriorApplied：
+    /// 蓝牙粗定位（applyPositionPrior）、标签范围（applyTagRanges）、贴近标签 / 货架标识牌（applyRegion）。
+    func testLiveColdStartPriorsLiftSuppression() {
+        func fresh() -> MagneticLocalizer {
+            let l = MagneticLocalizer(field: world(), config: .liveColdStart(visualOdometry: false), seed: 5)
+            l.reset(start: nil, headingUnknown: true)
+            XCTAssertTrue(l.magOnlyColdStartSuppressed)
+            return l
+        }
+        let c = Point2(1500, 200)
+        let a = fresh()
+        a.applyPositionPrior(c, sigmaCm: 400, weight: 1)
+        XCTAssertFalse(a.magOnlyColdStartSuppressed)
+        let b = fresh()
+        b.applyTagRanges([(position: c, rangeCm: 300)])
+        XCTAssertFalse(b.magOnlyColdStartSuppressed)
+        let r = fresh()
+        _ = r.applyRegion(distance: { max(0, $0.distance(to: c) - 250) }, sample: { c })
+        XCTAssertFalse(r.magOnlyColdStartSuppressed)
+    }
 }

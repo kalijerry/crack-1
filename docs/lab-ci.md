@@ -6,7 +6,7 @@
 
 | 触发 | 档位 | 场景 | 结果去哪 |
 |---|---|---|---|
-| PR（改了 `ios/HPASSKit/Sources`、`tools/lab`、`tools/bench`） | pr | 核心 4 个公开场景 + 自采场景，每场景 3 个随机种子 | PR 评论（只保留一条，每次更新）+ 运行 Summary；**有退步 PR 检查失败** |
+| PR（改了 `ios/HPASSKit/Sources`、`tools/lab`、`tools/bench`） | pr | 核心 5 个公开场景 + 自采场景，每场景 3 个随机种子 | PR 评论（只保留一条，每次更新）+ 运行 Summary；**有退步 PR 检查失败** |
 | push 到 main | pr | 同上 | 看板「评估」 |
 | 每晚 北京时间 02:00 | nightly | 全部场景，5 个种子 | 看板「评估」，最上面是趋势表 |
 | 手动（Actions → Lab → Run workflow） | 可选 | 可只跑某些场景 | 可勾「把这次结果提成新基线」 |
@@ -20,11 +20,11 @@
 | 场景 | 意义 |
 |---|---|
 | `public/pdr/track-mag` | 已知起点 · 只地磁 · 无摄像头（PDR 级漂移）：磁场图 + 滤波本身有多准 |
-| `public/pdr/cold-mag` | 冷启动 · 只地磁 · 无摄像头：最难。产品决定只靠地磁不报位置（`--no-mag-only-cold-fix`），**场景目标只看错定 ≤ 20%、不报位置也算**（见下） |
-| `public/pdr/cold-mag-search` | 同上但照常报位置（每晚跑，**不拦**）：只用来看共用的冷启动搜索代码有没有变坏 |
+| `public/pdr/cold-mag` | 冷启动 · 只地磁 · 无摄像头：App 的冷启动配置档（`MagneticConfig.liveColdStart`）只靠地磁不报位置（评估里是 `--no-mag-only-cold-fix`），**场景目标只看错定 ≤ 20%、不报位置也算**（见下）。一个位置都不报，按构造只能达标，所以每晚跑、**不拦** |
+| `public/pdr/cold-mag-search` | 同上但照常报位置（**拦退步**，和基线比）：量共用的冷启动搜索（蓝牙等外部先验到了之后用的也是它）有没有变坏 |
 | `public/pdr/cold-mag-radio` | 冷启动 · 地磁 + 蓝牙 |
 | `public/pdr-sparse/track-mag` | 建图只用 15 条 trace：模拟「只走几趟」的稀疏建图 |
-| `public/vio/*`、`public/pdr/track-mag-radio` | 每晚跑：视觉里程计级漂移、已知起点 + 蓝牙（`public/vio/cold-mag` 和 `public/pdr/cold-mag` 一样只看错定） |
+| `public/vio/*`、`public/pdr/track-mag-radio` | 每晚跑：视觉里程计级漂移、已知起点 + 蓝牙（`public/vio/cold-mag` 和 `public/pdr/cold-mag` 一样只看错定、不拦；`public/vio/cold-mag-search` 拦退步） |
 
 **自采数据**（有后台口令时自动加入）：后台里每张地图的建图会话和测试会话（采集时打开「这次是测试会话」）。
 
@@ -32,6 +32,7 @@
 |---|---|
 | `walk-once` | **每个建图会话单独建图（= 只走一遍）**，用不是同一天的测试会话来测，所有组合混在一起出指标。这是对标 Oriient「走一遍就能用」的核心指标 |
 | `all-builds` | 全部建图会话融合后测 |
+| `track` | 全部建图会话融合，**已知起点跟踪**（`--oracle-start`）：量 App 实时定位的跟踪配置档（`MagneticConfig.tracking`）在自采门店上的表现。前两个协议都是冷启动 |
 
 仓库是公开的：报告、日志里站点只用哈希代号（`site-xxxxxx`），不出现地图编号、名称、会话内容。
 
@@ -52,9 +53,12 @@
 
 **场景目标**（`suite.json` 里场景的 `"target"`，例如 `{"wrong_fix": 0.2, "no_fix_ok": true}`）：有的场景按产品决定不要求完整档位。
 只靠地磁的冷启动（`public/pdr/cold-mag`、`public/vio/cold-mag`）就是这样：这层楼上十几米的磁场序列能对上很多处
-（各种收敛门组合下错定都还有 91～100%），拿不到外部先验（蓝牙 / Wi-Fi / 用户指起点）时，
-产品决定**不报位置，也不报很自信的错位置**（`MagneticConfig.magOnlyColdStartReports = false`），所以只看错定 ≤ 20%，不要求覆盖。
-这两个场景现在一个位置都不报，量不到冷启动搜索本身，所以另有 `public/pdr/cold-mag-search`（照常报位置、不拦）监看。
+（各种收敛门组合下错定都还有 91～100%），拿不到外部先验（蓝牙 / 贴近标签 / 货架标识牌 / 用户指起点）时，
+App **不报位置，也不报很自信的错位置**：实时定位页冷启动用 `MagneticConfig.liveColdStart`，里面 `magOnlyColdStartReports = false`
+（单元测试 `TrackingProfileTests.testLiveColdStartProfile` / `testLiveColdStartPriorsLiftSuppression` 守着这一点和解除它的外部先验）。
+评估的冷启动（`ShadowLocalizer`）用同一份配置档，只是默认照常报位置（采集时的影子定位用），`--no-mag-only-cold-fix` 换成 App 的行为。
+这两个场景一个位置都不报，按构造只能达标，所以**不当退步门槛**（每晚跑、只监看）；拦退步的是照常报位置的
+`public/pdr/cold-mag-search`（PR + 每晚）和 `public/vio/cold-mag-search`（每晚），和基线比。
 
 - 档位列只写「✅ 达标 / 未达标（场景目标：…）」，差距也按目标算；
   一个位置都没报时，只有目标写了 `"no_fix_ok": true` 才把错定按 0 算（注明「没有报位置」），否则算没量到（未达标 / 退步）。

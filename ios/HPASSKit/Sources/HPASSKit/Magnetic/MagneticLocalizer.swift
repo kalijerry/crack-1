@@ -24,6 +24,10 @@ public struct MagneticConfig {
     /// 丢失判据：已经收敛之后，置信度低于 `lostConfidence`、或不确定度超过 `lostUncertaintyCm`，
     /// 连续 `lostUpdates` 次更新，就认为丢了（`converged` 变回 false），要重新收敛才恢复。
     public var lostConfidence: Double = 0.2
+    /// 用过外部位置先验（蓝牙粗定位 / 标签范围 / 区域观测，见 `MagneticLocalizer.externalPriorApplied`）之后的丢失置信度门限。
+    /// nil = 同 `lostConfidence`。跟踪档用：只有地磁时门限放宽（不然位置没错也频繁判丢），有蓝牙时判丢之后蓝牙能很快把它拉回来，
+    /// 门限放宽只会让锁错的位置多显示一会儿，所以照旧 0.2（见 `TrackingProfile.lostConfidenceWithExternalPrior`）。
+    public var lostConfidenceWithExternalPrior: Double?
     public var lostUncertaintyCm: Double = 600
     public var lostUpdates: Int = 4
     /// 不知道朝向（冷启动，或只知道位置不知道朝向）时，每个粒子的航向偏差在整圆上均匀取值，
@@ -349,6 +353,10 @@ public final class MagneticLocalizer {
     /// 冷启动收敛门现在是否在起作用（冷启动、没收敛、没用过外部先验、配置打开了）
     public var coldStartGateActive: Bool {
         coldStart && !hasConverged && !externalPriorApplied && config.coldStartGateEnabled
+    }
+    /// 现在用的丢失置信度门限（用过外部位置先验之后可以不同，见 `MagneticConfig.lostConfidenceWithExternalPrior`）
+    public var effectiveLostConfidence: Double {
+        externalPriorApplied ? (config.lostConfidenceWithExternalPrior ?? config.lostConfidence) : config.lostConfidence
     }
     /// 现在是「只靠地磁的冷启动、按配置不报位置」（`MagneticConfig.magOnlyColdStartReports = false`）
     public var magOnlyColdStartSuppressed: Bool {
@@ -1004,7 +1012,7 @@ public final class MagneticLocalizer {
             return
         }
         if holdingAgainstFar { return }       // 远跳确认期间：丢失计数不动（远跳要么确认、要么原来的簇恢复）
-        let bad = e.confidence < config.lostConfidence || e.uncertaintyCm > config.lostUncertaintyCm
+        let bad = e.confidence < effectiveLostConfidence || e.uncertaintyCm > config.lostUncertaintyCm
         lowStreak = bad ? lowStreak + 1 : 0
         if lowStreak >= config.lostUpdates { loseTrack() }
     }

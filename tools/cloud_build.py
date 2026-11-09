@@ -13,7 +13,7 @@
    上传地图包（版本 = 现在，盖过手机上生成的）和报告（/api/reports/build_<地图>_<时间>.json）。
 
 环境变量：HPASS_URL（后台地址）、HPASS_TOKEN（口令）、HPASS_BUILD（hpass-build 可执行文件路径）、
-MAP_ID（可选，只处理这一张）、FORCE=1（会话没变也重建）、LIVE_MAX（每张地图最多用最近多少个实时记录，默认 40）、DRY_RUN=1（只算、不上传）。会话数据只放在临时目录，不进仓库、不进 artifact。
+MAP_ID（可选，只处理这一张）、EXCLUDE（可选，不用的会话名，逗号分隔）、FORCE=1（会话没变也重建）、LIVE_MAX（每张地图最多用最近多少个实时记录，默认 40）、DRY_RUN=1（只算、不上传）。会话数据只放在临时目录，不进仓库、不进 artifact。
 """
 import io, json, math, os, struct, subprocess, sys, tempfile, time, urllib.parse, urllib.request, zipfile, zlib
 
@@ -23,6 +23,7 @@ if not URL.startswith("http"):
 TOKEN = os.environ["HPASS_TOKEN"]
 BUILD = os.environ.get("HPASS_BUILD", "hpass-build")
 ONLY = os.environ.get("MAP_ID", "").strip()
+EXCLUDE = {x.strip() for x in os.environ.get("EXCLUDE", "").split(",") if x.strip()}   # 不用的会话（名字，逗号分隔）
 FORCE = os.environ.get("FORCE") == "1"
 LIVE_MAX = int(os.environ.get("LIVE_MAX") or 40)
 DRY = os.environ.get("DRY_RUN") == "1"          # 只算不上传
@@ -95,6 +96,9 @@ def main():
             mid = meta.get("map_id") or ""
             if not mid:
                 print(f"  跳过 {os.path.basename(d)}：旧版本会话，没记地图编号")
+                continue
+            if os.path.basename(d) in EXCLUDE:
+                print(f"  跳过 {os.path.basename(d)}：手动排除")
                 continue
             g = groups.setdefault(mid, {"build": [], "test": [], "live": []})
             g["live" if is_live else ("test" if meta.get("purpose") == "test" else "build")].append(d)

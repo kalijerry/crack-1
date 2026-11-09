@@ -81,8 +81,13 @@ public enum RoomMapBuilder {
     /// 四周留白（cm）
     public static let marginCm = 100.0
 
+    /// - Parameters:
+    ///   - unitIdPrefix: 单元编号前缀（如 "s2-"，扫描段各自 build 时避免撞号）；nil = 原样（R1、R2… 或输入的房间编号）
+    ///   - frameId: 这次扫描的 AR 坐标系身份（扫描段注册表用）；给了才写 `frameId` / `geometryVersion` / `originOffsetCm`，
+    ///     不给时输出和以前完全一样
     /// - Returns: 地图 JSON（可以直接存成 map.json）和解析好的地图。
-    public static func build(_ input: Input, name: String) throws -> (json: Data, map: StoreMap) {
+    public static func build(_ input: Input, name: String, unitIdPrefix: String? = nil, frameId: String? = nil,
+                             geometryVersion: Int64? = nil) throws -> (json: Data, map: StoreMap) {
         // 1. 房间主方向：墙的方向按长度加权（模 90°），转到横平竖直
         var s4 = 0.0, c4 = 0.0
         for w in input.walls { s4 += w.width * sin(4 * w.yaw); c4 += w.width * cos(4 * w.yaw) }
@@ -151,9 +156,10 @@ public enum RoomMapBuilder {
         }
         func flatPoly(_ f: [Point2]) -> [Double] { f.flatMap { p -> [Double] in let q = toMap(p); return [r1(q.x), r1(q.y)] } }
         // 单元：多房间时每个房间一个；单房间（或老数据）时每块地面一个 room，编号 R1、R2…
-        let rooms: [Room] = input.rooms.isEmpty
+        var rooms: [Room] = input.rooms.isEmpty
             ? floors.enumerated().map { Room(id: "R\($0.offset + 1)", floor: $0.element) }
             : input.rooms.filter { $0.floor.count >= 3 }
+        if let pre = unitIdPrefix, !pre.isEmpty { for i in rooms.indices { rooms[i].id = pre + rooms[i].id } }
         let units: [[String: Any]] = rooms.map { r in
             var u: [String: Any] = ["id": r.id, "category": r.category, "polygon": flatPoly(r.floor)]
             if let n = r.name, !n.isEmpty { u["name"] = n }
@@ -166,6 +172,11 @@ public enum RoomMapBuilder {
             // ARKit (x, z) cm → 地图：map = pRef + R(φ)·a，φ = −θ，pRef = 留白 − 范围起点
             "arAlign": ["phi": -theta, "pRefX": m - minX * 100, "pRefY": m - minY * 100, "aRefX": 0, "aRefY": 0],
         ]
+        if let f = frameId {
+            root["frameId"] = f
+            root["originOffsetCm"] = [0.0, 0.0]
+            root["geometryVersion"] = geometryVersion ?? 1
+        }
         if let o = input.ordinal { root["ordinal"] = o }
         if let v = input.venueId { root["venueId"] = v }
         if let v = input.venueName { root["venueName"] = v }
@@ -183,6 +194,27 @@ public enum RoomMapBuilder {
         applyUnits(&root)
         let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
         return (data, try StoreDataLoader.loadMap(data))
+    }
+
+    // MARK: 扫描到的一个房间 → 单元
+
+    /// 一个扫描到的房间变成一个单元：地面多边形取面积最大的那块，没有地面时用墙端点凸包；
+    /// 类别：有楼梯 → stairs，否则按 RoomPlan 的房间类型建议（`IMDFUnitCategory.suggest`），都没有 → room。
+    /// 编号 = prefix + "R" + (index + 1)。App 只负责从 CapturedRoom 取数（ARKit (x, z)，米）。
+    public static func roomUnit(floors: [[Point2]], walls: [Item], sectionLabel: String?, hasStairs: Bool,
+                                index: Int, prefix: String = "") -> Room? {
+        var poly = floors.filter { $0.count >= 3 }.max { MapGeometry.area($0) < MapGeometry.area($1) } ?? []
+        if poly.count < 3 {
+            var pts: [Point2] = []
+            for w in walls {
+                let u = Point2(cos(w.yaw), sin(w.yaw)) * (w.width / 2)
+                pts.append(w.center + u); pts.append(w.center - u)
+            }
+            poly = convexHull(pts)
+        }
+        guard poly.count >= 3 else { return nil }
+        let cat = hasStairs ? "stairs" : (IMDFUnitCategory.suggest(roomPlanSection: sectionLabel) ?? "room")
+        return Room(id: "\(prefix)R\(index + 1)", floor: poly, category: cat)
     }
 
     // MARK: 单元（房间类别、名字）

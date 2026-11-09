@@ -542,7 +542,7 @@ final class SurveyEngine: ObservableObject {
         recorder.arbiterName = ""
         SensorArbiter.shared.claim("建图采集") { [weak self] in self?.stop() }
         recorder.setupNote = note
-        recorder.extraMeta = [
+        var extraMeta: [String: Any] = [
             "survey": true,
             "map_width_cm": store.widthCm, "map_height_cm": store.heightCm,
             "map_id": MapLibrary.shared.activeId ?? "",
@@ -552,6 +552,9 @@ final class SurveyEngine: ObservableObject {
             "arkit": true,
             "arkit_frame": "gravity-aligned, x right, y up, z toward viewer; map = pRef + R(phi)(a - aRef), a = (x, z) cm",
         ]
+        // 原点偏移 / 几何版本 / 坐标系身份（读会话时换算地图坐标）
+        for (k, v) in MapLibrary.shared.sessionMapMeta { extraMeta[k] = v }
+        recorder.extraMeta = extraMeta
         recorder.startRecording()
         guard recorder.isRecording, let dir = recorder.currentSessionDir else {
             lastError = recorder.lastError ?? "录制没有启动"

@@ -61,7 +61,7 @@ do {
     var headingSamples: [[(tMs: Int64, deg: Double)]] = []
     for d in dirs {
         do {
-            sessions.append(try SurveySessionLoader.load(d)); bleSamples.append(SurveySessionLoader.loadBLE(d))
+            sessions.append(try SurveySessionLoader.load(d, mapOriginOffsetCm: map.originOffsetCm)); bleSamples.append(SurveySessionLoader.loadBLE(d))
             signSamples.append(SignSample.load(d))
             headingSamples.append(MapBearingEstimator.loadHeadings(d))
         }
@@ -122,7 +122,7 @@ do {
     var liveReport: LiveFieldMerger.Report?
     let liveDirs = list(arg("--live"))
     if !liveDirs.isEmpty {
-        let runs = liveDirs.map { LiveRunLoader.load($0, tagPositions: tagPos, shelfSigns: shelfSigns) }
+        let runs = liveDirs.map { LiveRunLoader.load($0, tagPositions: tagPos, shelfSigns: shelfSigns, mapOriginOffsetCm: map.originOffsetCm) }
         let merger = LiveFieldMerger()
         let (lb, lr) = merger.merge(survey: rm.builder, runs: runs, gate: gate)
         liveReport = lr

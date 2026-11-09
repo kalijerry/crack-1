@@ -8,9 +8,9 @@
 
 | 模块 | 职责 | 主要方法 |
 |---|---|---|
-| `Models/` | 坐标类型、场地数据解析（地图 / 指纹 / 标签 JSON） | — |
+| `Models/` | 坐标类型、场地数据解析（地图 / 指纹 / 标签 JSON）；房间扫描建图：`RoomMapBuilder`、扫描段注册表 `ScanRegistry`、多段合成 `MapComposer`、原点平移 `MapFrameShift`（见 docs/scan-and-map-management.md） | 墙区间并集去重、单元按质心互含 + 面积比匹配 |
 | `Positioning/` | 蓝牙指纹定位；气压楼层检测（`FloorDetector`） | 高斯指纹似然、WKNN 加权质心、HMM 在线 Viterbi；相对高度 + 迟滞判楼层切换，按垂直速度和步频分电梯 / 扶梯 / 楼梯 |
-| `Fusion/` | 惯导推算与融合 | 互补滤波姿态、峰谷计步、Weinberg 步长、3 状态 EKF |
+| `Fusion/` | 惯导推算与融合；扫描段的几何对齐 `RigidAlign2D` | 互补滤波姿态、峰谷计步、Weinberg 步长、3 状态 EKF；4 旋转候选 × 门配对 + 点到线 ICP |
 | `Routing/` | 路径规划与导航提示 | 通道建图、A\*（带转弯惩罚）、最近邻 + 2-opt、路线防抖 |
 
 三个模块互相独立，可以单独使用。

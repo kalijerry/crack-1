@@ -99,6 +99,8 @@ final class SurveyMapService: ObservableObject {
         let urls = items.filter { selected.contains($0.id) && !already.contains($0.id) }.map(\.url)
         guard !urls.isEmpty else { lastError = append ? "没有新会话可以追加" : "先选至少一个建图会话"; return }
         let whitelist = StoreDataStore.shared.tagIds
+        // 地图原点平移过（接着扫往左 / 上扩展）：会话的地图坐标按「现在 − 录制时」的偏移换算
+        let originOffset = StoreDataStore.shared.map?.originOffsetCm ?? .zero
         running = true
         lastError = nil
         lines = ["正在建图：\(urls.count) 个会话……"]
@@ -117,7 +119,7 @@ final class SurveyMapService: ObservableObject {
             var total = 0
             for u in urls {
                 do {
-                    let s = try SurveySessionLoader.load(u)
+                    let s = try SurveySessionLoader.load(u, mapOriginOffsetCm: originOffset)
                     let r = b.add(s)
                     total += r.samplesUsed
                     // 蓝牙自动指纹：标签读数按时间放到对齐好的轨迹上

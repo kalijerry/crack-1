@@ -87,13 +87,15 @@ public enum LiveRunLoader {
         return (m["live"] as? Bool) == true && (m["survey"] as? Bool) != true
     }
 
-    public static func loadTrack(_ dir: URL) -> [LiveTrackRow] {
+    /// mapOriginOffsetCm：地图现在的累计原点偏移；轨迹的地图坐标按「现在 − 录制时」平移
+    public static func loadTrack(_ dir: URL, mapOriginOffsetCm: Point2 = .zero) -> [LiveTrackRow] {
+        let shift = SurveySessionLoader.mapShift(dir, mapOriginOffsetCm: mapOriginOffsetCm)
         guard let text = try? String(contentsOf: dir.appendingPathComponent("track.csv"), encoding: .utf8) else { return [] }
         return text.split(whereSeparator: \.isNewline).dropFirst().compactMap { line in
             let c = line.split(separator: ",", omittingEmptySubsequences: false)
             guard c.count >= 5, let t = Int64(c[0]), let x = Double(c[1]), let y = Double(c[2]),
                   let u = Double(c[3]), let cf = Double(c[4]) else { return nil }
-            return LiveTrackRow(tMs: t, p: Point2(x, y), uncCm: u, conf: cf)
+            return LiveTrackRow(tMs: t, p: Point2(x, y) + shift, uncCm: u, conf: cf)
         }
     }
 
@@ -266,7 +268,7 @@ public enum LiveRunLoader {
     // MARK: 读一个记录
 
     public static func load(_ dir: URL, tagPositions: [String: Point2], shelfSigns: ShelfSigns? = nil,
-                            config c: LiveTrustConfig = LiveTrustConfig()) -> LiveRunSamples {
+                            config c: LiveTrustConfig = LiveTrustConfig(), mapOriginOffsetCm: Point2 = .zero) -> LiveRunSamples {
         let name = dir.lastPathComponent
         func fail(_ why: String, windows: Int = 0) -> LiveRunSamples {
             LiveRunSamples(name: name, samples: [], track: [], ble: [], signs: [],
@@ -274,9 +276,9 @@ public enum LiveRunLoader {
                                                    rejectedWindows: [:], verifiedWindows: 0, pathM: 0, trustedPathM: 0,
                                                    samples: 0, droppedSpans: []))
         }
-        let track = loadTrack(dir)
+        let track = loadTrack(dir, mapOriginOffsetCm: mapOriginOffsetCm)
         guard track.count > 20 else { return fail("没有定位轨迹（track.csv）") }
-        guard let s = try? SurveySessionLoader.load(dir, requireAnchors: false), s.poses.count > 30, !s.imu.isEmpty else { return fail("缺少惯导 / ARKit 位姿") }
+        guard let s = try? SurveySessionLoader.load(dir, requireAnchors: false, mapOriginOffsetCm: mapOriginOffsetCm), s.poses.count > 30, !s.imu.isEmpty else { return fail("缺少惯导 / ARKit 位姿") }
         let ble = SurveySessionLoader.loadBLE(dir)
         var signDist: [(tMs: Int64, distanceTo: (Point2) -> Double)] = []
         if let sh = shelfSigns {

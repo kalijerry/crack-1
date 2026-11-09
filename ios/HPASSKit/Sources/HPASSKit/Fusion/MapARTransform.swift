@@ -48,6 +48,54 @@ public struct MapARTransform: Equatable {
     }
 }
 
+// MARK: - 刚体变换代数
+//
+// 同一个结构也用来表示「某个扫描段的 map.json 坐标 → 合成地图坐标」（把「AR 一侧」当成源坐标系）。
+// 扫描段入图的变换 = 段坐标 →（段 arAlign 的逆）→ AR →（地图 arAlign）→ 地图，
+// 即 `segAlign.inverse.compose(mapAlign)`，都用下面几个方法表达，不手写三角函数。
+extension MapARTransform {
+    /// 恒等变换
+    public static let identity = MapARTransform(pRef: .zero, aRef: .zero, phi: 0)
+
+    /// 逆变换：`inverse.toMap(p) == toAR(p)`
+    public var inverse: MapARTransform { MapARTransform(pRef: aRef, aRef: pRef, phi: -phi) }
+
+    /// 先自己、后 `next`：`compose(next).toMap(x) == next.toMap(toMap(x))`
+    public func compose(_ next: MapARTransform) -> MapARTransform {
+        MapARTransform(pRef: next.toMap(pRef), aRef: aRef, phi: phi + next.phi)
+    }
+
+    /// 地图原点平移之后（地图坐标整体 + offset）同一个映射的写法
+    public func translated(by offset: Point2) -> MapARTransform {
+        MapARTransform(pRef: pRef + offset, aRef: aRef, phi: phi)
+    }
+
+    /// 旋转角（度，归一到 (−180, 180]）
+    public var angleDeg: Double { MapARTransform.wrapDeg(phi * 180 / Double.pi) }
+
+    /// 只转方向（不平移）
+    public func rotate(_ v: Point2) -> Point2 {
+        let c = cos(phi), s = sin(phi)
+        return Point2(v.x * c - v.y * s, v.x * s + v.y * c)
+    }
+
+    /// 角度归一到 (−180, 180]
+    public static func wrapDeg(_ d: Double) -> Double {
+        var d = d.truncatingRemainder(dividingBy: 360)
+        if d <= -180 { d += 360 }
+        if d > 180 { d -= 360 }
+        return d
+    }
+
+    /// 两个变换是否几乎一样：源坐标里 aRef 附近 `extentCm` 范围的几个点映射后距离都不超过 tolCm
+    public func isClose(to o: MapARTransform, tolCm: Double, extentCm: Double = 1000) -> Bool {
+        for p in [aRef, aRef + Point2(extentCm, 0), aRef + Point2(0, extentCm)] where toMap(p).distance(to: o.toMap(p)) > tolCm {
+            return false
+        }
+        return true
+    }
+}
+
 extension VisualOdometryAligner {
     /// 当前对齐的变换；还没对齐时为 nil。
     public var transform: MapARTransform? {

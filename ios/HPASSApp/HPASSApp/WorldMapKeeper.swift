@@ -38,21 +38,24 @@ enum WorldMapKeeper {
         (try? Data(contentsOf: sidecarURL(id))).flatMap(WorldMapSidecar.decode)
     }
 
-    /// 房间扫描完：在扫描目录里写说明（加进地图库时跟着特征地图一起复制过去）
-    static func noteScanned(dir: URL, align: MapARTransform?, bytes: Int) {
+    /// 房间扫描完：在扫描段目录里写说明（这一段自己的 AR 对齐和坐标系身份 frameId）
+    static func noteScanned(dir: URL, align: MapARTransform?, bytes: Int, frameId: String? = nil) {
         guard let align else { return }
-        let s = WorldMapSidecar(createdMs: Fmt.nowMs(), source: "scan", mapId: nil, arAlign: align, bytes: bytes, uploaded: false)
+        let s = WorldMapSidecar(createdMs: Fmt.nowMs(), source: "scan", mapId: nil, arAlign: align, bytes: bytes, uploaded: false,
+                                frameId: frameId)
         try? s.encoded().write(to: dir.appendingPathComponent(WorldMapSidecar.fileName))
     }
 
     /// 装了云端包（带特征地图）：说明记成云端来源，已经在云端，不用再传
     static func noteInstalled(id: String, mapJSON: Data, bytes: Int, createdMs: Int64) {
         let url = sidecarURL(id)
-        guard let align = (try? StoreDataLoader.loadMap(mapJSON))?.arAlign else {
+        let m = try? StoreDataLoader.loadMap(mapJSON)
+        guard let align = m?.arAlign else {
             try? FileManager.default.removeItem(at: url)
             return
         }
-        let s = WorldMapSidecar(createdMs: createdMs, source: "cloud", mapId: id, arAlign: align, bytes: bytes, uploaded: true)
+        let s = WorldMapSidecar(createdMs: createdMs, source: "cloud", mapId: id, arAlign: align, bytes: bytes, uploaded: true,
+                                frameId: m?.frameId)
         try? s.encoded().write(to: url)
     }
 
@@ -65,6 +68,8 @@ enum WorldMapKeeper {
         private let name: String
         private let mapId: String?
         private let align: MapARTransform?
+        /// 地图基准 AR 坐标系的身份（map.json 的 frameId；老地图没有）
+        private let frameId: String?
         private let decision: WorldMapPolicy.Decision
         private var attachedCreatedMs: Int64?
 
@@ -96,13 +101,14 @@ enum WorldMapKeeper {
                Double(Fmt.nowMs() - s.createdMs) < mins * 60_000 {
                 d = .skip(reason: "\(Int(mins)) 分钟内刚刷新过")
             }
-            return Plan(ar: ar, sessionDir: sessionDir, name: name, mapId: id, align: align, decision: d)
+            return Plan(ar: ar, sessionDir: sessionDir, name: name, mapId: id, align: align,
+                        frameId: StoreDataStore.shared.map?.frameId, decision: d)
         }
 
         private init(ar: ARKitLogger, sessionDir: URL?, name: String, mapId: String?, align: MapARTransform?,
-                     decision: WorldMapPolicy.Decision) {
+                     frameId: String?, decision: WorldMapPolicy.Decision) {
             self.ar = ar; self.runId = ar.runId; self.sessionDir = sessionDir; self.name = name
-            self.mapId = mapId; self.align = align; self.decision = decision
+            self.mapId = mapId; self.align = align; self.frameId = frameId; self.decision = decision
         }
 
         /// 保存（需要时）并上传；`upload` 返回是否成功。需要先取特征地图的话，取完才暂停 ARKit。
@@ -143,7 +149,8 @@ enum WorldMapKeeper {
                 return
             }
             let now = Fmt.nowMs()
-            let side = WorldMapSidecar(createdMs: now, source: "refreshed", mapId: id, arAlign: align, bytes: data.count, uploaded: false)
+            let side = WorldMapSidecar(createdMs: now, source: "refreshed", mapId: id, arAlign: align, bytes: data.count, uploaded: false,
+                                       frameId: frameId)
             do {
                 let meta = try side.encoded()
                 // 会话目录（随会话上传）+ 本机这张地图
@@ -186,7 +193,8 @@ enum WorldMapKeeper {
                 let made = (try? src.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date()
                 side = WorldMapSidecar(createdMs: Int64(made.timeIntervalSince1970 * 1000), source: "scan", mapId: id, arAlign: align, bytes: size)
             }
-            guard var s = side, s.isCompatible(with: align) else {
+            // 两边都有 frameId 时只比 frameId（原点平移后 arAlign 变了也认得）；否则比 AR 对齐
+            guard var s = side, s.isCompatible(with: align, frameId: frameId) else {
                 AppLog.w(WorldMapKeeper.tag, "\(name)：本机特征地图的 AR 对齐和当前地图对不上，不上传")
                 return
             }

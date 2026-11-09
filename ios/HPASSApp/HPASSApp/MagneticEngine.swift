@@ -1780,7 +1780,9 @@ final class MagneticEngine: ObservableObject {
         }
         let rawReady = pipe.useRawMag ? (pipe.biasTracker.bias ?? pipe.magBias.bias) : nil
         let rawMode = pipe.useRawMag
-        let biasSrc = pipe.magBias.source
+        // 参考系含磁力计时（本机没有偏置存档）iOS 给校准后磁场，不用本机偏置
+        let biasSrc: MagBiasEstimator.Source = pipe.magAccuracy >= 0 && pipe.magBias.bias == nil && pipe.magBias.source != .rejected
+            ? .ios : pipe.magBias.source
         Task { @MainActor in
             self.feature = f
             self.magTrust = trust
@@ -1801,9 +1803,11 @@ final class MagneticEngine: ObservableObject {
                 } else {
                     let txt: String
                     switch biasSrc {
-                    case .learned, .ios: txt = "原始磁力计 − 本机偏置（采集时学到的）"
+                    case .ios: txt = "iOS 校准后"
+                    case .learned: txt = "原始磁力计 − 本机偏置（采集时学到的）"
                     case .sphereFit: txt = "原始磁力计 − 本机偏置（现场拟合）"
                     case .none: txt = "磁力计偏置未知：先只用计步（做一次采集或多转几下手机）"
+                    case .rejected: txt = "磁力计读数和地图对不上（可能有磁吸附件 / 磁性保护壳）：这次只用计步 + 地图"
                     }
                     if self.magSourceText != txt { self.magSourceText = txt }
                 }

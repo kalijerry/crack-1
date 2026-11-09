@@ -211,6 +211,8 @@ final class RoomScanModel: ObservableObject {
     @Published private(set) var guidance: String?
     /// 这一段和地图同一个 AR 坐标系（视觉认出、RoomPlan 也没有重置坐标系）
     @Published private(set) var inBaseFrame = false
+    /// 接着扫时载入的特征地图的生成时间（合并时判断段里的特征地图能不能顶替在用的）
+    private var relocSourceMs: Int64?
     /// 等合并的一段
     @Published var pendingMerge: PendingMerge?
     @Published private(set) var mergeError: String?
@@ -302,6 +304,7 @@ final class RoomScanModel: ObservableObject {
         mergeError = nil
         mappingWarned = false
         inBaseFrame = false
+        relocSourceMs = nil
         guidance = nil
         relocHint = nil
         targetFrameAlign = nil
@@ -313,7 +316,8 @@ final class RoomScanModel: ObservableObject {
         }
         let lib = MapLibrary.shared
         targetFrameAlign = (try? lib.registry(id))?.frameAlign?.transform
-        if #available(iOS 17.0, *), let url = lib.relocalizationWorldMap(id), let wm = ARKitLogger.loadWorldMap(url) {
+        if #available(iOS 17.0, *), let src = lib.relocalizationSource(id), let wm = ARKitLogger.loadWorldMap(src.url) {
+            relocSourceMs = src.createdMs
             startRelocalization(wm)
             return
         }
@@ -637,7 +641,7 @@ final class RoomScanModel: ObservableObject {
                 pendingMerge = PendingMerge.prepare(
                     mapId: id, mapName: targetName ?? id, scanId: scanId, scanName: typed.isEmpty ? nil : typed,
                     scanJSON: json, existingJSON: existing, frameAlign: reg.frameAlign?.transform,
-                    relocalized: inBaseFrame, osMajor: osMajor, roomCount: roomN)
+                    relocalized: inBaseFrame, osMajor: osMajor, roomCount: roomN, relocSourceMs: relocSourceMs)
                 summary = scanSummary
                 rooms = []
                 captureView = nil
@@ -675,7 +679,7 @@ final class RoomScanModel: ObservableObject {
     func confirmMerge() {
         guard let m = pendingMerge else { return }
         do {
-            try MapLibrary.shared.commitScan(m.mapId, record: m.record)
+            try MapLibrary.shared.commitScan(m.mapId, record: m.record, relocSourceMs: m.relocSourceMs)
             Haptics.success()
             pendingMerge = nil
             mergeError = nil

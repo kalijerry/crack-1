@@ -154,17 +154,28 @@ extension MapLibrary {
 
     // MARK: 扫描结果入库
 
-    /// 接着扫时 ARKit 要载入的特征地图：最近一段在基准坐标系里扫的段自己存的那份（完整，不受上传大小限制），
-    /// 没有就用地图目录里在用的那份。
-    func relocalizationWorldMap(_ id: String) -> URL? {
+    /// 接着扫时 ARKit 要载入的特征地图：在用的那份（采集 / 定位认出房间后会刷新，覆盖几何对齐并进来的房间；
+    /// 云端包也会装它）和各个基准坐标系扫描段自己存的那份（完整，不受上传大小限制）里，和地图基准坐标系兼容、
+    /// 生成时间最新的一份。`createdMs` 是那份说明里的生成时间，合并时据此判断段里的特征地图能不能顶替在用的。
+    func relocalizationSource(_ id: String) -> (url: URL, createdMs: Int64)? {
         let fm = FileManager.default
-        if let r = storedRegistry(id) {
-            for s in r.ordered.reversed() where s.enabled && s.inBaseFrame {
-                let u = scanDir(id, s.id).appendingPathComponent(Self.worldMapFile)
-                if fm.fileExists(atPath: u.path) { return u }
-            }
+        guard let r = try? registry(id) else { return worldMapURL(id).map { ($0, 0) } }
+        func compatible(_ side: WorldMapSidecar) -> Bool {
+            if let fa = r.frameAlign?.transform { return side.isCompatible(with: fa, frameId: r.frameId) }
+            return side.frameId == r.frameId
         }
-        return worldMapURL(id)
+        var best: (url: URL, createdMs: Int64)?
+        func consider(_ url: URL, _ side: WorldMapSidecar?) {
+            guard fm.fileExists(atPath: url.path), let side, compatible(side) else { return }
+            if best == nil || side.createdMs > best!.createdMs { best = (url, side.createdMs) }
+        }
+        if let u = worldMapURL(id) { consider(u, WorldMapKeeper.readSidecar(id)) }
+        for s in r.ordered where s.enabled && s.inBaseFrame {
+            let d = scanDir(id, s.id)
+            consider(d.appendingPathComponent(Self.worldMapFile),
+                     (try? Data(contentsOf: d.appendingPathComponent(WorldMapSidecar.fileName))).flatMap(WorldMapSidecar.decode))
+        }
+        return best
     }
 
     /// 第一次扫描生成新地图：`scans/<scanId>/` 里已经写好这一段的文件。合成、加进地图库并切换过去。
@@ -190,10 +201,20 @@ extension MapLibrary {
     /// 接着扫 / 重扫的一段确认合并：加进注册表、重新合成；这一段在基准坐标系里时，它结束时的特征地图
     /// （覆盖新旧区域）顶替在用的那份。之后切换到这张地图。
     @discardableResult
-    func commitScan(_ id: String, record: ScanRegistry.ScanRecord) throws -> MapComposer.Result {
+    /// `relocSourceMs`：这一段扫描时载入的特征地图的生成时间。在用的那份比它新（扫描期间被采集刷新、装了云端包）
+    /// 就不顶替：段里那份是从更旧的长出来的，顶替会丢掉在用那份多学到的区域。
+    func commitScan(_ id: String, record: ScanRegistry.ScanRecord, relocSourceMs: Int64? = nil) throws -> MapComposer.Result {
         let r = try registry(id)
         let res = try recompose(id, registry: r.adding(record, nowMs: Fmt.nowMs()))
-        if record.inBaseFrame { installScanWorldMap(id, scanId: record.id, registry: res.registry, source: "scan-append") }
+        if record.inBaseFrame {
+            if let cur = WorldMapKeeper.readSidecar(id), worldMapURL(id) != nil,
+               cur.isCompatible(with: res.registry.frameAlign?.transform ?? cur.arAlign.transform, frameId: res.registry.frameId),
+               cur.createdMs > (relocSourceMs ?? 0) {
+                AppLog.w(WorldMapKeeper.tag, "在用的特征地图比这一段扫描时载入的新，不顶替（段里的那份留着）")
+            } else {
+                installScanWorldMap(id, scanId: record.id, registry: res.registry, source: "scan-append")
+            }
+        }
         if id != activeId { try activate(id) }
         AppLog.i("地图库", "扫描段 \(record.id) 合并进「\(entries.first { $0.id == id }?.name ?? id)」：\(record.alignment.rawValue) / \(record.mode.rawValue)")
         return res

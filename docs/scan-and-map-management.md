@@ -104,7 +104,7 @@ Documents/maps/<mapId>/
 
 - 扫描入口两种模式都有：「建图」页（在用的是房间地图时主按钮是「接着扫当前地图」）、「设置 → 房间扫描」、地图详情。
 - 新建地图：第一段直接开始；写到 `maps/<id>/scans/<scanId>/`，`ScanRegistry.newMap` + 合成，加进地图库并切换。
-- 接着扫（iOS 17、地图有特征地图）：自建 `ARSession`（`worldAlignment = .gravity`，载入 `MapLibrary.relocalizationWorldMap`：最近一段在基准坐标系里扫的段自己存的完整特征地图，没有就用地图目录的），显示已扫范围和进度；经过「重定位中」→ 正常、位姿连续 1 秒无跳变才算认出（`ScanRelocalizer`）。**认出后只提示，用户走到新房间门口再点「开始扫」**，这时才用 `RoomCaptureView(frame:arSession:)` 在同一个会话上扫。
+- 接着扫（iOS 17、地图有特征地图）：自建 `ARSession`（`worldAlignment = .gravity`，载入 `MapLibrary.relocalizationSource`：地图目录在用的那份（采集认出房间后会刷新、云端包也装它）和各基准坐标系扫描段自己存的完整那份里，说明和基准坐标系兼容、`createdMs` 最新的一份；合并时在用的那份比它新就不被段里的顶替），显示已扫范围和进度；经过「重定位中」→ 正常、位姿连续 1 秒无跳变才算认出（`ScanRelocalizer`）。**认出后只提示，用户走到新房间门口再点「开始扫」**，这时才用 `RoomCaptureView(frame:arSession:)` 在同一个会话上扫。
 - RoomPlan 自检：开始扫后 3 秒内位姿跳 > 0.5 m 或跟踪回到「启动中」→ 判定 RoomPlan 重置了坐标系，这一段改为几何对齐。
 - 认不出（45 秒超时、或用户点「认不出，先扫后对齐」）、iOS 16、地图没有特征地图：用 RoomPlan 自带的会话照常扫，扫完几何对齐。
 - 「这段扫完」前检查 `worldMappingStatus`，不是 mapped / extending 提示再转一圈（只提示一次）。

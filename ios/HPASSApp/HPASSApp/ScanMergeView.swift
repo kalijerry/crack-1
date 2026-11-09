@@ -16,6 +16,8 @@ struct PendingMerge {
     var roomCount: Int?
     /// 扫描时视觉认出了已扫区域（和地图基准同一个 AR 坐标系）
     var relocalized: Bool
+    /// 扫描时载入的特征地图的生成时间（视觉认出时才有）
+    var relocSourceMs: Int64?
     var toMap: MapARTransform = .identity
     var alignment: ScanRegistry.Alignment = .geometry
     var quality: ScanRegistry.Quality?
@@ -35,10 +37,11 @@ struct PendingMerge {
     }
 
     static func prepare(mapId: String, mapName: String, scanId: String, scanName: String?, scanJSON: Data, existingJSON: Data,
-                        frameAlign: MapARTransform?, relocalized: Bool, osMajor: Int?, roomCount: Int?) -> PendingMerge {
+                        frameAlign: MapARTransform?, relocalized: Bool, osMajor: Int?, roomCount: Int?,
+                        relocSourceMs: Int64? = nil) -> PendingMerge {
         var m = PendingMerge(mapId: mapId, mapName: mapName, scanId: scanId, scanName: scanName, scanJSON: scanJSON,
                              existingJSON: existingJSON, createdMs: Fmt.nowMs(), osMajor: osMajor, roomCount: roomCount,
-                             relocalized: relocalized)
+                             relocalized: relocalized, relocSourceMs: relocalized ? relocSourceMs : nil)
         if relocalized, let fa = frameAlign, let sa = (try? StoreDataLoader.loadMap(scanJSON))?.arAlign {
             m.useWorldMap(scanAlign: sa, frameAlign: fa)
         } else {

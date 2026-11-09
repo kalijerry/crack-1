@@ -52,12 +52,15 @@ public final class ShadowLocalizer {
 
     /// - Parameter coldStartGate: 打开冷启动收敛门（`MagneticConfig.applyColdStartGate`）：只在还没用过外部位置先验
     ///   （蓝牙粗定位 / 标签范围）时起作用，走够路、峰够突出才宣布定到，宁可不报也不报错的。默认关（原有行为）。
+    /// - Parameter visualOdometry: 冷启动配置档按哪种运动来源取（`MagneticConfig.liveColdStart`）。默认 true（ARKit 位姿，原有行为）；
+    ///   评估器的 `.pdrIMU`（真实计步推算）传 false，和 App 不开视觉里程计时的冷启动一致。
     public init(field: MagneticFieldMap, walkable: WalkableMap?, useRawMag: Bool,
-                configure: ((inout MagneticConfig) -> Void)? = nil, seed: UInt64 = 1, coldStartGate: Bool = false) {
-        // 和实时定位页视觉里程计模式的冷启动同一份配置档（hybridOffset 实测同会话 P90 258→131 cm、首次定位 7→4 m，见 docs/roadmap.md），
+                configure: ((inout MagneticConfig) -> Void)? = nil, seed: UInt64 = 1, coldStartGate: Bool = false,
+                visualOdometry: Bool = true) {
+        // 和实时定位页的冷启动同一份配置档（hybridOffset 实测同会话 P90 258→131 cm、首次定位 7→4 m，见 docs/roadmap.md），
         // 只有一处不同：采集时的影子定位 / 自动起点、评估默认照旧在只靠地磁时也报位置；
         // App 的行为（只靠地磁不报）用 hpass-eval --no-mag-only-cold-fix（Lab 的冷启动场景都这样跑）
-        var cfg = MagneticConfig.liveColdStart(visualOdometry: true)
+        var cfg = MagneticConfig.liveColdStart(visualOdometry: visualOdometry)
         cfg.magOnlyColdStartReports = true
         if coldStartGate {
             cfg.applyColdStartGate()
@@ -150,6 +153,16 @@ public final class ShadowLocalizer {
         guard let l = lastA else { return nil }
         let d = a - l
         guard d.length < 300 else { return nil }          // ARKit 坐标系重置
+        return odometryStep(delta: d, tMs: tMs, a: a)
+    }
+
+    /// 一段位移（cm，和粒子运动同一约定）：累计够 `stepCm` 才送一次滤波器，送了就返回新的估计。
+    /// ARKit 位姿（`pose`）和计步推算（评估器 `.pdrIMU`：FusionEngine 输出位置的增量）共用这一段。
+    /// - Parameters:
+    ///   - tMs: 给了才会用蓝牙
+    ///   - a: 这一步结束时运动来源自己坐标系里的位置（ARKit），只给地图朝向拟合 `rotFit` 用；nil = 不拟合
+    @discardableResult
+    public func odometryStep(delta d: Point2, tMs: Int64?, a: Point2? = nil) -> MagneticEstimate? {
         accum = accum + d
         guard accum.length >= stepCm else { return nil }
         let step = accum
@@ -181,7 +194,7 @@ public final class ShadowLocalizer {
             // 连续：这一步估计挪动的距离和实际走的差不多
             let moved = prev.map { e.position.distance(to: $0.position) } ?? 0
             if prev?.converged == true && moved < step.length + 60 { stableCm += step.length } else { stableCm = 0 }
-            rotFit.add(ar: a, map: e.position)
+            if let a { rotFit.add(ar: a, map: e.position) }
         } else {
             stableCm = 0
             rotFit.reset()

@@ -89,6 +89,8 @@ jobs:
         env:
           HPASS_URL: ${{ secrets.HPASS_URL }}
           HPASS_TOKEN: ${{ secrets.HPASS_TOKEN }}
+          # 站点代号的盐（HMAC-SHA256）；没配时退回老的 sha1 代号
+          HPASS_LAB_SALT: ${{ secrets.HPASS_LAB_SALT }}
         run: |
           python3 tools/lab/lab.py prepare-public --ilc "$ILC/data/site1/F1" --work "$WORK"
           # 自采数据：有后台口令才拉（fork 来的 PR 没有，自动跳过）；日志里只出现站点哈希代号

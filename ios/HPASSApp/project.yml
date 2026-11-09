@@ -27,9 +27,11 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIRequiresFullScreen: true
-        NSBluetoothAlwaysUsageDescription: 扫描附近蓝牙标签的信号强度，辅助室内定位
-        NSCameraUsageDescription: 建图和定位时用摄像头做视觉里程计，房间扫描后拍门牌识别房间名；画面只在本机处理、不上传
-        NSLocationWhenInUseUsageDescription: 读取罗盘航向用于定位标定；房间扫描时在入口记一次 GPS 位置，让扫出的地图带上经纬度（只存在地图文件里）
+        NSBluetoothAlwaysUsageDescription: 扫描附近蓝牙标签的信号强度辅助室内定位；双机测试时两台手机用蓝牙交换配对编号
+        NSCameraUsageDescription: 建图时用摄像头做视觉里程计、房间扫描后拍门牌识别房间名；定位默认不用摄像头，只有打开「视觉增强」且手机竖着拿时才用来认房间。画面只在本机处理、不上传
+        NSLocationWhenInUseUsageDescription: 让室内定位在锁屏或手机放进口袋后继续运行（只请求最低精度、不读取经纬度，结束定位即停止）；读取罗盘航向用于定位标定；房间扫描时在入口记一次 GPS 位置，让扫出的地图带上经纬度（只存在地图文件里）
+        # 锁屏 / 放口袋后继续定位：定位期间开一个最低精度的系统定位保活，CoreMotion 才会继续送数据（见 BackgroundKeeper.swift）
+        UIBackgroundModes: [location]
         NSMotionUsageDescription: 记录加速度、陀螺仪和磁力计数据用于定位标定
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true

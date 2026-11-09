@@ -66,6 +66,7 @@ final class SensorLogger: NSObject, CLLocationManagerDelegate {
                 guard let d else { return }
                 let t = Int64(((epochOffset + d.timestamp) * 1000).rounded())
                 tap?.raw?(t, (d.magneticField.x, d.magneticField.y, d.magneticField.z))
+                tap?.rawLearn?(t, (d.magneticField.x, d.magneticField.y, d.magneticField.z))
                 w.append("\(t),\(Fmt.f(d.magneticField.x, 3)),\(Fmt.f(d.magneticField.y, 3)),\(Fmt.f(d.magneticField.z, 3))")
                 counter.add()
             }

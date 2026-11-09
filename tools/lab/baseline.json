@@ -153,6 +153,279 @@
     "first_fix_m": 14.7,
     "fixed_share": 1.0
    }
+  },
+  {
+   "id": "public/imu/track-mag",
+   "metrics": {
+    "replays": 75,
+    "points": 12419,
+    "median_cm": 317.0,
+    "p75_cm": 543.9,
+    "p90_cm": 741.6,
+    "wrong_fix": 0.3014,
+    "within2m": 0.343,
+    "coverage": 0.9535,
+    "first_fix_m": 0,
+    "fixed_share": 1.0
+   },
+   "office": {
+    "all": {
+     "replays": 75,
+     "grid_points": 5445,
+     "room_correct": null,
+     "room_correct_all": null,
+     "wrong_room_adjacent": null,
+     "wrong_room_far": null,
+     "door_transitions": null,
+     "door_latency_p50_s": null,
+     "door_latency_p90_s": null,
+     "door_miss": null,
+     "within1m_points": 0.1549,
+     "within1m_time": 0.1442,
+     "p50_cm": 311.2,
+     "p90_cm": 741.9,
+     "coverage": 0.9421,
+     "ttff_s_p50": 45.0,
+     "ttff_m_p50": 44.8,
+     "ttff_rate": 0.52,
+     "wrong_fix_before_first_correct": 1.25
+    },
+    "rooms": 0
+   }
+  },
+  {
+   "id": "public/imu/cold-mag-search",
+   "metrics": {
+    "replays": 75,
+    "points": 10193,
+    "median_cm": 7005.8,
+    "p75_cm": 9994.2,
+    "p90_cm": 13089.0,
+    "wrong_fix": 0.9877,
+    "within2m": 0.0021,
+    "coverage": 0.7826,
+    "first_fix_m": 10.7,
+    "fixed_share": 1.0
+   },
+   "office": {
+    "all": {
+     "replays": 75,
+     "grid_points": 5445,
+     "room_correct": null,
+     "room_correct_all": null,
+     "wrong_room_adjacent": null,
+     "wrong_room_far": null,
+     "door_transitions": null,
+     "door_latency_p50_s": null,
+     "door_latency_p90_s": null,
+     "door_miss": null,
+     "within1m_points": 0.0005,
+     "within1m_time": 0.0004,
+     "p50_cm": 6972.9,
+     "p90_cm": 13258.1,
+     "coverage": 0.7759,
+     "ttff_s_p50": 72.0,
+     "ttff_m_p50": 68.8,
+     "ttff_rate": 0.0,
+     "wrong_fix_before_first_correct": 1.95
+    },
+    "rooms": 0
+   }
+  },
+  {
+   "id": "public/imu/cold-mag-radio",
+   "metrics": {
+    "replays": 75,
+    "points": 1137,
+    "median_cm": 1191.6,
+    "p75_cm": 2616.1,
+    "p90_cm": 3686.3,
+    "wrong_fix": 0.664,
+    "within2m": 0.1231,
+    "coverage": 0.0873,
+    "first_fix_m": 11.2,
+    "fixed_share": 0.36
+   },
+   "office": {
+    "all": {
+     "replays": 75,
+     "grid_points": 5445,
+     "room_correct": null,
+     "room_correct_all": null,
+     "wrong_room_adjacent": null,
+     "wrong_room_far": null,
+     "door_transitions": null,
+     "door_latency_p50_s": null,
+     "door_latency_p90_s": null,
+     "door_miss": null,
+     "within1m_points": 0.0231,
+     "within1m_time": 0.0026,
+     "p50_cm": 513.7,
+     "p90_cm": 3475.9,
+     "coverage": 0.1052,
+     "ttff_s_p50": 67.0,
+     "ttff_m_p50": 68.8,
+     "ttff_rate": 0.04,
+     "wrong_fix_before_first_correct": 0.36
+    },
+    "rooms": 0
+   }
+  },
+  {
+   "id": "public/imu/cold-wifi",
+   "metrics": {
+    "replays": 75,
+    "points": 7274,
+    "median_cm": 235.1,
+    "p75_cm": 426.0,
+    "p90_cm": 659.7,
+    "wrong_fix": 0.1859,
+    "within2m": 0.4288,
+    "coverage": 0.5585,
+    "first_fix_m": 22.1,
+    "fixed_share": 1.0
+   },
+   "office": {
+    "all": {
+     "replays": 75,
+     "grid_points": 5445,
+     "room_correct": null,
+     "room_correct_all": null,
+     "wrong_room_adjacent": null,
+     "wrong_room_far": null,
+     "door_transitions": null,
+     "door_latency_p50_s": null,
+     "door_latency_p90_s": null,
+     "door_miss": null,
+     "within1m_points": 0.172,
+     "within1m_time": 0.0975,
+     "p50_cm": 240.8,
+     "p90_cm": 686.2,
+     "coverage": 0.5638,
+     "ttff_s_p50": 52.0,
+     "ttff_m_p50": 45.2,
+     "ttff_rate": 0.4667,
+     "wrong_fix_before_first_correct": 0.81
+    },
+    "rooms": 0
+   }
+  },
+  {
+   "id": "public/imu/track-mag-carry",
+   "metrics": {
+    "replays": 75,
+    "points": 11033,
+    "median_cm": 262.2,
+    "p75_cm": 398.1,
+    "p90_cm": 567.4,
+    "wrong_fix": 0.1505,
+    "within2m": 0.3838,
+    "coverage": 0.9144,
+    "first_fix_m": 0,
+    "fixed_share": 1.0
+   },
+   "office": {
+    "all": {
+     "replays": 75,
+     "grid_points": 5445,
+     "room_correct": null,
+     "room_correct_all": null,
+     "wrong_room_adjacent": null,
+     "wrong_room_far": null,
+     "door_transitions": null,
+     "door_latency_p50_s": null,
+     "door_latency_p90_s": null,
+     "door_miss": null,
+     "within1m_points": 0.1784,
+     "within1m_time": 0.1579,
+     "p50_cm": 258.9,
+     "p90_cm": 571.2,
+     "coverage": 0.8994,
+     "ttff_s_p50": 43.0,
+     "ttff_m_p50": 41.5,
+     "ttff_rate": 0.5067,
+     "wrong_fix_before_first_correct": 1.09
+    },
+    "rooms": 0
+   }
+  },
+  {
+   "id": "public/imu/track-mag-noheading",
+   "metrics": {
+    "replays": 75,
+    "points": 6809,
+    "median_cm": 359.8,
+    "p75_cm": 708.1,
+    "p90_cm": 2235.8,
+    "wrong_fix": 0.3654,
+    "within2m": 0.3215,
+    "coverage": 0.5228,
+    "first_fix_m": 0,
+    "fixed_share": 1.0
+   },
+   "office": {
+    "all": {
+     "replays": 75,
+     "grid_points": 5445,
+     "room_correct": null,
+     "room_correct_all": null,
+     "wrong_room_adjacent": null,
+     "wrong_room_far": null,
+     "door_transitions": null,
+     "door_latency_p50_s": null,
+     "door_latency_p90_s": null,
+     "door_miss": null,
+     "within1m_points": 0.1379,
+     "within1m_time": 0.0753,
+     "p50_cm": 363.3,
+     "p90_cm": 2096.9,
+     "coverage": 0.5309,
+     "ttff_s_p50": 56.0,
+     "ttff_m_p50": 57.9,
+     "ttff_rate": 0.2133,
+     "wrong_fix_before_first_correct": 1.27
+    },
+    "rooms": 0
+   }
+  },
+  {
+   "id": "public/imu/track-mag-noheading-carry",
+   "metrics": {
+    "replays": 75,
+    "points": 5949,
+    "median_cm": 278.2,
+    "p75_cm": 549.3,
+    "p90_cm": 1732.8,
+    "wrong_fix": 0.2735,
+    "within2m": 0.3547,
+    "coverage": 0.4927,
+    "first_fix_m": 0,
+    "fixed_share": 1.0
+   },
+   "office": {
+    "all": {
+     "replays": 75,
+     "grid_points": 5445,
+     "room_correct": null,
+     "room_correct_all": null,
+     "wrong_room_adjacent": null,
+     "wrong_room_far": null,
+     "door_transitions": null,
+     "door_latency_p50_s": null,
+     "door_latency_p90_s": null,
+     "door_miss": null,
+     "within1m_points": 0.1264,
+     "within1m_time": 0.0621,
+     "p50_cm": 278.6,
+     "p90_cm": 1584.1,
+     "coverage": 0.4948,
+     "ttff_s_p50": 55.0,
+     "ttff_m_p50": 57.9,
+     "ttff_rate": 0.2133,
+     "wrong_fix_before_first_correct": 1.0
+    },
+    "rooms": 0
+   }
   }
  ]
 }

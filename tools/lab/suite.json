@@ -4,7 +4,8 @@
   "datasets": {
     "ilc-pdr": {"kind": "ilc", "drift": "pdr", "note": "公开商场数据，合成 PDR 漂移（尺度 σ4%、朝向 1.5°/√s）：模拟不开摄像头"},
     "ilc-arkit": {"kind": "ilc", "drift": "arkit", "note": "同上，合成视觉里程计漂移（尺度 σ1%、朝向 0.5°/√s）"},
-    "ilc-pdr-sparse": {"kind": "ilc", "drift": "pdr", "build_max": 15, "note": "建图只用随机 15 条 trace：模拟「只走几趟」的稀疏建图"}
+    "ilc-pdr-sparse": {"kind": "ilc", "drift": "pdr", "build_max": 15, "note": "建图只用随机 15 条 trace：模拟「只走几趟」的稀疏建图"},
+    "ilc-imu": {"kind": "ilc", "drift": "imu", "flip_y": true, "note": "同一份建图 / 测试划分，测试会话不写合成位姿：运动来自真实 IMU（手持 Android）走 FusionEngine 计步推算（hpass-eval --motion pdr-imu）。只覆盖手持。y 翻转成我们的地图约定（y 朝下），否则陀螺转向和地图相反"}
   },
   "scenarios": [
     {"id": "public/pdr/track-mag", "dataset": "ilc-pdr", "flags": ["--oracle-start", "--no-ble"],
@@ -28,14 +29,30 @@
      "title": "冷启动 · 只地磁 · 视觉里程计（App 冷启动配置档：只靠地磁不报位置；一个位置都不报，只监看、不拦）", "tiers": ["nightly"], "gate": false,
      "target": {"wrong_fix": 0.2, "no_fix_ok": true}},
     {"id": "public/vio/cold-mag-search", "dataset": "ilc-arkit", "flags": ["--no-ble", "--odometry", "vio"],
-     "title": "冷启动搜索 · 只地磁 · 视觉里程计（照常报位置：量共用的冷启动搜索，和基线比）", "tiers": ["nightly"], "gate": true}
+     "title": "冷启动搜索 · 只地磁 · 视觉里程计（照常报位置：量共用的冷启动搜索，和基线比）", "tiers": ["nightly"], "gate": true},
+    {"id": "public/imu/track-mag", "dataset": "ilc-imu", "flags": ["--oracle-start", "--no-ble", "--motion", "pdr-imu"],
+     "title": "已知起点 · 只地磁 · 真实 IMU 计步（手持，起步朝向取真值）", "tiers": ["pr", "nightly"], "gate": true, "office_metrics": true},
+    {"id": "public/imu/cold-mag-search", "dataset": "ilc-imu", "flags": ["--no-ble", "--motion", "pdr-imu"],
+     "title": "冷启动搜索 · 只地磁 · 真实 IMU 计步（照常报位置：量共用的冷启动搜索）", "tiers": ["nightly"], "gate": true, "office_metrics": true},
+    {"id": "public/imu/cold-mag-radio", "dataset": "ilc-imu", "flags": ["--motion", "pdr-imu"],
+     "title": "冷启动 · 地磁 + 蓝牙 · 真实 IMU 计步", "tiers": ["pr", "nightly"], "gate": true, "office_metrics": true},
+    {"id": "public/imu/cold-wifi", "dataset": "ilc-imu", "flags": ["--wifi", "--no-ble", "--motion", "pdr-imu"],
+     "title": "冷启动 · Wi-Fi + 地磁 · 真实 IMU 计步（只有 Android 能扫 Wi-Fi）", "tiers": ["nightly"], "gate": true, "office_metrics": true},
+    {"id": "public/imu/track-mag-carry", "dataset": "ilc-imu", "flags": ["--oracle-start", "--no-ble", "--motion", "pdr-imu", "--carry-motion"],
+     "title": "已知起点 · 只地磁 · 真实 IMU 计步 + 携带无关运动模型（App 默认：携带方式分类、按方式重撒、步长 K 在线标定）", "tiers": ["pr", "nightly"], "gate": true, "office_metrics": true},
+    {"id": "public/imu/track-mag-noheading", "dataset": "ilc-imu", "flags": ["--oracle-start", "--no-ble", "--motion", "pdr-imu", "--start-heading", "unknown"],
+     "title": "已知起点、起步朝向未知（整圆：口袋 / 包里起步的条件）· 只地磁 · 真实 IMU 计步", "tiers": ["nightly"], "gate": true, "office_metrics": true},
+    {"id": "public/imu/track-mag-noheading-carry", "dataset": "ilc-imu", "flags": ["--oracle-start", "--no-ble", "--motion", "pdr-imu", "--start-heading", "unknown", "--carry-motion"],
+     "title": "已知起点、起步朝向未知 · 只地磁 · 真实 IMU 计步 + 携带无关运动模型", "tiers": ["nightly"], "gate": true, "office_metrics": true}
   ],
   "private": {
     "note": "自采数据（后台的建图 / 测试会话）。站点名只用哈希代号，公开仓库的报告里不出现任何站点信息",
     "protocols": {
       "walk-once": {"title": "走一遍建图 → 换一天测试（Oriient 的核心指标）", "flags": []},
       "all-builds": {"title": "全部建图会话融合 → 测试", "flags": []},
-      "track": {"title": "全部建图会话融合 → 已知起点跟踪（App 实时定位的跟踪配置档 MagneticConfig.tracking）", "flags": ["--oracle-start"]}
+      "track": {"title": "全部建图会话融合 → 已知起点跟踪（App 实时定位的跟踪配置档 MagneticConfig.tracking）", "flags": ["--oracle-start"]},
+      "office-carry": {"title": "办公室盲测（摄像头关、按携带方式带）· 真实 IMU 计步 · 双机真值",
+                       "flags": ["--motion", "pdr-imu", "--carry-motion", "--rooms", "--stationary-freeze"], "track_flags": [], "cold_flags": ["--no-mag-only-cold-fix"]}
     },
     "tiers": ["pr", "nightly"],
     "gate": true
@@ -47,6 +64,10 @@
     "coverage": {"better": "higher", "rel": 0, "abs": 0.07},
     "fixed_share": {"better": "higher", "rel": 0, "abs": 0.10}
   },
+  "office_ladder": [
+    {"name": "可用", "min_room_correct": 0.85, "max_wrong_room_far": 0.03, "max_p50_cm": 250, "max_p90_cm": 500, "max_ttff_m_p50": 30},
+    {"name": "目标", "min_room_correct": 0.92, "max_wrong_room_far": 0.02, "max_p50_cm": 150, "max_p90_cm": 300, "max_ttff_m_p50": 20}
+  ],
   "ladder": [
     {"name": "可用", "median_cm": 300, "p90_cm": 600, "wrong_fix": 0.20, "coverage": 0.5},
     {"name": "目标", "median_cm": 200, "p90_cm": 400, "wrong_fix": 0.10, "coverage": 0.6},

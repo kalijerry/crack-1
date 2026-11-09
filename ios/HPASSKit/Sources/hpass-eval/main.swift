@@ -6,6 +6,12 @@ import HPASSKit
 //   swift run -c release hpass-eval --map map.json --build s1,s2 --test t1,t2 [--no-ble] [--json report.json]
 //
 // 会话目录里要有 imu.csv、arkit_pose.csv、anchors.csv（建图采集会话的格式），mag_raw.csv / ble.csv 可选。
+//
+//   --motion poses|pdr-imu        粒子滤波的运动：位姿（默认）/ 真实 IMU 计步推算（同 App 实时定位页的 FusionEngine 配置）
+//   --start-heading truth|unknown 已知起点（--oracle-start）的起步朝向：真值前 1.5 m 方向（默认）/ 整圆撒开
+//   --track-out track.csv         每个运动节拍一行估计 + 参考（tools/lab/office_metrics.py 用）
+//   --carry-motion                pdr-imu 时打开携带无关的运动模型 + 粒子按携带模式重撒 + 步长 K 在线标定（App 同一套接法）
+//   --stationary-freeze           pdr-imu 时打开静止冻结（惯导说没在动就算静止；办公室坐着不动用，配合 --rooms）
 
 func arg(_ name: String) -> String? {
     guard let i = CommandLine.arguments.firstIndex(of: name), i + 1 < CommandLine.arguments.count else { return nil }
@@ -97,7 +103,10 @@ do {
         print("残差已写到 \(rp)")
         exit(0)
     }
-    let walk = SessionEvaluator.walkable(map)
+    // --rooms：办公室地图（有单元 / 门 / 墙）用房间约束（不经门不能换房间）并在估计里带房间，见 RoomGraph
+    let useRooms = CommandLine.arguments.contains("--rooms")
+    let walk = SessionEvaluator.walkable(map, rooms: useRooms)
+    if useRooms { print(walk?.rooms.map { "房间约束：\($0.rooms.count) 个单元、\($0.doors.count) 扇门" } ?? "房间约束：地图没有单元，不用") }
     var out: [EvalReport] = []
     // 粒子滤波有随机性（加上字典遍历顺序每次不同），单次结果波动很大：--runs N 跑 N 次（不同随机种子），报中位和范围
     let runs = max(Int(arg("--runs") ?? "1") ?? 1, 1)
@@ -105,6 +114,23 @@ do {
     let odoArg = arg("--odometry") ?? "pdr"
     guard let odometry = OdometrySource(rawValue: odoArg) else { print("--odometry 只能是 vio 或 pdr"); exit(2) }
     if CommandLine.arguments.contains("--oracle-start") { print("跟踪配置档：\(odometry.rawValue)") }
+    // 粒子滤波的运动从哪来：poses = arkit_pose.csv（默认，老行为；公开数据集是合成漂移）；
+    // pdr-imu = 真实 IMU 走 FusionEngine 计步推算（配置同 App 实时定位页），arkit_pose.csv 可以只有表头
+    let motionArg = arg("--motion") ?? "poses"
+    guard let motion = SessionEvaluator.MotionSource(rawValue: motionArg) else { print("--motion 只能是 poses 或 pdr-imu"); exit(2) }
+    // 已知起点的起步朝向：truth = 真值前 1.5 m 的方向（默认；等于假定手机-行走夹角 δ≈0，只对手持看屏成立），
+    // unknown = 整圆撒开（口袋 / 包 / 摆臂，不把真值航向漏给滤波器）
+    let shArg = arg("--start-heading") ?? "truth"
+    guard let startHeading = SessionEvaluator.StartHeading(rawValue: shArg) else { print("--start-heading 只能是 truth 或 unknown"); exit(2) }
+    if motion == .pdrIMU { print("运动来源：真实 IMU 计步推算（FusionEngine）" + (CommandLine.arguments.contains("--oracle-start") ? "，起步朝向 \(startHeading.rawValue)" : "")) }
+    // --track-out：每个运动节拍一行（会话、第几次、时刻、估计、是否有把握、不确定度、参考），给 tools/lab/office_metrics.py
+    let trackOut = arg("--track-out")
+    var trackLines = ["session,run,t_ms,est_x,est_y,converged,unc_cm,ref_x,ref_y,room_id,room_mass,carry_mode,frozen"]
+    let carryMotion = CommandLine.arguments.contains("--carry-motion")
+    let stationaryFreeze = CommandLine.arguments.contains("--stationary-freeze")
+    if motion == .pdrIMU && (carryMotion || stationaryFreeze) {
+        print("运动模型：" + [carryMotion ? "携带无关（按携带模式重撒 + K 在线标定）" : nil, stationaryFreeze ? "静止冻结" : nil].compactMap { $0 }.joined(separator: "，"))
+    }
     for t in test {
         var rs: [EvalReport] = []
         for k in 0..<runs {
@@ -119,6 +145,7 @@ do {
                 if let w = arg("--missing").flatMap(Double.init) { cfg.missingDataPenalty = w }
                 if CommandLine.arguments.contains("--adaptive") { cfg.adaptiveMagWeight = true }
                 if CommandLine.arguments.contains("--wall-slide") { cfg.wallSlide = true }
+                if useRooms { cfg.roomConstraints = true; cfg.reportRoom = true }
                 // 似然标定的试验开关（默认不给 = 用配置档里的值）
                 if let v = arg("--obs-sigma-floor").flatMap(Double.init) { cfg.observationSigmaFloorUT = v }
                 if let v = arg("--mag-corr-cm").flatMap(Double.init) { cfg.magneticCorrelationCm = v }
@@ -149,7 +176,14 @@ do {
                                                   odometry: odometry,
                                                   // 冷启动收敛门：只在冷启动、还没用过蓝牙先验时起作用；--oracle-start 的跟踪从不用
                                                   coldStartGate: CommandLine.arguments.contains("--cold-gate"),
-                                                  wifi: useWiFi ? built.wifi : nil)
+                                                  wifi: useWiFi ? built.wifi : nil, motion: motion, startHeading: startHeading,
+                                                  carryMotion: carryMotion, stationaryFreeze: stationaryFreeze,
+                                                  onTrack: trackOut == nil ? nil : { p in
+                func f1(_ v: Double?) -> String { v.map { String(format: "%.1f", $0) } ?? "" }
+                trackLines.append("\(t.lastPathComponent),\(k + 1),\(p.tMs),\(f1(p.estimate?.x)),\(f1(p.estimate?.y)),"
+                                  + "\(p.converged ? 1 : 0),\(f1(p.uncertaintyCm.flatMap { $0.isFinite ? $0 : nil })),\(f1(p.reference.x)),\(f1(p.reference.y)),"
+                                  + "\(p.roomId ?? ""),\(p.roomId == nil ? "" : String(format: "%.3f", p.roomMass)),\(p.carryMode.rawValue),\(p.frozen ? 1 : 0)")
+            })
             if runs == 1 { print(r.line) }
             rs.append(r)
         }
@@ -183,6 +217,10 @@ do {
     }
     let all = out.compactMap(\.medianCm)
     if all.count > 1 { print(String(format: "测试会话中位误差的中位：%.0f cm", all.sorted()[all.count / 2])) }
+    if let p = trackOut {
+        try (trackLines.joined(separator: "\n") + "\n").write(toFile: p, atomically: true, encoding: .utf8)
+        print("逐点轨迹已写到 \(p)（\(trackLines.count - 1) 行）")
+    }
     if let j = arg("--json") {
         let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         try enc.encode(out).write(to: URL(fileURLWithPath: j))

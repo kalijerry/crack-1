@@ -13,15 +13,23 @@
   within2m、coverage（参考轨迹上给出定位的比例）、first_fix_m（首次定位前走了多远，中位）、
   fixed_share（定到过的回放比例）。
 
-自采数据的两个协议：
-  walk-once   每个建图会话单独建图（= 只走一遍），测试会话只用「不是同一天」的；Oriient「走一遍就能用」的对标指标
-  all-builds  全部建图会话融合后测试
-站点在报告里只用哈希代号（仓库公开）。
+自采数据的协议：
+  walk-once     每个建图会话单独建图（= 只走一遍），测试会话只用「不是同一天」的；Oriient「走一遍就能用」的对标指标
+  all-builds    全部建图会话融合后测试
+  track         全部建图会话融合 → 已知起点跟踪
+  office-carry  盲测机（摄像头关，按被测携带方式带）+ 真值伴随机（ARKit），敲击对时（bump_sync.py），真实 IMU 回放
+                （--motion pdr-imu），冷启动和已知起点各一次；办公室指标（office_metrics.py）按携带方式 / 地图年龄聚合
+站点在报告里只用代号：设置了 HPASS_LAB_SALT 时 = HMAC-SHA256(盐, map_id) 前 6 位（仓库公开，没有盐就猜不出），
+否则退回老的 sha1(map_id) 前 6 位。
+
+场景里写 "office_metrics": true 的（公开 public/imu/*），回放时多要一份逐点轨迹（hpass-eval --track-out），
+另算 ≤1 m（按时间）、TTFF 等（结果的 "office" 键）；没有房间单元的地图房间类指标为空。
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import io
 import json
 import math
@@ -41,6 +49,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 SUITE = HERE / "suite.json"
+sys.path.insert(0, str(HERE))
+
+import office_metrics  # noqa: E402
 MARKER = "<!-- hpass-lab -->"
 
 
@@ -198,7 +209,12 @@ def walk_once_pairs(build: list[str], test: list[str]) -> list[tuple[str, list[s
     return out
 
 
-def site_label(map_id: str) -> str:
+def site_label(map_id: str, salt: str | None = None) -> str:
+    """站点代号。有盐（HPASS_LAB_SALT）时用 HMAC-SHA256：仓库公开，sha1(map_id) 拿已知的 map_id 一试就能对上，加盐才藏得住；
+    没有盐时退回老的 sha1 前 6 位（老结果的代号不变）"""
+    salt = os.environ.get("HPASS_LAB_SALT", "") if salt is None else salt
+    if salt:
+        return "site-" + hmac.new(salt.encode(), map_id.encode(), hashlib.sha256).hexdigest()[:6]
     return "site-" + hashlib.sha1(map_id.encode()).hexdigest()[:6]
 
 
@@ -223,6 +239,8 @@ def prepare_public(suite: dict, ilc_floor: Path, work: Path, conv: Path | None =
         args = ["--drift", ds["drift"]]
         if ds.get("build_max"):
             args += ["--build-max", str(ds["build_max"])]
+        if ds.get("flip_y"):
+            args += ["--flip-y"]
         key = convert_key(conv, args)
         key_file = dst / CONVERT_KEY_FILE
         if (dst / "manifest.json").exists():
@@ -246,8 +264,74 @@ def _req(url, token, path):
         return resp.read()
 
 
+def group_sessions(dirs: list[Path]) -> dict[str, dict]:
+    """解压好的会话目录 → 按 map_id 分组的 {build, test, blind, companion}（每项 [(目录, meta)]）。
+    伴随真值会话没写 map_id 时按 pair_id 跟着它的盲测会话走"""
+    import office_carry
+    groups: dict[str, dict] = {}
+    pending_comp = []
+    for d in dirs:
+        mp = d / "meta.json"
+        if not mp.exists():
+            continue
+        meta = json.loads(mp.read_text(encoding="utf-8"))
+        kind = office_carry.classify(meta, d)
+        if kind is None:
+            continue
+        if kind == "companion" and not meta.get("map_id"):
+            pending_comp.append((d, meta))
+            continue
+        if not meta.get("map_id"):
+            continue
+        g = groups.setdefault(meta["map_id"], {"build": [], "test": [], "blind": [], "companion": []})
+        g[kind].append((d, meta))
+    for d, meta in pending_comp:
+        for g in groups.values():
+            if any(str(m.get("pair_id")) == str(meta["pair_id"]) for _, m in g["blind"]):
+                g["companion"].append((d, meta))
+                break
+    return groups
+
+
+def prepare_site(mid: str, g: dict, work: Path, map_json: bytes) -> dict | None:
+    """一个地图的会话 → <work>/private/<代号>/{map.json, build/, test/, office/}，返回清单条目（没有可用测试就 None）"""
+    import office_carry
+    label = site_label(mid)
+    dst = work / "private" / label
+    office, rejected = [], []
+    if g["build"] and g["blind"]:
+        pairs, unpaired = office_carry.pair_sessions(g["blind"], g["companion"])
+        rejected += [{"name": n, "reason": "没有配对的真值伴随会话"} for n in unpaired]
+        built = [office_carry.first_imu_ms(d) for d, _ in g["build"]]
+        built_ms = max((t for t in built if t is not None), default=None)
+        for b, c, bm, cm in pairs:
+            info = office_carry.make_blind_session(b, c, bm, cm, dst / "office" / b.name, built_ms)
+            if info["ok"]:
+                office.append({k: info[k] for k in ("name", "carry_mode", "map_age_days", "start_heading")})
+            else:
+                rejected.append({"name": b.name, "reason": info["reason"]})
+    if not g["build"] or not (g["test"] or office):
+        return None
+    for kind in ("build", "test"):
+        (dst / kind).mkdir(parents=True, exist_ok=True)
+        for d, _ in g[kind]:
+            tgt = dst / kind / d.name
+            if not tgt.exists():
+                shutil.copytree(d, tgt)
+    (dst / "map.json").write_bytes(map_json)
+    entry = {"label": label, "build": sorted(d.name for d, _ in g["build"]), "test": sorted(d.name for d, _ in g["test"])}
+    if office or rejected:
+        entry["office"] = sorted(office, key=lambda o: o["name"])
+        entry["office_rejected"] = rejected
+    print(f"[lab] {label}：建图 {len(g['build'])}，测试 {len(g['test'])}，盲测 {len(office)}（不用 {len(rejected)}）")
+    for r in rejected:
+        print(f"[lab]   盲测不用：{r['reason']}")
+    return entry
+
+
 def prepare_private(work: Path) -> list[dict]:
-    """后台的建图 / 测试会话按地图分组，写 <work>/private/<代号>/{map.json, build/, test/}。"""
+    """后台的会话按地图分组，写 <work>/private/<代号>/{map.json, build/, test/, office/}。
+    office/ = office-carry 协议的盲测会话（配好真值伴随会话、敲击对时、写好 truth.csv），见 office_carry.py。"""
     url = os.environ.get("HPASS_URL", "").rstrip("/")
     token = os.environ.get("HPASS_TOKEN", "")
     if not url or not token:
@@ -257,38 +341,23 @@ def prepare_private(work: Path) -> list[dict]:
         url = "https://" + url
     raw = work / "private-raw"
     raw.mkdir(parents=True, exist_ok=True)
-    groups: dict[str, dict] = {}
+    dirs = []
     for o in json.loads(_req(url, token, "/api/sessions")):
         name = o["key"].split("/", 1)[1]
         z = zipfile.ZipFile(io.BytesIO(_req(url, token, "/api/sessions/" + urllib.parse.quote(name))))
         z.extractall(raw)
-        for m in [n for n in z.namelist() if n.endswith("meta.json") and n.count("/") == 1]:
-            d = raw / os.path.dirname(m)
-            meta = json.loads((raw / m).read_text(encoding="utf-8"))
-            if not meta.get("survey") or not (d / "anchors.csv").exists() or not meta.get("map_id"):
-                continue
-            g = groups.setdefault(meta["map_id"], {"build": [], "test": []})
-            g["test" if meta.get("purpose") == "test" else "build"].append(d)
+        dirs += [raw / os.path.dirname(m) for m in z.namelist() if m.endswith("meta.json") and m.count("/") == 1]
     manifest = []
-    for mid, g in sorted(groups.items()):
-        if not g["build"] or not g["test"]:
+    for mid, g in sorted(group_sessions(dirs).items()):
+        if not g["build"]:
             continue
-        label = site_label(mid)
-        dst = work / "private" / label
         try:
             map_json = _req(url, token, "/api/maps/" + urllib.parse.quote(mid))
         except urllib.error.HTTPError:
             continue
-        for kind in ("build", "test"):
-            (dst / kind).mkdir(parents=True, exist_ok=True)
-            for d in g[kind]:
-                tgt = dst / kind / d.name
-                if not tgt.exists():
-                    shutil.copytree(d, tgt)
-        (dst / "map.json").write_bytes(map_json)
-        manifest.append({"label": label, "build": sorted(d.name for d in g["build"]),
-                         "test": sorted(d.name for d in g["test"])})
-        print(f"[lab] {label}：建图 {len(g['build'])}，测试 {len(g['test'])}")
+        entry = prepare_site(mid, g, work, map_json)
+        if entry:
+            manifest.append(entry)
     (work / "private").mkdir(parents=True, exist_ok=True)
     (work / "private" / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
     return manifest
@@ -297,11 +366,13 @@ def prepare_private(work: Path) -> list[dict]:
 # ───────────────────────── 回放 ─────────────────────────
 
 def run_eval(eval_cmd: list[str], cwd: Path, build: str, test: str, runs: int, flags: list[str],
-             timeout_s: float = 3600) -> list[dict]:
+             timeout_s: float = 3600, track: dict | None = None) -> list[dict]:
+    """track 不是 None 时多要一份逐点轨迹（hpass-eval --track-out），按 (会话, 第几次) 合并进 track"""
     with tempfile.TemporaryDirectory() as td:
         out = Path(td) / "r.json"
+        tr = Path(td) / "track.csv"
         cmd = eval_cmd + ["--map", "map.json", "--build", build, "--test", test, "--runs", str(runs),
-                          *flags, "--json", str(out)]
+                          *flags, "--json", str(out)] + (["--track-out", str(tr)] if track is not None else [])
         p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
                            timeout=timeout_s)
         if p.returncode != 0 or not out.exists():
@@ -311,7 +382,34 @@ def run_eval(eval_cmd: list[str], cwd: Path, build: str, test: str, runs: int, f
         for line in (p.stdout or "").splitlines():
             if line.startswith("建图："):
                 print(f"[lab]   {line}")
+        if track is not None and tr.exists():
+            track.update(office_metrics.load_track(tr))
         return json.loads(out.read_text(encoding="utf-8"))
+
+
+def track_office(track: dict, d: Path, meta: dict | None = None) -> dict | None:
+    """逐点轨迹 + 数据集的 map.json → 办公室指标（office_metrics.compute）；没有轨迹（例如假的 hpass-eval）就 None"""
+    if not track:
+        return None
+    try:
+        m = json.loads((d / "map.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        m = {}
+    return office_metrics.compute(track, m, meta)
+
+
+def office_runs(eval_cmd, d: Path, site: dict, runs: int, flags: list[str], oracle: bool):
+    """office-carry：盲测会话按起步朝向分两批跑（已知起点时 texting 等给真值朝向，其余整圆），合并成一个场景"""
+    reps, track = [], {}
+    groups: dict[str, list[str]] = {}
+    for o in site["office"]:
+        groups.setdefault(o.get("start_heading") or "unknown", []).append(o["name"])
+    for sh, names in sorted(groups.items()):
+        fl = list(flags) + (["--oracle-start", "--start-heading", sh] if oracle else [])
+        reps += run_eval(eval_cmd, d, ",".join("build/" + b for b in site["build"]), ",".join("office/" + n for n in names),
+                         runs, fl, track=track)
+    meta = {o["name"]: {"carry_mode": o.get("carry_mode"), "map_age_days": o.get("map_age_days")} for o in site["office"]}
+    return reps, track_office(track, d, meta)
 
 
 def run_suite(suite: dict, tier: str, work: Path, eval_cmd: list[str], only: str | None = None,
@@ -330,6 +428,10 @@ def run_suite(suite: dict, tier: str, work: Path, eval_cmd: list[str], only: str
         entry = {"id": sid, "title": title, "gate": gate}
         try:
             reps = fn()
+            if isinstance(reps, tuple):                   # (报告, 办公室指标)
+                reps, office = reps
+                if office is not None:
+                    entry["office"] = office
             entry["metrics"] = metrics(reps)
         except Exception as e:  # noqa: BLE001 — 失败本身就是要报告的结果
             entry["error"] = str(e)[:3000]
@@ -339,10 +441,16 @@ def run_suite(suite: dict, tier: str, work: Path, eval_cmd: list[str], only: str
         print(f"[lab] {sid}：{entry.get('metrics') or entry.get('error')}（{entry['seconds']} s）", flush=True)
         return entry
 
+    def public_fn(d, s):
+        if not s.get("office_metrics"):
+            return run_eval(eval_cmd, d, "build", "test", runs, s["flags"])
+        track: dict = {}
+        reps = run_eval(eval_cmd, d, "build", "test", runs, s["flags"], track=track)
+        return reps, track_office(track, d)
+
     for s in public_scenarios(suite, tier):
         d = work / "public" / s["dataset"]
-        record(s["id"], s["title"], s.get("gate", False),
-               lambda d=d, s=s: run_eval(eval_cmd, d, "build", "test", runs, s["flags"]),
+        record(s["id"], s["title"], s.get("gate", False), lambda d=d, s=s: public_fn(d, s),
                {"dataset": s["dataset"], **({"target": s["target"]} if s.get("target") else {})})
 
     priv = suite.get("private", {})
@@ -352,6 +460,17 @@ def run_suite(suite: dict, tier: str, work: Path, eval_cmd: list[str], only: str
             d = work / "private" / site["label"]
             for proto, pcfg in priv["protocols"].items():
                 sid = f"private/{site['label']}/{proto}"
+                if proto == "office-carry":
+                    if not site.get("office"):
+                        continue
+                    for sub, oracle in (("track", True), ("cold", False)):
+                        fl = pcfg["flags"] + (pcfg.get("track_flags", []) if oracle else pcfg.get("cold_flags", []))
+                        record(f"{sid}/{sub}", f"{pcfg['title']}（{'已知起点' if oracle else '冷启动'}）", priv.get("gate", False),
+                               lambda d=d, site=site, fl=fl, oracle=oracle: office_runs(eval_cmd, d, site, runs, fl, oracle),
+                               {"office_sessions": len(site["office"])})
+                    continue
+                if not site.get("test"):
+                    continue
                 if proto == "walk-once":
                     pairs = walk_once_pairs(site["build"], site["test"])
 
@@ -456,6 +575,11 @@ def build_report(res: dict, baseline: dict | None, suite: dict) -> tuple[str, bo
           f"{head}　·　提交 `{(res.get('commit') or 'local')[:7]}`", "",
           "| 场景 | 中位 | P75 | P90 | 错定 >5 m | 覆盖 | 首次定位 | 档位 / 离「对标 Oriient」还差 · 对比基线 |",
           "|---|---|---|---|---|---|---|---|", *rows, ""]
+    office_rows = [office_row(r, suite) for r in res["results"] if r.get("office")]
+    if office_rows:
+        md += ["**办公室指标**（office_metrics.py，1 Hz 网格；房间类指标只有带房间单元的地图才有）", "",
+               "| 场景 | 房间判对（有定位 / 全部时间） | 错房间 相邻 / 远 | 过门延迟 P50 / P90 · 漏 | ≤1 m（点 / 时间） | P50 / P90 | 覆盖 | TTFF 时间 / 路程 · 定到率 | 档位 |",
+               "|---|---|---|---|---|---|---|---|---|", *office_rows, ""]
     if notes:
         md += ["**失败详情**", *notes, ""]
     lad = "；".join(f"{lv['name']}：中位 ≤ {lv['median_cm'] / 100:g} m、P90 ≤ {lv['p90_cm'] / 100:g} m、错定 ≤ {lv['wrong_fix'] * 100:g}%、"
@@ -469,6 +593,42 @@ def build_report(res: dict, baseline: dict | None, suite: dict) -> tuple[str, bo
            "- 退步判定：中位、P90 变差超过 15% + 0.3 / 0.6 m，错定率多 5 个点，覆盖少 7 个点，定到率少 10 个点。",
            "", "</details>"]
     return "\n".join(md), regressed
+
+
+def office_level(o: dict, ladder: list[dict]) -> str | None:
+    """办公室档位（suite.json office_ladder）：键 min_<指标> / max_<指标>，列出的门槛同时满足才算；
+    指标没有（例如没有房间单元）就不算达到"""
+    best = None
+    for lv in ladder:
+        ok = True
+        for k, thr in lv.items():
+            if k == "name":
+                continue
+            higher = k.startswith("min_")
+            v = o.get(k[4:])
+            if v is None or (v < thr if higher else v > thr):
+                ok = False
+        if ok:
+            best = lv["name"]
+    return best
+
+
+def office_row(r: dict, suite: dict) -> str:
+    o = r["office"].get("all", {})
+
+    def pc(k):
+        return "—" if o.get(k) is None else f"{o[k] * 100:.0f}%"
+
+    def m(k):
+        return "—" if o.get(k) is None else f"{o[k] / 100:.1f} m"
+
+    def sec(k):
+        return "—" if o.get(k) is None else f"{o[k]:.0f} s"
+    lv = office_level(o, suite.get("office_ladder", [])) or "未达「可用」"
+    ttff_m = "—" if o.get("ttff_m_p50") is None else f"{o['ttff_m_p50']:.0f} m"
+    return (f"| `{r['id']}` | {pc('room_correct')} / {pc('room_correct_all')} | {pc('wrong_room_adjacent')} / {pc('wrong_room_far')} | "
+            f"{sec('door_latency_p50_s')} / {sec('door_latency_p90_s')} · {pc('door_miss')} | {pc('within1m_points')} / {pc('within1m_time')} | "
+            f"{m('p50_cm')} / {m('p90_cm')} | {pc('coverage')} | {sec('ttff_s_p50')} / {ttff_m} · {pc('ttff_rate')} | {lv} |")
 
 
 # ───────────────────────── 命令行 ─────────────────────────
@@ -524,7 +684,8 @@ def main(argv=None):
     elif a.cmd == "baseline":
         res = json.loads(a.results.read_text(encoding="utf-8"))
         keep = {"tier": res["tier"], "runs": res["runs"], "commit": res.get("commit"), "created": res.get("created"),
-                "results": [{"id": r["id"], "metrics": r["metrics"]} for r in res["results"] if r.get("metrics")]}
+                "results": [{"id": r["id"], "metrics": r["metrics"], **({"office": r["office"]} if r.get("office") else {})}
+                            for r in res["results"] if r.get("metrics")]}
         a.out.write_text(json.dumps(keep, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
         print(f"基线已写入 {a.out}（{len(keep['results'])} 个场景）")
     return 0

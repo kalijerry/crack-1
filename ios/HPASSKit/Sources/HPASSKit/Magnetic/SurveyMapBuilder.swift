@@ -432,7 +432,7 @@ public final class SurveyMapBuilder {
         var j = 0
         for x in imu {
             while j + 1 < raw.count && raw[j + 1].tMs <= x.tMs { j += 1 }
-            guard abs(raw[j].tMs - x.tMs) <= 20 else { continue }
+            guard abs(raw[j].tMs - x.tMs) <= 20, IMUSample.calibratedFieldValid((x.mx, x.my, x.mz)) else { continue }
             dx.append(raw[j].v.0 - x.mx); dy.append(raw[j].v.1 - x.my); dz.append(raw[j].v.2 - x.mz)
         }
         guard let bx = median(dx), let by = median(dy), let bz = median(dz) else {

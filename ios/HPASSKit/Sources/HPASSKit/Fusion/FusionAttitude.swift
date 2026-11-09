@@ -113,22 +113,30 @@ final class FusionAttitudeFilter {
         initCount = 0
     }
 
+    /// 当前的前向轴（机体系）：+y，或竖持时的 −z（屏幕法线反向）。
+    var forwardAxis: FusionVec3 { usingYForward ? FusionVec3(0, 1, 0) : FusionVec3(0, 0, -1) }
+    /// 最近一次 update 是否用了样本自带的重力列（格式 v4）当「向上」。
+    private(set) var usedSampleGravity = false
+
     /// 推进一个样本。
     /// - Parameters:
     ///   - dt: 距上一样本的时间（s），已由调用方限幅。
     ///   - declinationRad: 地图 +y 轴的磁罗盘方位角（rad）。
     ///   - fallbackHeading: 磁场长期不可信时的兜底航向（rad）；nil 则用 0。
     ///   - useMagnetic: false 时航向只靠陀螺积分，罗盘只用于「尚未初始化」时的自动初始化。
+    ///   - useSampleGravity: 样本带重力列 / 四元数（格式 v4）时直接用它当「向上」（陀螺辅助，摆臂时比加速度互补滤波稳）；
+    ///     没有就照旧互补滤波。偏航照旧只由陀螺竖直分量积分。
     func update(sample s: IMUSample, dt: Double, declinationRad: Double, fallbackHeading: Double?,
-                useMagnetic: Bool = true) {
+                useMagnetic: Bool = true, useSampleGravity: Bool = false) {
         let a = FusionVec3(s.ax, s.ay, s.az)
         let m = FusionVec3(s.mx, s.my, s.mz)
         let gRaw = FusionVec3(s.gx, s.gy, s.gz)
         sampleCount += 1
 
         let aNorm = a.norm
+        let sampleUp = useSampleGravity ? s.upFromSample : nil
         if !hasUp {
-            up = aNorm > 1.0 ? a.normalized : FusionVec3(0, 0, 1)
+            up = sampleUp ?? (aNorm > 1.0 ? a.normalized : FusionVec3(0, 0, 1))
             hasUp = true
         }
 
@@ -140,17 +148,23 @@ final class FusionAttitudeFilter {
         }
         let w = gRaw - gyroBias
 
-        // --- 2) 重力方向互补滤波 ---
-        // 陀螺预测：世界固定向量在机体系中 u̇ = −ω × u
-        var u = up - w.cross(up) * dt
-        u = u.norm > 1e-9 ? u.normalized : up
-        // 加速度修正（带动态门限）
-        if aNorm > 1e-6 && abs(aNorm - FusionMath.gravity) / FusionMath.gravity < accelGateRel {
-            let gain = min(kpGravity * dt, 0.5)
-            let mixed = u * (1.0 - gain) + a.normalized * gain
-            if mixed.norm > 1e-9 { u = mixed.normalized }
+        // --- 2) 重力方向：样本自带（陀螺辅助）直接用；否则互补滤波 ---
+        if let su = sampleUp {
+            up = su
+            usedSampleGravity = true
+        } else {
+            usedSampleGravity = false
+            // 陀螺预测：世界固定向量在机体系中 u̇ = −ω × u
+            var u = up - w.cross(up) * dt
+            u = u.norm > 1e-9 ? u.normalized : up
+            // 加速度修正（带动态门限）
+            if aNorm > 1e-6 && abs(aNorm - FusionMath.gravity) / FusionMath.gravity < accelGateRel {
+                let gain = min(kpGravity * dt, 0.5)
+                let mixed = u * (1.0 - gain) + a.normalized * gain
+                if mixed.norm > 1e-9 { u = mixed.normalized }
+            }
+            up = u
         }
-        up = u
 
         // --- 3) 前向轴选择（姿态自适应）---
         let yAxis = FusionVec3(0, 1, 0)

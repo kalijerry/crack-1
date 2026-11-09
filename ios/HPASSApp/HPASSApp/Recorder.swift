@@ -80,6 +80,12 @@ final class SensorTap: @unchecked Sendable {
         get { lock.lock(); defer { lock.unlock() }; return _raw }
         set { lock.lock(); _raw = newValue; lock.unlock() }
     }
+    private var _rawLearn: (@Sendable (Int64, (Double, Double, Double)) -> Void)?
+    /// 原始磁力计给偏置学习用（Recorder 自己用，和 raw 互不影响）
+    var rawLearn: (@Sendable (Int64, (Double, Double, Double)) -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return _rawLearn }
+        set { lock.lock(); _rawLearn = newValue; lock.unlock() }
+    }
     /// 标签读数：时间、标签编号、信号
     var ble: (@Sendable (Int64, String, Double) -> Void)? {
         get { lock.lock(); defer { lock.unlock() }; return _ble }
@@ -132,6 +138,8 @@ final class Recorder: ObservableObject {
     private let ble = BLEScanner()
     private let motion = MotionRecorder()
     let tap = SensorTap()
+    /// 顺带学本机磁力计偏置（原始 − iOS 校准），结束时存档给实时定位用（见 MagBias.swift）
+    private let biasLearner = MagBiasLearner()
     /// 录制时是否扫蓝牙（建图采集不需要）
     var recordBLE = true
     private let shared = SharedState()
@@ -178,8 +186,8 @@ final class Recorder: ObservableObject {
 
             let bleW = try CSVWriter(url: dir.appendingPathComponent("ble.csv"),
                                      header: "t_ms,point_id,esl_id,rssi,src,mfg_hex")
-            let imuW = try CSVWriter(url: dir.appendingPathComponent("imu.csv"),
-                                     header: "t_ms,ax,ay,az,gx,gy,gz,mx,my,mz,mag_acc,qw,qx,qy,qz,heading_deg")
+            // 格式 v4：末尾多 gvx,gvy,gvz（陀螺辅助重力，Android 约定），四元数是 CoreMotion 真值
+            let imuW = try CSVWriter(url: dir.appendingPathComponent("imu.csv"), header: IMUSample.csvHeaderV4)
             let marksW = try CSVWriter(url: dir.appendingPathComponent("marks.csv"),
                                        header: "point_id,x_cm,y_cm,t_start_ms,t_end_ms,note")
             bleWriter = bleW
@@ -203,22 +211,18 @@ final class Recorder: ObservableObject {
             }
             let tap = self.tap
             sensors.tap = tap
+            let learner = self.biasLearner
+            learner.reset()
+            tap.rawLearn = { t, v in learner.addRaw(tMs: t, v) }
             motion.onSample = { s in
                 tap.imu?(s)
-                let line = [
-                    "\(s.tMs)",
-                    Fmt.f(s.acc.0), Fmt.f(s.acc.1), Fmt.f(s.acc.2),
-                    Fmt.f(s.gyr.0, 5), Fmt.f(s.gyr.1, 5), Fmt.f(s.gyr.2, 5),
-                    Fmt.f(s.mag.0, 3), Fmt.f(s.mag.1, 3), Fmt.f(s.mag.2, 3),
-                    "\(s.magAccuracy)",
-                    Fmt.f(s.quat.0, 6), Fmt.f(s.quat.1, 6), Fmt.f(s.quat.2, 6), Fmt.f(s.quat.3, 6),
-                    Fmt.f(s.headingDeg, 2),
-                ].joined(separator: ",")
-                imuW.append(line)
+                learner.addCalibrated(s)
+                imuW.append(s.csvLineV4())
                 shared.addImu(magAcc: s.magAccuracy)
             }
             if recordBLE { ble.start() }
-            motion.start(hz: 50)
+            // 建图 / 采集要 iOS 校准后磁场和系统航向：用含磁力计的参考系（定位用的是 .xArbitraryZVertical）
+            motion.start(hz: 50, frame: .mapping)
             try sensors.start(dir: dir)
             try writeMeta(endMs: nil)
             if !motion.isAvailable {
@@ -246,6 +250,8 @@ final class Recorder: ObservableObject {
         ble.stop()
         motion.stop()
         sensors.stop()
+        tap.rawLearn = nil
+        biasLearner.persistIfReady()
         ble.onReading = nil
         motion.onSample = nil
         uiTimer?.invalidate()
@@ -346,11 +352,13 @@ final class Recorder: ObservableObject {
             "only_esl": onlyTags,
             "imu_target_hz": 50,
             "format_version": 2,
+            "imu_format": 4,
+            "attitude_frame": motion.frameName,
             "setup_note": setupNote,
             "mag_raw_target_hz": 100,
             "sensors_available": sensors.available,
             "mag_raw_convention": "uT, CMMagnetometerData: device frame, NOT bias-corrected; calibrated field is in imu.csv mx..mz",
-            "imu_convention": "android: acc m/s^2 incl. gravity (+z up when flat), gyro rad/s, mag uT calibrated",
+            "imu_convention": "android: acc m/s^2 incl. gravity (+z up when flat), gyro rad/s, mag uT calibrated; v4: gvx..gvz gyro-aided gravity m/s^2 same sign as acc, qw..qz CoreMotion attitude in attitude_frame",
         ]
         for (k, v) in extraMeta { meta[k] = v }
         if let endMs { meta["end_ms"] = endMs }

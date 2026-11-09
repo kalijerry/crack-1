@@ -19,6 +19,7 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 cloudSection
+                positioningSection
                 diagnosticsSection
                 developerSection
                 aboutSection
@@ -58,6 +59,33 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: 定位
+
+    @ObservedObject private var magnetic = AppEngines.shared.magnetic
+    @AppStorage("backgroundPositioning") private var backgroundPositioning = true
+    @AppStorage("carryMotionEnabled") private var carryMotionEnabled = true
+
+    private var positioningSection: some View {
+        Section {
+            Toggle(isOn: $backgroundPositioning) {
+                DSRowLabel(title: "锁屏后继续定位", systemImage: "lock.iphone", tint: DS.Palette.success,
+                           subtitle: "手机放口袋、按侧键锁屏也不中断")
+            }
+            Toggle(isOn: $carryMotionEnabled) {
+                DSRowLabel(title: "按携带方式调整", systemImage: "figure.walk", tint: DS.Palette.info,
+                           subtitle: "认出看屏 / 口袋 / 包里 / 打电话 / 甩手，分别处理（实验，下次开始定位生效）")
+            }
+            Toggle(isOn: $magnetic.visualEnhancement) {
+                DSRowLabel(title: "视觉增强", systemImage: "camera.viewfinder", tint: DS.Palette.info,
+                           subtitle: "可选：竖着拿时用摄像头认房间")
+            }
+        } header: {
+            Text("定位")
+        } footer: {
+            Text("定位不需要摄像头，只靠运动传感器和地磁。拿在手里看屏最准；口袋、包里、打电话、甩手走时靠「按携带方式调整」，这些方式还在实测验证中。蓝牙标签只在 App 前台时扫描，锁屏后用不上。锁屏后继续定位要用到位置权限（只用最低精度保持 App 运行，不读取经纬度），状态栏会显示定位图标，会多耗一些电；不需要时可以关掉。视觉增强默认关，打开后只在手机竖着拿时开摄像头，认出房间时当一次位置参考，更耗电发热。")
+        }
+    }
+
     // MARK: 诊断
 
     private var diagnosticsSection: some View {
@@ -68,6 +96,12 @@ struct SettingsView: View {
                 }
             } label: {
                 DSRowLabel(title: "精度测试", systemImage: "scope", tint: .purple, subtitle: "走一圈测试路线，看定位准不准")
+            }
+            NavigationLink {
+                OfficeCarryTestView { tab = .mapping }
+            } label: {
+                DSRowLabel(title: "双机测试", systemImage: "iphone.gen3.radiowaves.left.and.right", tint: .orange,
+                           subtitle: "盲测机 + 伴随真值机，办公室携带方式测试")
             }
             NavigationLink {
                 DataManagerView()

@@ -115,6 +115,95 @@ point_id,x_cm,y_cm,t_start_ms,t_end_ms,note
 
 离线建图时只把 `start` 和 `reanchor` 当真值：相邻两个锚点之间，用它们拟合「旋转 + 平移」把 ARKit 轨迹对到地图上，终点残差按时间线性摊回去；最后一个锚点之后沿用上一段的旋转，且最多信任 30 m。
 
+---
+
+# 格式 v4：imu.csv 加重力列、四元数写真值（`meta.json` 里 `format_version: 4`）
+
+`imu.csv` 在 v1 的 16 列后面再加三列，老的读取方（只看前 10 列）不受影响：
+
+```
+t_ms,ax,ay,az,gx,gy,gz,mx,my,mz,mag_acc,qw,qx,qy,qz,heading_deg,gvx,gvy,gvz
+```
+
+| 列 | 单位 | 约定 |
+|---|---|---|
+| qw..qz | — | **真的**姿态四元数（设备系 → 参考系，参考系 z 朝上）。v3 及以前实时定位页写的是占位 1,0,0,0，不能用；不可用时全 0 |
+| gvx..gvz | m/s² | 设备系里的「向上」× g，**Android `TYPE_GRAVITY` 约定**：屏幕朝上平放 ≈ (0, 0, **+9.81**)，和 ax..az 同号。iOS 的 `CMDeviceMotion.gravity` 平放是 (0, 0, −1) g，写入时要 **× −9.81**，否则 Bz 直接反号。不可用时留空 |
+
+读取端（`IMUSample.fromCSV`）按列数判断：≥ 19 列视为 v4，重力列模长在 5～15 m/s² 之间才用、四元数模长接近 1 才用；
+老文件照旧只读前 10 列，姿态和地磁特征退回加速度低通，行为不变。
+
+为什么要这几列：摆臂时手的离心加速度会把「加速度低通」估的向上方向带偏几十度，Bz 差 10～20 µT；CoreMotion 的 gravity 是陀螺辅助的，
+不受影响。iOS 端的参考系要用 **不含磁力计** 的 `.xArbitraryZVertical`（`.xArbitraryCorrectedZVertical` 仍用磁力计改善偏航），
+偏航只靠陀螺 + 重力，磁场由我们自己处理；换参考系后 `CMDeviceMotion.magneticField` 可能不可用，偏置估计要走原始磁力计那条路（待真机核对）。
+四元数目前只在没有重力列时用来推向上方向，**偏航不用**（iOS 四元数到这个约定的换算还没在真机上核对）。
+
+公开数据转换器（`tools/bench/ilc_convert.py`）写 `format_version: 4` + `imu_quat_frame`；iOS App 写 `imu_format: 4` + `attitude_frame`（下表）。
+读取端两种都认，只按列数判断格式。
+
+`meta.json` 的 `imu_quat_frame` 说明四元数的参考系（公开数据）：
+
+- `x_arbitrary_z_vertical`：iOS `CMAttitudeReferenceFrame.xArbitraryZVertical`（偏航任意，只用陀螺 + 重力，**不用磁力计**）。
+  注意 `.xArbitraryCorrectedZVertical` 会用磁力计改善偏航，不是我们要的；
+- `android_rotation_vector`：Android `TYPE_ROTATION_VECTOR`（东北天，偏航参考磁北；公开 ILC 数据集转换时用它）；
+- 没有这个键或为 null：四元数不可用。
+
+`meta.json` 相关字段：
+
+| 字段 | 说明 |
+|---|---|
+| `imu_format` | 4 |
+| `attitude_frame` | 实时定位 / 盲测：本机有没过期（30 天，占位）的硬铁偏置存档时 `xArbitraryZVertical`（姿态不用磁力计），否则 `xArbitraryCorrectedZVertical`（iOS 照常给校准后磁场；定位不用 CoreMotion 的姿态 / 偏航，所以不受磁力计参与姿态的影响）；建图 / 采集：`xMagneticNorthZVertical`（要 iOS 校准后磁场和系统航向） |
+| `mag_calibration` | `ios`：mx..mz 是 iOS 校准后磁场；`app_hard_iron:<来源>`：参考系不含磁力计时 iOS 不给校准值，mx..mz = `mag_raw` − 本机硬铁偏置，来源 `learned`（建图 / 采集会话学到的存档）、`sphere_fit`（现场球面拟合）、`none`（还没有，mx..mz 为 0、mag_acc = -1） |
+| `mag_bias_ut` | 用到的偏置 [x, y, z] µT（有时才写） |
+| `mag_pollution` | true = 偏置核对没通过（开始后 15 s 里 \|原始 − 偏置\| 的中位数不在地图 \|B\| 的 P5～P95 ± 15 µT 里，例如磁吸附件），偏置作废、这次只用计步 + 地图 |
+
+`mag_acc`：`ios` 时同 v1；`app_hard_iron` 时 2 = 存档偏置、1 = 现场拟合、-1 = 没有偏置。
+mx..mz = 0,0,0 的行（没有偏置时）不是校准值：离线估偏置（`SurveyMapBuilder` / `RawBiasTracker`）和出特征都跳过它们。
+
+## 实时定位 / 盲测会话（`mag-tracks/<时间>_files/`，`meta.json` 里 `live: true`）
+
+不开摄像头也录。文件：`imu.csv`（v4）、`mag_raw.csv`、`ble.csv`、`signs.csv`、`track.csv`（结束时拷入）、`meta.json`；
+开了「视觉增强」且摄像头打开过时另有 `arkit_pose.csv` 等（`arkit: true`）。盲测会话另有 `acc_raw.csv`。
+
+`track.csv`：
+
+```
+t_ms,x_cm,y_cm,unc_cm,conf,pdr_x,pdr_y,heading_deg,steps,b_total,b_vert,b_horiz,check,src,trust,posture,lat_left_cm,lat_right_cm,room_id,carry_mode,room_mass,carry_auto,frozen
+```
+
+- `src`：终端用户定位里恒为 `pdr`（计步永远推粒子）。旧版本出现的 `visual` / `vio` / `vio-raw` 不再产生。
+- `check`：`视觉观测` 表示这一刻用了一次视觉重定位当位置观测（σ 50 cm，只在「视觉增强」开着、手机竖持时）。
+- `room_id` / `room_mass`：地图有房间单元时，粒子权重最多的房间和它的权重占比（< 0.7 时界面只报房间级）；没有房间图时为空。
+- `carry_mode`：盲测会话声明的携带方式（中途切换后跟着变），普通定位为空。
+- `carry_auto`：惯导引擎自动判的携带方式（texting / upright / calling / swinging / pocket / bag / still / unknown；「按携带方式调整」关着时恒为 unknown）。
+- `frozen`：1 = 静止冻结中（房间图地图上坐着不动够久，粒子不随伪步移动）。
+
+`acc_raw.csv`（盲测机 / 伴随真值机，对时用）：`t_ms,ax,ay,az`，≈100 Hz 原始加速度计（`CMAccelerometerData`），
+m/s²，Android 约定（含重力，平放 az ≈ +9.81）。
+
+盲测会话 `meta.json` 另有：`purpose: "blind_test"`、`protocol: "office-carry-v1"`、`camera: false`、`carry_mode`、
+`route`、`pair_id`（伴随机广播的 8 位十六进制配对编号）、`pair_source`（`ble` / `manual` / 空）、`bumps_ms`（在线检测到的敲击时刻，只作核对，
+离线以 `acc_raw.csv` 互相关为准）、`mode_switches`（`[{t_ms, mode}]`）、`map_id`、`map_version`、`model`、`battery_start/end`、
+`thermal_start/end`、`proximity_monitoring`。所有实时定位会话还写 `carry_motion`（「按携带方式调整」开没开）、`room_constraints`、
+`ble_background: false`（蓝牙只在前台扫）、`mag_pollution`。
+
+伴随真值机用建图采集的测试会话（`survey: true`、`purpose: "test"`，格式 v3），`meta.json` 另有 `role: "gt_companion"`、
+`pair_id`、`lever_arm_cm`、`bumps_ms`、`mode_switch_marks_ms`；地贴处的长按修正记在 `anchors.csv`（`kind = reanchor`）。
+
+## 盲测 / 真值伴随会话（办公室双机协议，`tools/lab/office_carry.py`）
+
+| `meta.json` 键 | 盲测机 A | 伴随机 B | 说明 |
+|---|---|---|---|
+| `purpose` / `role` | `purpose: blind_test` | `role: gt_companion`（App 写的；建图测试会话 `purpose: test`），或 `purpose: ground_truth` | |
+| `camera` | `false`（必须） | — | 有摄像头的盲测会话不收 |
+| `pair_id` | 必须 | 必须，和 A 相同 | 配对用 |
+| `carry_mode` | `texting` / `pocket_front` / `hand_swing` / `calling` / `bag` / `mixed` … | — | `texting` 等手持看屏的方式已知起点时给真值起步朝向，其余整圆 |
+| `lever_arm_cm` | — | 默认 25 | 盲测机在伴随机后面多远（沿行进方向） |
+| `map_id` | 必须 | 可选（没有就跟着配对的盲测会话） | |
+
+两机开始、结束各叠在一起敲三下（间隔约 0.5 s）；对时优先用两机的 `acc_raw.csv`（100 Hz），没有时用 `imu.csv`；B 要么是带 `arkit_pose.csv` + `anchors.csv` 的建图式会话，要么已经有导出的 `truth.csv`。
+
 ## 位置真值导出（`tools/magmap.py --truth-dir`）
 
 `<会话名>.csv`，列 `t_ms,x_cm,y_cm`，约 10 Hz，是对齐后的地图坐标。给 `hpass-replay` 离线回放用。

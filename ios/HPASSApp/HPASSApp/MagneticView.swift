@@ -948,12 +948,12 @@ struct MagneticView: View {
         if engine.phase != .live { fieldSection }
         if engine.phase != .live {
             Section {
-                Text("1. 打开传感器（手机竖着拿，摄像头朝前）。\n2. 不知道在哪：点「自动定位」，沿通道走 10～20 米。\n   知道在哪：长按地图定点，点「设朝向」让箭头指向前方再确定。\n3. 走起来，蓝点跟着动；没把握时不显示，丢了会变灰冻结。")
+                Text("1. 打开传感器（不用摄像头；拿在手里看屏最准，口袋 / 包里 / 打电话还在实测验证中）。\n2. 不知道在哪：点「自动定位」，沿通道走 10～20 米。\n   知道在哪：长按地图定点，点「设朝向」让箭头指向前方再确定。\n3. 走起来，蓝点跟着动；没把握时不显示，丢了会变灰冻结。")
                     .font(.footnote).foregroundStyle(.secondary)
                 bigButton("打开传感器，开始", name: "实时·开始") { engine.startLive() }
                     .disabled(engine.phase != .idle)
                 DisclosureGroup("设置（默认就能用）") {
-                    Toggle("视觉里程计（摄像头 + ARKit，取代计步）", isOn: $engine.useVisualOdometry)
+                    Toggle("视觉增强（竖持时用摄像头认房间，只当位置观测）", isOn: $engine.visualEnhancement)
                     Toggle("地磁纠偏（需要已有磁场数据）", isOn: $engine.useMagCorrection)
                         .disabled(store.field == nil)
                     Picker("激光雷达测障碍物距离", selection: $engine.depthMode) {
@@ -964,7 +964,7 @@ struct MagneticView: View {
                     Toggle("用罗盘修正航向", isOn: $engine.useCompassHeading)
                 }
                 if store.field == nil {
-                    Text("还没有磁场图：只能靠视觉里程计推算，没有地磁纠偏。先去「采集」页采集并生成磁场图。")
+                    Text("还没有磁场图：只能靠计步推算，没有地磁纠偏。先去「采集」页采集并生成磁场图。")
                         .font(.footnote).foregroundStyle(.orange)
                 }
                 if store.field != nil && store.usesStoreMap {
@@ -972,7 +972,7 @@ struct MagneticView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             } header: { Text("实时定位") } footer: {
-                Text("视觉里程计要手机竖着拿、摄像头朝前，耗电发热，丢跟踪时自动退回计步。激光雷达「只记录」不影响定位，只把测到的左右障碍物距离存进文件，用来和地图核对；核对没问题再选「参与定位」。罗盘在钢障碍物旁常偏几十度，默认关闭。")
+                Text("定位默认不用摄像头，计步永远在推算。「视觉增强」只在手机竖着拿时开摄像头，认出房间时当一次位置观测，耗电发热。激光雷达「只记录」不影响定位，只把测到的左右障碍物距离存进文件，用来和地图核对；核对没问题再选「参与定位」。罗盘在钢障碍物旁常偏几十度，默认关闭。")
             }
         } else {
             Section {
@@ -999,15 +999,15 @@ struct MagneticView: View {
                 }
                 row("持握", engine.posture.title)
                 if !engine.magSourceText.isEmpty { row("磁场来源", engine.magSourceText).font(.footnote) }
-                if engine.useVisualOdometry {
+                if engine.visualEnhancement {
                     HStack {
-                        Text("视觉里程计")
+                        Text("视觉增强")
                         Spacer()
                         Text(visualOdometryText).fontWeight(.semibold)
                             .foregroundStyle(engine.vioAligned ? .green : (engine.vioTracking == 2 ? .orange : .secondary))
                     }
                     if engine.isTracking && !engine.posture.suitsCamera {
-                        Text("手机太平或反扣，摄像头看不到前方，视觉里程计会丢跟踪。请竖起一点，摄像头朝前。")
+                        Text("现在的拿法摄像头看不到前方：只靠计步 + 地磁定位（不影响使用）。")
                             .font(.footnote).foregroundStyle(.orange)
                     }
                 }
@@ -1102,8 +1102,8 @@ struct MagneticView: View {
     }
 
     private var visualOdometryText: String {
-        if engine.vioTracking == 0 { return engine.isTracking ? "不可用" : "定点后启动" }
-        if engine.vioAligned { return "已对齐，在用" }
+        if engine.vioTracking == 0 { return engine.isTracking ? "摄像头关（竖着拿 3 秒自动开）" : "定点后启动" }
+        if engine.vioAligned { return "已对齐（AR 叠加 / 位置观测）" }
         if engine.vioTracking == 2 { return "对齐中 \(Int(engine.vioProgress * 100))%（直走 1.5 m）" }
         return "跟踪受限，用计步顶上"
     }
@@ -1345,7 +1345,7 @@ struct MagneticView: View {
             }
         } header: { Text("用磁场图定位") } footer: {
             if engine.phase != .localizing {
-                Text("已知起点：站在所选点位上，面朝下一个点位（最后一个点位则面朝上一个）再点开始。未知起点：沿通道正常走 10～20 米，找到之前不显示位置。开了视觉里程计会准很多，手机竖着拿、摄像头朝前。")
+                Text("已知起点：站在所选点位上，面朝下一个点位（最后一个点位则面朝上一个）再点开始。未知起点：沿通道正常走 10～20 米，找到之前不显示位置。定位不用摄像头；拿在手里看屏最准，口袋 / 包里 / 打电话还在实测验证中。")
             }
         }
 

@@ -107,6 +107,59 @@ point_id,x_cm,y_cm,t_start_ms,t_end_ms,note
 
 离线建图时只把 `start` 和 `reanchor` 当真值：相邻两个锚点之间，用它们拟合「旋转 + 平移」把 ARKit 轨迹对到地图上，终点残差按时间线性摊回去；最后一个锚点之后沿用上一段的旋转，且最多信任 30 m。
 
+---
+
+# 格式 v4：imu.csv 加重力列、四元数改真值（iOS，`meta.json` 里 `imu_format: 4`）
+
+```
+t_ms,ax,ay,az,gx,gy,gz,mx,my,mz,mag_acc,qw,qx,qy,qz,heading_deg,gvx,gvy,gvz
+```
+
+前 16 列与 v1 相同、顺序不变（按列名或按下标读的老工具都不受影响），末尾多三列：
+
+| 列 | 单位 | 约定 |
+|---|---|---|
+| gvx..gvz | m/s² | CoreMotion 陀螺辅助的重力（`CMDeviceMotion.gravity × 9.80665`）。**统一成 Android 约定**：手机屏幕朝上平放时 ≈ (0, 0, **+9.81**)，与 ax..az 同号。iOS 原始值方向相反，App 里已取负；公开数据转换器写 `TYPE_GRAVITY` 时不用取负 |
+| qw..qz | — | CoreMotion `attitude.quaternion` 真值（v1–v3 的实时定位页写的是占位 1,0,0,0）。参考系见 `meta.json` 的 `attitude_frame` |
+
+`meta.json` 相关字段：
+
+| 字段 | 说明 |
+|---|---|
+| `imu_format` | 4 |
+| `attitude_frame` | `xArbitraryZVertical`（实时定位 / 盲测：姿态不用磁力计，偏航只靠陀螺 + 重力）或 `xMagneticNorthZVertical`（建图 / 采集：要 iOS 校准后磁场和系统航向） |
+| `mag_calibration` | `ios`：mx..mz 是 iOS 校准后磁场；`app_hard_iron:<来源>`：参考系不含磁力计时 iOS 不给校准值，mx..mz = `mag_raw` − 本机硬铁偏置，来源 `learned`（建图 / 采集会话学到的存档）、`sphere_fit`（现场球面拟合）、`none`（还没有，mx..mz 为 0、mag_acc = -1） |
+| `mag_bias_ut` | 用到的偏置 [x, y, z] µT（有时才写） |
+
+`mag_acc`：`ios` 时同 v1；`app_hard_iron` 时 2 = 存档偏置、1 = 现场拟合、-1 = 没有偏置。
+
+## 实时定位 / 盲测会话（`mag-tracks/<时间>_files/`，`meta.json` 里 `live: true`）
+
+不开摄像头也录。文件：`imu.csv`（v4）、`mag_raw.csv`、`ble.csv`、`signs.csv`、`track.csv`（结束时拷入）、`meta.json`；
+开了「视觉增强」且摄像头打开过时另有 `arkit_pose.csv` 等（`arkit: true`）。盲测会话另有 `acc_raw.csv`。
+
+`track.csv`：
+
+```
+t_ms,x_cm,y_cm,unc_cm,conf,pdr_x,pdr_y,heading_deg,steps,b_total,b_vert,b_horiz,check,src,trust,posture,lat_left_cm,lat_right_cm,room_id,carry_mode
+```
+
+- `src`：终端用户定位里恒为 `pdr`（计步永远推粒子）。旧版本出现的 `visual` / `vio` / `vio-raw` 不再产生。
+- `check`：`视觉观测` 表示这一刻用了一次视觉重定位当位置观测（σ 50 cm，只在「视觉增强」开着、手机竖持时）。
+- `room_id`：房间级输出接入前为空，离线按 map.json 的 units 计算。
+- `carry_mode`：盲测会话声明的携带方式（中途切换后跟着变），普通定位为空。
+
+`acc_raw.csv`（盲测机 / 伴随真值机，对时用）：`t_ms,ax,ay,az`，≈100 Hz 原始加速度计（`CMAccelerometerData`），
+m/s²，Android 约定（含重力，平放 az ≈ +9.81）。
+
+盲测会话 `meta.json` 另有：`purpose: "blind_test"`、`protocol: "office-carry-v1"`、`camera: false`、`carry_mode`、
+`route`、`pair_id`（伴随机广播的 8 位十六进制配对编号）、`pair_source`（`ble` / `manual` / 空）、`bumps_ms`（在线检测到的敲击时刻，只作核对，
+离线以 `acc_raw.csv` 互相关为准）、`mode_switches`（`[{t_ms, mode}]`）、`map_id`、`map_version`、`model`、`battery_start/end`、
+`thermal_start/end`、`proximity_monitoring`。
+
+伴随真值机用建图采集的测试会话（`survey: true`、`purpose: "test"`，格式 v3），`meta.json` 另有 `role: "gt_companion"`、
+`pair_id`、`lever_arm_cm`、`bumps_ms`、`mode_switch_marks_ms`；地贴处的长按修正记在 `anchors.csv`（`kind = reanchor`）。
+
 ## 位置真值导出（`tools/magmap.py --truth-dir`）
 
 `<会话名>.csv`，列 `t_ms,x_cm,y_cm`，约 10 Hz，是对齐后的地图坐标。给 `hpass-replay` 离线回放用。

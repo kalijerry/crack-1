@@ -487,8 +487,9 @@ struct PermissionExplainer: View {
 
     static let positioning: [Item] = [
         Item(systemImage: "gyroscope", title: "运动与健身", reason: "用加速度计、陀螺仪推算你走了多远、朝哪走"),
-        Item(systemImage: "camera", title: "相机", reason: "视觉里程计让定位更稳，画面只在本机处理、不保存"),
-        Item(systemImage: "location", title: "位置（使用期间）", reason: "只读罗盘方向，不使用你的地理位置"),
+        Item(systemImage: "location", title: "位置（使用期间）",
+             reason: "让定位在锁屏、放进口袋后继续运行：iOS 只有在用位置时才允许 App 在后台继续读运动传感器。我们只请求最低精度（3 公里级），不读取、不保存、不上传你的经纬度；状态栏的定位图标表示正在保持定位，结束定位后立即停止。会多耗一些电"),
+        Item(systemImage: "camera", title: "相机（可选）", reason: "定位默认不用摄像头。只有在设置里打开「视觉增强」、手机竖着拿时才用来认房间，画面只在本机处理、不保存"),
         Item(systemImage: "antenna.radiowaves.left.and.right", title: "蓝牙（可选）", reason: "附近有蓝牙信标时辅助定位"),
     ]
 

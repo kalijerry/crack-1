@@ -137,3 +137,59 @@ def quality_rejected(session_dir):
     if q.get("kept", True):
         return None
     return q.get("reason") or f"质量分 {q.get('score', 0)}"
+
+
+def survey_summary(session_dir):
+    """一段建图采集的「校准」情况，给云端日志看：走了多久 / 多远、起点怎么定的、
+    途中修正（长按 / 视觉重定位 / 标签）几次、每次修正前偏了多少、ARKit 跟踪受限的比例。
+    读 anchors.csv 和 arkit_pose.csv；缺文件返回 None。"""
+    import csv, re
+    ap = os.path.join(session_dir, "anchors.csv")
+    if not os.path.exists(ap):
+        return None
+    rows = list(csv.DictReader(open(ap, encoding="utf-8")))
+    s = {"anchors": len(rows), "reanchors": 0, "visual": 0, "jumps_cm": [], "walk_m": 0.0, "dur_s": 0.0,
+         "limited": 0.0, "start": ""}
+    for r in rows:
+        note = r.get("note") or ""
+        if r.get("kind") == "reanchor":
+            s["reanchors"] += 1
+            if "视觉" in note:
+                s["visual"] += 1
+            m = re.search(r"修正前偏 (\d+) cm", note)
+            if m:
+                s["jumps_cm"].append(int(m.group(1)))
+        elif not s["start"] and r.get("kind") in ("start", "align"):
+            s["start"] = "自动（地磁 / 认房间）" if "自动" in note else "手动长按"
+    pp = os.path.join(session_dir, "arkit_pose.csv")
+    if os.path.exists(pp):
+        n = lim = 0
+        last = None
+        t0 = t1 = None
+        for r in csv.DictReader(open(pp, encoding="utf-8")):
+            try:
+                t, x, z = int(r["t_ms"]), float(r["x_m"]), float(r["z_m"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            t0 = t if t0 is None else t0
+            t1 = t
+            n += 1
+            if (r.get("tracking") or "2") != "2":     # 2 = normal，1 = limited，0 = 不可用
+                lim += 1
+            if last is not None:
+                d = math.hypot(x - last[0], z - last[1])
+                if d < 2:                          # 跳变不算走路
+                    s["walk_m"] += d
+            last = (x, z)
+        if n:
+            s["limited"] = lim / n
+            s["dur_s"] = (t1 - t0) / 1000
+    return s
+
+
+def format_survey_summary(name, s):
+    j = s["jumps_cm"]
+    jt = ("，修正前偏 " + "/".join(str(x) for x in j) + " cm") if j else ""
+    every = f"，平均每 {s['walk_m'] / s['reanchors']:.0f} m 修正一次" if s["reanchors"] else "，途中一次都没修正"
+    return (f"  {name}：{s['dur_s'] / 60:.1f} 分钟 {s['walk_m']:.0f} m，起点{s['start'] or '?'}，"
+            f"修正 {s['reanchors']} 次（视觉 {s['visual']}）{every}{jt}，ARKit 受限 {s['limited'] * 100:.0f}%")

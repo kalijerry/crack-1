@@ -104,6 +104,8 @@ public struct ScanRegistry: Codable, Equatable {
     public var canvasCm: [Double]?
     /// 地图名（楼层名）；nil = 用第一段的
     public var name: String?
+    /// 楼层序号（ordinal）；nil = 用第一段的
+    public var ordinal: Int?
     public var scans: [ScanRecord]
     /// 用户填的类别 / 名字（按全局单元编号），和扫描段无关，重新合成时套回去
     public var unitLabels: [String: UnitLabel] = [:]

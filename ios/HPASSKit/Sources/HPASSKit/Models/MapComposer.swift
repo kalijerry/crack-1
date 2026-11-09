@@ -238,6 +238,7 @@ public enum MapComposer {
             if let v = ordered.lazy.compactMap({ roots[$0.id]?[key] }).first { root[key] = v }
         }
         if let n = reg.name, !n.isEmpty { root["floorName"] = n }
+        if let o = reg.ordinal { root["ordinal"] = o }
         if root["floorName"] == nil { root["floorName"] = reg.mapId }
         if root["source"] == nil { root["source"] = "roomplan" }
         // geoRef：先找启用的段

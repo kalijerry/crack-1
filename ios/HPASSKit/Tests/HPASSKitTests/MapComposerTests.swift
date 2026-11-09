@@ -69,6 +69,21 @@ final class MapComposerTests: XCTestCase {
         XCTAssertNotNil(root["floorPolygons"])
     }
 
+    func testRegistryNameAndOrdinalOverrideFirstScan() throws {
+        var f = try twoScans()
+        f.reg.name = "三楼办公室"
+        f.reg.ordinal = 3
+        let root = try O.root(try MapComposer.compose(registry: f.reg, scans: f.scans).json)
+        XCTAssertEqual(root["floorName"] as? String, "三楼办公室")
+        XCTAssertEqual(MapGeometry.num(root["ordinal"]), 3)
+        // 注册表编码往返保留楼层序号；老注册表没有这个键也能读
+        let back = try XCTUnwrap(ScanRegistry.decode(try f.reg.encoded()))
+        XCTAssertEqual(back.ordinal, 3)
+        var old = try XCTUnwrap(JSONSerialization.jsonObject(with: try f.reg.encoded()) as? [String: Any])
+        old.removeValue(forKey: "ordinal")
+        XCTAssertNil(try XCTUnwrap(ScanRegistry.decode(try JSONSerialization.data(withJSONObject: old))).ordinal)
+    }
+
     func testDeterministic() throws {
         let f = try twoScans()
         let a = try MapComposer.compose(registry: f.reg, scans: f.scans)

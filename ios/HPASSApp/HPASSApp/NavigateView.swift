@@ -268,7 +268,7 @@ struct NavigateView: View {
         case .idle:
             VStack(alignment: .leading, spacing: DS.Spacing.s) {
                 Text("开始室内定位").font(DS.Typography.title)
-                Text("只用手机的运动传感器和地磁信号找到你的位置，不需要额外硬件。手机竖着拿，摄像头朝前。")
+                Text("只用手机的运动传感器和地磁信号找到你的位置，不需要额外硬件，也不用摄像头：手机拿在手里、放口袋或包里都行，锁屏后也会继续定位。")
                     .font(.callout).foregroundStyle(DS.Palette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

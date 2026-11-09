@@ -228,7 +228,7 @@ final class LiveLocationEngine: ObservableObject {
             self.queue.async { self.handleIMU(s, pipe: pipe) }
         }
         ble.start()
-        motion.start(hz: 50)
+        motion.start(hz: 50, frame: .mapping)      // 这页用 iOS 校准后磁场，保持原来的参考系
         if !motion.isAvailable {
             lastError = "设备运动传感器不可用，只能用纯指纹定位"
         }

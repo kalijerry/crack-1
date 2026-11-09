@@ -2,19 +2,23 @@
 """把 Microsoft Indoor Location Competition 2.0 的一层楼转成我们的会话格式（见 docs/benchmark.md）。
 
   python3 tools/bench/ilc_convert.py <楼层目录(含 path_data_files/ floor_info.json)> <输出目录>
-        [--test-n 15] [--test-min-s 45] [--seed 1] [--drift arkit|pdr|none]
-        [--walkable geojson|paths] [--dilate 2]
+        [--test-n 15] [--test-min-s 45] [--seed 1] [--drift arkit|pdr|none|imu]
+        [--walkable geojson|paths] [--dilate 2] [--flip-y]
 
 输出：
   <out>/map.json            宽高 + floorPolygons：默认来自楼层平面图 geojson_map.json（外轮廓减去店铺等单元，
                             --walkable geojson）；--walkable paths 时只由「建图 trace 的真值路径」膨胀得到（不看测试 trace）
   <out>/build/<id>/         建图会话：imu/mag_raw/ble/wifi/arkit_pose(=真值)/anchors(真值)
-  <out>/test/<id>/          测试会话：imu/mag_raw/ble/wifi + 合成漂移位姿(arkit_pose) + truth.csv(真值)
+  <out>/test/<id>/          测试会话：imu/mag_raw/ble/wifi + 合成漂移位姿(arkit_pose) + truth.csv(真值)；
+                            --drift imu 时 arkit_pose.csv 只有表头（评估用 hpass-eval --motion pdr-imu 回放真实 IMU）
   <out>/manifest.json
 
 近似说明：
 - 真值 = 稀疏 waypoint 按时间线性插值（人在点之间匀速直走）。
 - 测试会话没有 ARKit：位姿 = 真值位移加旋转(随机初始朝向)、尺度误差、朝向随机游走，是合成的，不是真实 PDR。
+  --drift imu 不写合成位姿：运动只能来自真实 IMU（手持 Android 的计步推算），这才量得到 FusionEngine 本身。
+- imu.csv 是格式 v4（docs/data-format.md）：qw..qz = TYPE_ROTATION_VECTOR（设备系 → 东北天，偏航参考磁北），
+  gvx..gvz = 由它算出的重力方向 × g，Android 约定（屏幕朝上平放 ≈ (0, 0, +9.81)）；没有旋转向量时 qw..qz 全 0、gv 留空。
 - Wi-Fi（wifi.csv，格式见 docs/data-format.md）：原始记录里每条带「扫描结果上报时刻」和「这个 AP 最后一次被看到的时刻」，
   系统会把几十秒前缓存的旧结果混进新一轮扫描里；最后看到的时刻比上报时刻早 WIFI_MAX_AGE_MS 以上的丢掉。
   Wi-Fi 只在 Android 能扫（iOS 第三方 App 拿不到），只给 --wifi 场景用。
@@ -27,7 +31,7 @@ WIFI_MAX_AGE_MS = 5000
 
 
 def parse(path):
-    d = {k: [] for k in ("acc", "gyr", "mag", "raw", "ble", "wifi", "wp")}
+    d = {k: [] for k in ("acc", "gyr", "mag", "raw", "ble", "wifi", "wp", "rot")}
     with open(path, errors="ignore") as f:
         for l in f:
             if l[0] == "#":
@@ -44,6 +48,9 @@ def parse(path):
                     d["gyr"].append((t, float(p[2]), float(p[3]), float(p[4])))
                 elif k == "TYPE_MAGNETIC_FIELD":
                     d["mag"].append((t, float(p[2]), float(p[3]), float(p[4])))
+                elif k == "TYPE_ROTATION_VECTOR":
+                    # x, y, z（w 不一定给）：单位四元数的向量部分
+                    d["rot"].append((t, float(p[2]), float(p[3]), float(p[4])))
                 elif k == "TYPE_MAGNETIC_FIELD_UNCALIBRATED":
                     d["raw"].append((t, float(p[2]), float(p[3]), float(p[4])))
                 elif k == "TYPE_BEACON":
@@ -84,18 +91,45 @@ def truth_track(wp, hz=30):
     return out
 
 
+G = 9.80665
+
+IMU_HEADER_V4 = "t_ms,ax,ay,az,gx,gy,gz,mx,my,mz,mag_acc,qw,qx,qy,qz,heading_deg,gvx,gvy,gvz"
+
+
+def rotvec_quat(x, y, z):
+    """Android TYPE_ROTATION_VECTOR 的 (x, y, z) → 单位四元数 (w, x, y, z)，w ≥ 0"""
+    n2 = x * x + y * y + z * z
+    if n2 > 1:
+        n = math.sqrt(n2)
+        x, y, z, n2 = x / n, y / n, z / n, 1.0
+    return math.sqrt(max(0.0, 1.0 - n2)), x, y, z
+
+
+def quat_gravity(w, x, y, z):
+    """设备系 → 世界系（z 朝上）的四元数 → 设备系里的「向上」× g（Android TYPE_GRAVITY 约定：屏幕朝上平放 ≈ (0, 0, +g)）。
+    世界 z 轴在设备系里的分量 = 旋转矩阵的第三行。"""
+    return (G * 2 * (x * z - w * y), G * 2 * (y * z + w * x), G * (1 - 2 * (x * x + y * y)))
+
+
 def write_sensors(dst, d, t0, t1):
     os.makedirs(dst, exist_ok=True)
     gt = [x[0] for x in d["gyr"]]
     mt = [x[0] for x in d["mag"]]
+    rt = [x[0] for x in d["rot"]]
     with open(os.path.join(dst, "imu.csv"), "w", newline="\n") as f:
-        f.write("t_ms,ax,ay,az,gx,gy,gz,mx,my,mz,mag_acc,qw,qx,qy,qz,heading_deg\n")
+        f.write(IMU_HEADER_V4 + "\n")
         for t, ax, ay, az in d["acc"]:
             if t < t0 or t > t1 or not d["gyr"] or not d["mag"]:
                 continue
             _, gx, gy, gz = hold(d["gyr"], t, gt)
             _, mx, my, mz = hold(d["mag"], t, mt)
-            f.write(f"{t},{ax:.4f},{ay:.4f},{az:.4f},{gx:.5f},{gy:.5f},{gz:.5f},{mx:.3f},{my:.3f},{mz:.3f},3,0,0,0,0,-1\n")
+            if d["rot"]:
+                q = rotvec_quat(*hold(d["rot"], t, rt)[1:])
+                gv = quat_gravity(*q)
+                att = "{:.6f},{:.6f},{:.6f},{:.6f},-1,{:.4f},{:.4f},{:.4f}".format(*q, *gv)
+            else:
+                att = "0,0,0,0,-1,,,"
+            f.write(f"{t},{ax:.4f},{ay:.4f},{az:.4f},{gx:.5f},{gy:.5f},{gz:.5f},{mx:.3f},{my:.3f},{mz:.3f},3,{att}\n")
     with open(os.path.join(dst, "mag_raw.csv"), "w", newline="\n") as f:
         f.write("t_ms,mx,my,mz\n")
         for t, x, y, z in d["raw"]:
@@ -111,7 +145,9 @@ def write_sensors(dst, d, t0, t1):
         for t, bssid, rssi, freq in d["wifi"]:
             if t0 <= t <= t1:
                 f.write(f"{t},{bssid},{rssi:.0f},{freq}\n")
-    json.dump({"format_version": 3, "survey": True, "source": "ILC2.0"}, open(os.path.join(dst, "meta.json"), "w", newline="\n"))
+    json.dump({"format_version": 4, "survey": True, "source": "ILC2.0",
+               "imu_quat_frame": "android_rotation_vector" if d["rot"] else None},
+              open(os.path.join(dst, "meta.json"), "w", newline="\n"))
 
 
 def write_poses(dst, poses):
@@ -163,6 +199,16 @@ def merge_rects(occ, cell):
         for r in runs:
             open_.setdefault(r, j)
     return [[a * cell, b * cell, c * cell, b * cell, c * cell, d * cell, a * cell, d * cell] for a, b, c, d in sorted(rects)]
+
+
+def flip_rects(rects, h_cm):
+    """merge_rects 的矩形 [x0,y0,x1,y0,x1,y1,x0,y1] 做 y → h − y（顶点顺序不变）"""
+    out = []
+    for r in rects:
+        x0, y0, x1, y1 = r[0], r[1], r[4], r[5]
+        lo, hi = h_cm - y1, h_cm - y0
+        out.append([x0, lo, x1, lo, x1, hi, x0, hi])
+    return out
 
 
 def dilate_grid(occ, radius_cells):
@@ -280,13 +326,17 @@ def main():
     ap.add_argument("--build-max", type=int, default=0,
                     help="建图最多用几条 trace（随机抽，0 = 全部）：模拟「只走几趟」的稀疏建图")
     ap.add_argument("--seed", type=int, default=1)
-    ap.add_argument("--drift", choices=["arkit", "pdr", "none"], default="arkit")
+    ap.add_argument("--drift", choices=["arkit", "pdr", "none", "imu"], default="arkit",
+                    help="测试会话的位姿：arkit / pdr = 合成漂移；none = 真值；imu = 不写位姿（只有表头），运动只能来自真实 IMU")
     ap.add_argument("--dilate", type=int, default=2, help="--walkable paths：可走区域在真值路径外膨胀多少米")
     ap.add_argument("--walkable", choices=["geojson", "paths"], default=None,
                     help="可走区域来源：geojson = 楼层平面图（外轮廓减去店铺等单元；有 geojson_map.json 时默认）；"
                          "paths = 建图 trace 的真值路径膨胀")
     ap.add_argument("--geo-cell", type=float, default=50, help="--walkable geojson：栅格边长（cm）")
     ap.add_argument("--geo-dilate", type=float, default=75, help="--walkable geojson：可走区域放宽多少（cm）")
+    ap.add_argument("--flip-y", action="store_true",
+                    help="y 翻转（y → 高 − y）：ILC 的坐标 y 朝北（俯视右手系），我们的地图 y 朝下（FusionTypes.swift：θ̇ = +ω_up）。"
+                         "不翻转时真实陀螺的转向和地图上的转向相反（左转变右转）；合成位姿只有旋转，翻不翻转都能用")
     a = ap.parse_args()
     rng = random.Random(a.seed)
     info = json.load(open(os.path.join(a.floor_dir, "floor_info.json")))["map_info"]
@@ -307,7 +357,10 @@ def main():
         build_ids = sorted(random.Random(a.seed + 1).sample(build_ids, a.build_max))
 
     # 漂移参数：ARKit 约 1% 尺度、慢朝向漂移；PDR 约 4% 尺度、朝向漂移快
-    sc, hd = {"arkit": (0.01, math.radians(0.5)), "pdr": (0.04, math.radians(1.5)), "none": (0, 0)}[a.drift]
+    sc, hd = {"arkit": (0.01, math.radians(0.5)), "pdr": (0.04, math.radians(1.5)), "none": (0, 0), "imu": (0, 0)}[a.drift]
+
+    def flip_track(tr):
+        return [(t, x, h_cm - y) for t, x, y in tr] if a.flip_y else tr
 
     pts = []
     for k in build_ids:
@@ -317,19 +370,19 @@ def main():
         dst = os.path.join(a.out, "build", k)
         t0, t1 = d["wp"][0][0], d["wp"][-1][0]
         write_sensors(dst, d, t0, t1)
-        write_poses(dst, tr)           # 建图会话：位姿直接是真值（地图坐标），锚点 = 全部 waypoint
+        write_poses(dst, flip_track(tr))   # 建图会话：位姿直接是真值（地图坐标），锚点 = 全部 waypoint
         with open(os.path.join(dst, "anchors.csv"), "w", newline="\n") as f:
             f.write("t_ms,kind,map_x_cm,map_y_cm,ar_x_cm,ar_z_cm,heading_rad,note\n")
             f.write(f"{t0},align,0,0,0,0,0,\n")
-            for i, (t, x, y) in enumerate(d["wp"]):
+            for i, (t, x, y) in enumerate(flip_track(d["wp"])):
                 f.write(f"{t},{'start' if i == 0 else 'reanchor'},{x:.1f},{y:.1f},{x:.1f},{y:.1f},,\n")
     for k in test_ids:
         d = traces[k]
-        tr = truth_track(d["wp"])
+        tr = flip_track(truth_track(d["wp"]))
         dst = os.path.join(a.out, "test", k)
         t0, t1 = d["wp"][0][0], d["wp"][-1][0]
         write_sensors(dst, d, t0, t1)
-        write_poses(dst, drift_poses(tr, rng, sc, hd))
+        write_poses(dst, [] if a.drift == "imu" else drift_poses(tr, rng, sc, hd))
         open(os.path.join(dst, "anchors.csv"), "w", newline="\n").write("t_ms,kind,map_x_cm,map_y_cm,ar_x_cm,ar_z_cm,heading_rad,note\n")
         with open(os.path.join(dst, "truth.csv"), "w", newline="\n") as f:
             f.write("t_ms,x_cm,y_cm\n")
@@ -353,9 +406,11 @@ def main():
         })
     else:
         polys = floor_polygons(pts, w_cm, h_cm, a.dilate)
+    if a.flip_y:
+        polys = flip_rects(polys, h_cm)
     json.dump({"width": w_cm, "height": h_cm, "mapElementList": [], "floorPolygons": polys, "floorName": "ILC"},
               open(os.path.join(a.out, "map.json"), "w", newline="\n"))
-    json.dump({"build": build_ids, "test": test_ids, "drift": a.drift, "durations_s": {k: round(dur[k], 1) for k in test_ids},
+    json.dump({"build": build_ids, "test": test_ids, "drift": a.drift, "flip_y": a.flip_y, "durations_s": {k: round(dur[k], 1) for k in test_ids},
                "walkable": walk_info},
               open(os.path.join(a.out, "manifest.json"), "w", newline="\n"), indent=1)
     print(f"建图 {len(build_ids)} 条，测试 {len(test_ids)} 条，可走矩形 {len(polys)} 个（{walk_info}）-> {a.out}")

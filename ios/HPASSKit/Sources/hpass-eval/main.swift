@@ -6,6 +6,10 @@ import HPASSKit
 //   swift run -c release hpass-eval --map map.json --build s1,s2 --test t1,t2 [--no-ble] [--json report.json]
 //
 // 会话目录里要有 imu.csv、arkit_pose.csv、anchors.csv（建图采集会话的格式），mag_raw.csv / ble.csv 可选。
+//
+//   --motion poses|pdr-imu        粒子滤波的运动：位姿（默认）/ 真实 IMU 计步推算（同 App 实时定位页的 FusionEngine 配置）
+//   --start-heading truth|unknown 已知起点（--oracle-start）的起步朝向：真值前 1.5 m 方向（默认）/ 整圆撒开
+//   --track-out track.csv         每个运动节拍一行估计 + 参考（tools/lab/office_metrics.py 用）
 
 func arg(_ name: String) -> String? {
     guard let i = CommandLine.arguments.firstIndex(of: name), i + 1 < CommandLine.arguments.count else { return nil }
@@ -105,6 +109,18 @@ do {
     let odoArg = arg("--odometry") ?? "pdr"
     guard let odometry = OdometrySource(rawValue: odoArg) else { print("--odometry 只能是 vio 或 pdr"); exit(2) }
     if CommandLine.arguments.contains("--oracle-start") { print("跟踪配置档：\(odometry.rawValue)") }
+    // 粒子滤波的运动从哪来：poses = arkit_pose.csv（默认，老行为；公开数据集是合成漂移）；
+    // pdr-imu = 真实 IMU 走 FusionEngine 计步推算（配置同 App 实时定位页），arkit_pose.csv 可以只有表头
+    let motionArg = arg("--motion") ?? "poses"
+    guard let motion = SessionEvaluator.MotionSource(rawValue: motionArg) else { print("--motion 只能是 poses 或 pdr-imu"); exit(2) }
+    // 已知起点的起步朝向：truth = 真值前 1.5 m 的方向（默认；等于假定手机-行走夹角 δ≈0，只对手持看屏成立），
+    // unknown = 整圆撒开（口袋 / 包 / 摆臂，不把真值航向漏给滤波器）
+    let shArg = arg("--start-heading") ?? "truth"
+    guard let startHeading = SessionEvaluator.StartHeading(rawValue: shArg) else { print("--start-heading 只能是 truth 或 unknown"); exit(2) }
+    if motion == .pdrIMU { print("运动来源：真实 IMU 计步推算（FusionEngine）" + (CommandLine.arguments.contains("--oracle-start") ? "，起步朝向 \(startHeading.rawValue)" : "")) }
+    // --track-out：每个运动节拍一行（会话、第几次、时刻、估计、是否有把握、不确定度、参考），给 tools/lab/office_metrics.py
+    let trackOut = arg("--track-out")
+    var trackLines = ["session,run,t_ms,est_x,est_y,converged,unc_cm,ref_x,ref_y"]
     for t in test {
         var rs: [EvalReport] = []
         for k in 0..<runs {
@@ -149,7 +165,12 @@ do {
                                                   odometry: odometry,
                                                   // 冷启动收敛门：只在冷启动、还没用过蓝牙先验时起作用；--oracle-start 的跟踪从不用
                                                   coldStartGate: CommandLine.arguments.contains("--cold-gate"),
-                                                  wifi: useWiFi ? built.wifi : nil)
+                                                  wifi: useWiFi ? built.wifi : nil, motion: motion, startHeading: startHeading,
+                                                  onTrack: trackOut == nil ? nil : { p in
+                func f1(_ v: Double?) -> String { v.map { String(format: "%.1f", $0) } ?? "" }
+                trackLines.append("\(t.lastPathComponent),\(k + 1),\(p.tMs),\(f1(p.estimate?.x)),\(f1(p.estimate?.y)),"
+                                  + "\(p.converged ? 1 : 0),\(f1(p.uncertaintyCm.flatMap { $0.isFinite ? $0 : nil })),\(f1(p.reference.x)),\(f1(p.reference.y))")
+            })
             if runs == 1 { print(r.line) }
             rs.append(r)
         }
@@ -183,6 +204,10 @@ do {
     }
     let all = out.compactMap(\.medianCm)
     if all.count > 1 { print(String(format: "测试会话中位误差的中位：%.0f cm", all.sorted()[all.count / 2])) }
+    if let p = trackOut {
+        try (trackLines.joined(separator: "\n") + "\n").write(toFile: p, atomically: true, encoding: .utf8)
+        print("逐点轨迹已写到 \(p)（\(trackLines.count - 1) 行）")
+    }
     if let j = arg("--json") {
         let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         try enc.encode(out).write(to: URL(fileURLWithPath: j))

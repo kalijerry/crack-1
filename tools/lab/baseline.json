@@ -153,6 +153,66 @@
     "first_fix_m": 14.7,
     "fixed_share": 1.0
    }
+  },
+  {
+   "id": "public/imu/track-mag",
+   "metrics": {
+    "replays": 75,
+    "points": 12319,
+    "median_cm": 324.5,
+    "p75_cm": 538.1,
+    "p90_cm": 754.6,
+    "wrong_fix": 0.2943,
+    "within2m": 0.3461,
+    "coverage": 0.9458,
+    "first_fix_m": 0,
+    "fixed_share": 1.0
+   }
+  },
+  {
+   "id": "public/imu/cold-mag-search",
+   "metrics": {
+    "replays": 75,
+    "points": 10172,
+    "median_cm": 7055.6,
+    "p75_cm": 10057.4,
+    "p90_cm": 12753.1,
+    "wrong_fix": 0.9875,
+    "within2m": 0.0022,
+    "coverage": 0.781,
+    "first_fix_m": 10.7,
+    "fixed_share": 1.0
+   }
+  },
+  {
+   "id": "public/imu/cold-mag-radio",
+   "metrics": {
+    "replays": 75,
+    "points": 1135,
+    "median_cm": 2351.0,
+    "p75_cm": 3929.7,
+    "p90_cm": 7052.7,
+    "wrong_fix": 0.9498,
+    "within2m": 0.0211,
+    "coverage": 0.0871,
+    "first_fix_m": 24.2,
+    "fixed_share": 0.36
+   }
+  },
+  {
+   "id": "public/imu/cold-wifi",
+   "metrics": {
+    "replays": 75,
+    "points": 7274,
+    "median_cm": 235.1,
+    "p75_cm": 426.0,
+    "p90_cm": 659.7,
+    "wrong_fix": 0.1859,
+    "within2m": 0.4288,
+    "coverage": 0.5585,
+    "first_fix_m": 22.1,
+    "fixed_share": 1.0
+   }
   }
  ]
 }

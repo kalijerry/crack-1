@@ -653,15 +653,11 @@ final class MagneticEngine: ObservableObject {
     /// - Parameter compass: nil = 按页面上「用罗盘修正航向」的开关；冷启动时显式指定。
     private func makeFusion(at p: Point2, heading: Double?, declinationDeg: Double? = nil, compass: Bool? = nil) -> FusionEngine {
         let store = MagMapStore.shared
-        var cfg = FusionConfig()
-        // 有场地通道时，惯导位置被限制在通道里（与蓝牙定位页一致）
-        cfg.useCorridorConstraint = !store.crosses.isEmpty
-        cfg.useMagneticHeading = compass ?? useCompassHeading
-        cfg.stepLengthScale = stepScale
-        if let d = declinationDeg ?? store.declinationDeg { cfg.magneticDeclinationDeg = d }
-        let f = FusionEngine(corridors: store.crosses, config: cfg)
-        f.setInitialPosition(p, headingRad: heading)
-        return f
+        // 和离线评估（SessionEvaluator .pdrIMU、hpass-eval --motion pdr-imu）同一份配置（HPASSKit FusionEngine.live）：
+        // 有场地通道时惯导位置被限制在通道里，罗盘按页面开关（冷启动显式指定）
+        return FusionEngine.live(corridors: store.crosses, start: p, headingRad: heading,
+                                 compass: compass ?? useCompassHeading, stepLengthScale: stepScale,
+                                 declinationDeg: declinationDeg ?? store.declinationDeg)
     }
 
     private func makeLocalizer(field: MagneticFieldMap, start: Point2?, headingUnknown: Bool = false,

@@ -107,6 +107,41 @@ point_id,x_cm,y_cm,t_start_ms,t_end_ms,note
 
 离线建图时只把 `start` 和 `reanchor` 当真值：相邻两个锚点之间，用它们拟合「旋转 + 平移」把 ARKit 轨迹对到地图上，终点残差按时间线性摊回去；最后一个锚点之后沿用上一段的旋转，且最多信任 30 m。
 
+---
+
+# 格式 v4：imu.csv 加重力列、四元数写真值（`meta.json` 里 `format_version: 4`）
+
+`imu.csv` 在 v1 的 16 列后面再加三列，老的读取方（只看前 10 列）不受影响：
+
+```
+t_ms,ax,ay,az,gx,gy,gz,mx,my,mz,mag_acc,qw,qx,qy,qz,heading_deg,gvx,gvy,gvz
+```
+
+| 列 | 单位 | 约定 |
+|---|---|---|
+| qw..qz | — | **真的**姿态四元数（设备系 → 参考系，参考系 z 朝上）。v3 及以前实时定位页写的是占位 1,0,0,0，不能用；不可用时全 0 |
+| gvx..gvz | m/s² | 设备系里的「向上」× g，**Android `TYPE_GRAVITY` 约定**：屏幕朝上平放 ≈ (0, 0, **+9.81**)，和 ax..az 同号。iOS 的 `CMDeviceMotion.gravity` 平放是 (0, 0, −1) g，写入时要 **× −9.81**，否则 Bz 直接反号。不可用时留空 |
+
+`meta.json` 的 `imu_quat_frame` 说明四元数的参考系：
+
+- `x_arbitrary_z_vertical`：iOS `CMAttitudeReferenceFrame.xArbitraryZVertical`（偏航任意，只用陀螺 + 重力，**不用磁力计**）。
+  注意 `.xArbitraryCorrectedZVertical` 会用磁力计改善偏航，不是我们要的；
+- `android_rotation_vector`：Android `TYPE_ROTATION_VECTOR`（东北天，偏航参考磁北；公开 ILC 数据集转换时用它）；
+- 没有这个键或为 null：四元数不可用。
+
+## 盲测 / 真值伴随会话（办公室双机协议，`tools/lab/office_carry.py`）
+
+| `meta.json` 键 | 盲测机 A | 伴随机 B | 说明 |
+|---|---|---|---|
+| `purpose` | `blind_test` | `ground_truth` | |
+| `camera` | `false`（必须） | — | 有摄像头的盲测会话不收 |
+| `pair_id` | 必须 | 必须，和 A 相同 | 配对用 |
+| `carry_mode` | `texting` / `pocket_front` / `hand_swing` / `calling` / `bag` / `mixed` … | — | `texting` 等手持看屏的方式已知起点时给真值起步朝向，其余整圆 |
+| `lever_arm_cm` | — | 默认 25 | 盲测机在伴随机后面多远（沿行进方向） |
+| `map_id` | 必须 | 可选（没有就跟着配对的盲测会话） | |
+
+两机开始、结束各叠在一起敲三下（间隔约 0.5 s）；B 要么是带 `arkit_pose.csv` + `anchors.csv` 的建图式会话，要么已经有导出的 `truth.csv`。
+
 ## 位置真值导出（`tools/magmap.py --truth-dir`）
 
 `<会话名>.csv`，列 `t_ms,x_cm,y_cm`，约 10 Hz，是对齐后的地图坐标。给 `hpass-replay` 离线回放用。

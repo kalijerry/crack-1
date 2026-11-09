@@ -27,11 +27,8 @@ public enum SurveySessionLoader {
             }
             return text.split(separator: "\n").dropFirst().map { $0.split(separator: ",", omittingEmptySubsequences: false) }
         }
-        let imu = try rows("imu.csv").compactMap { r -> IMUSample? in
-            guard r.count >= 10, let t = Int64(r[0]) else { return nil }
-            let v = r[1...9].map { Double($0) ?? 0 }
-            return IMUSample(tMs: t, ax: v[0], ay: v[1], az: v[2], gx: v[3], gy: v[4], gz: v[5], mx: v[6], my: v[7], mz: v[8])
-        }
+        // 格式 v4 的重力 / 四元数列有就读（IMUSample.fromCSV），v3 照旧只有前 10 列
+        let imu = try rows("imu.csv").compactMap { IMUSample.fromCSV($0) }
         let raw = try rows("mag_raw.csv", required: false).compactMap { r -> (tMs: Int64, v: (Double, Double, Double))? in
             guard r.count >= 4, let t = Int64(r[0]), let x = Double(r[1]), let y = Double(r[2]), let z = Double(r[3]) else { return nil }
             return (t, (x, y, z))

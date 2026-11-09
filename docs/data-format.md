@@ -122,6 +122,14 @@ t_ms,ax,ay,az,gx,gy,gz,mx,my,mz,mag_acc,qw,qx,qy,qz,heading_deg,gvx,gvy,gvz
 | qw..qz | — | **真的**姿态四元数（设备系 → 参考系，参考系 z 朝上）。v3 及以前实时定位页写的是占位 1,0,0,0，不能用；不可用时全 0 |
 | gvx..gvz | m/s² | 设备系里的「向上」× g，**Android `TYPE_GRAVITY` 约定**：屏幕朝上平放 ≈ (0, 0, **+9.81**)，和 ax..az 同号。iOS 的 `CMDeviceMotion.gravity` 平放是 (0, 0, −1) g，写入时要 **× −9.81**，否则 Bz 直接反号。不可用时留空 |
 
+读取端（`IMUSample.fromCSV`）按列数判断：≥ 19 列视为 v4，重力列模长在 5～15 m/s² 之间才用、四元数模长接近 1 才用；
+老文件照旧只读前 10 列，姿态和地磁特征退回加速度低通，行为不变。
+
+为什么要这几列：摆臂时手的离心加速度会把「加速度低通」估的向上方向带偏几十度，Bz 差 10～20 µT；CoreMotion 的 gravity 是陀螺辅助的，
+不受影响。iOS 端的参考系要用 **不含磁力计** 的 `.xArbitraryZVertical`（`.xArbitraryCorrectedZVertical` 仍用磁力计改善偏航），
+偏航只靠陀螺 + 重力，磁场由我们自己处理；换参考系后 `CMDeviceMotion.magneticField` 可能不可用，偏置估计要走原始磁力计那条路（待真机核对）。
+四元数目前只在没有重力列时用来推向上方向，**偏航不用**（iOS 四元数到这个约定的换算还没在真机上核对）。
+
 `meta.json` 的 `imu_quat_frame` 说明四元数的参考系：
 
 - `x_arbitrary_z_vertical`：iOS `CMAttitudeReferenceFrame.xArbitraryZVertical`（偏航任意，只用陀螺 + 重力，**不用磁力计**）。

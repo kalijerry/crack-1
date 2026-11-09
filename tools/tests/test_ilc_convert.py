@@ -205,5 +205,70 @@ class ConvertTests(unittest.TestCase):
             self.assertTrue((out / "test" / man["test"][0] / "truth.csv").exists())
 
 
+class AttitudeColumnTests(unittest.TestCase):
+    """格式 v4：TYPE_ROTATION_VECTOR → qw..qz，重力列 gvx..gvz 用 Android 约定（屏幕朝上平放 ≈ (0, 0, +g)）"""
+
+    def test_flat_and_upright(self):
+        q = ilc_convert.rotvec_quat(0, 0, 0)
+        self.assertEqual(q, (1.0, 0, 0, 0))
+        g = ilc_convert.quat_gravity(*q)
+        self.assertAlmostEqual(g[2], ilc_convert.G)
+        s = 2 ** -0.5                                   # 绕 x 轴转 90°：竖起来、屏幕对着人，「上」是设备 +y
+        gx, gy, gz = ilc_convert.quat_gravity(*ilc_convert.rotvec_quat(s, 0, 0))
+        self.assertAlmostEqual(gx, 0, places=6)
+        self.assertAlmostEqual(gy, ilc_convert.G, places=6)
+        self.assertAlmostEqual(gz, 0, places=6)
+
+    def test_flip_rects(self):
+        self.assertEqual(ilc_convert.flip_rects([[0, 100, 50, 100, 50, 300, 0, 300]], 1000),
+                         [[0, 700, 50, 700, 50, 900, 0, 900]])
+
+
+class DriftImuTests(unittest.TestCase):
+    """--drift imu：测试会话的 arkit_pose.csv 只有表头（运动只能来自真实 IMU）；--flip-y 把 y 翻成我们的地图约定"""
+
+    def _convert(self, *extra):
+        td = Path(tempfile.mkdtemp())
+        floor = td / "floor"
+        (floor / "path_data_files").mkdir(parents=True)
+        (floor / "floor_info.json").write_text(json.dumps({"map_info": {"width": 30, "height": 20}}))
+        for i in range(3):
+            p = floor / "path_data_files" / f"tr{i}.txt"
+            fake_trace(p, [])
+            with open(p, "a", encoding="utf-8") as f:
+                for k in range(0, 20_000, 20):
+                    f.write(f"{T0 + k}\tTYPE_ROTATION_VECTOR\t0.0\t0.0\t0.0\t3\n")
+        out = td / "out"
+        subprocess.run([sys.executable, "-I", "-X", "utf8", str(ROOT / "tools" / "bench" / "ilc_convert.py"),
+                        str(floor), str(out), "--test-n", "1", "--test-min-s", "5", *extra], check=True, capture_output=True)
+        return out, json.loads((out / "manifest.json").read_text())
+
+    def test_test_sessions_have_header_only_poses(self):
+        out, man = self._convert("--drift", "imu")
+        t = out / "test" / man["test"][0]
+        self.assertEqual((t / "arkit_pose.csv").read_text().strip().splitlines(),
+                         ["t_ms,x_m,y_m,z_m,qx,qy,qz,qw,tracking,limited_reason"])
+        b = out / "build" / man["build"][0]
+        self.assertGreater(len((b / "arkit_pose.csv").read_text().splitlines()), 10)    # 建图会话照旧
+        with open(t / "imu.csv", newline="") as f:
+            rows = list(csv.DictReader(f))
+        self.assertEqual(list(rows[0])[-3:], ["gvx", "gvy", "gvz"])
+        self.assertEqual(float(rows[0]["qw"]), 1.0)
+        self.assertAlmostEqual(float(rows[0]["gvz"]), 9.8066, places=3)
+        meta = json.loads((t / "meta.json").read_text())
+        self.assertEqual(meta["format_version"], 4)
+        self.assertEqual(meta["imu_quat_frame"], "android_rotation_vector")
+        self.assertFalse(man["flip_y"])
+
+    def test_flip_y(self):
+        out, man = self._convert("--drift", "imu", "--flip-y")
+        self.assertTrue(man["flip_y"])
+        with open(out / "test" / man["test"][0] / "truth.csv", newline="") as f:
+            ys = {float(r["y_cm"]) for r in csv.DictReader(f)}
+        self.assertEqual(ys, {1800.0})                  # waypoint y = 2 m → 20 m − 2 m
+        anchors = (out / "build" / man["build"][0] / "anchors.csv").read_text().splitlines()
+        self.assertIn(",1800.0,", anchors[2])
+
+
 if __name__ == "__main__":
     unittest.main()

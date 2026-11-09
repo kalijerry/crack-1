@@ -70,11 +70,9 @@ if let far = truth.first(where: { $0.p.distance(to: start) >= 150 }) {
 
 let useVIO = CommandLine.arguments.contains("--vio")
 
-var fcfg = FusionConfig()
-fcfg.useCorridorConstraint = !storeMap.crosses.isEmpty
-fcfg.useMagneticHeading = false
-let fusion = FusionEngine(corridors: storeMap.crosses, config: fcfg)
-fusion.setInitialPosition(cold ? Point2(storeMap.width / 2, storeMap.height / 2) : start, headingRad: cold ? 0 : heading)
+// 和 App 实时定位页、hpass-eval --motion pdr-imu 同一份惯导配置（FusionEngine.live），罗盘关
+let fusion = FusionEngine.live(corridors: storeMap.crosses, start: cold ? Point2(storeMap.width / 2, storeMap.height / 2) : start,
+                               headingRad: cold ? 0 : heading, compass: false)
 
 let extractor = MagneticFeatureExtractor()
 // 磁场可信度：与 App 一样用原始磁力计发现系统重新校准（没有 mag_raw.csv 时只看精度）

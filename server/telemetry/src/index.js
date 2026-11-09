@@ -159,7 +159,6 @@ export default {
       const key = "packages/" + id + ".hpmp";
       if (request.method === "PUT") {
         const h = (k) => request.headers.get(k) || "";
-        if (h("x-build-signed") !== "adhoc") return json({ error: "只收签名（Ad Hoc）安装包" }, 400);
         const version = Number(h("x-map-version") || 0);
         const old = await env.DATA.head(key);
         if (old && Number(old.customMetadata?.version || 0) > version) {
@@ -230,6 +229,7 @@ export default {
       const key = "builds/" + name;
       if (request.method === "PUT") {
         const h = (k) => request.headers.get(k) || "";
+        if (h("x-build-signed") !== "adhoc") return json({ error: "只收签名（Ad Hoc）安装包" }, 400);
         await env.DATA.put(key, request.body, {
           httpMetadata: { contentType: "application/octet-stream" },
           customMetadata: { sha: h("x-build-sha"), message: h("x-build-message"), run: h("x-build-run"),

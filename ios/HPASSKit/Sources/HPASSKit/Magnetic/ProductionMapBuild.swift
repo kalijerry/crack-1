@@ -54,7 +54,8 @@ extension MultiSessionFusion {
     /// - tagPositions: 标签位置表（标签 id → 地图位置）；空 = 没有表
     /// - options: 哪些步骤做（云端 = .cloud，全做）
     public func buildProduction(_ sessions: [SurveySession], ble: [[BLESample]], signs: [[SignSample]] = [],
-                                tagPositions: [String: Point2] = [:], options: ProductionOptions = .cloud) -> ProductionBuild? {
+                                tagPositions: [String: Point2] = [:], options: ProductionOptions = .cloud,
+                                onAllRejected: (([SessionQualityGate.Report]) -> Void)? = nil) -> ProductionBuild? {
         let n = sessions.count
         // 采集时质量打分判为差的时段，蓝牙读数也不用（磁场样本在 SurveyMapBuilder.prepare 里丢）
         let bleIn: [[BLESample]] = (0..<n).map { k in
@@ -109,7 +110,8 @@ extension MultiSessionFusion {
             if let keep = v.keep { filters.append(keep); keepIdx.append(k) }
         }
         }
-        guard !keepIdx.isEmpty else { return nil }
+        // 全部没过：把各会话的筛选结果交给调用方（云端建图要打印出来，不然只看到「没有合格的会话」）
+        guard !keepIdx.isEmpty else { onAllRejected?(quality); return nil }
         // 第 3 遍：只用合格的会话和合格的段
         let kept = keepIdx.map { sessions[$0] }
         let keptCorr = keepIdx.map { corrections[$0] }

@@ -231,4 +231,4 @@ SF Symbols，统一 `.symbolRenderingMode(.hierarchical)`：
 
 - 新文件：`DesignSystem.swift`、`AppEngines.swift`、`NavigateView.swift`、`MappingView.swift`、`LibraryView.swift`、`SettingsView.swift`。XcodeGen 的 `sources: - path: HPASSApp` 覆盖整个目录，新文件自动进工程。
 - 引擎共享：`AppEngines` 持有唯一的定位引擎和采集引擎，导航、建图、高级控制台用同一份，避免两个页面同时开传感器。
-- CI：`ios-app`（xcodebuild）和 `hpasskit` 必须通过；新增 `ios-screenshots` 任务在模拟器里用演示数据（`-uiDemo`）截图各个 Tab，上传为 artifact。
+- CI：`ios-app`（xcodebuild）和 `hpasskit` 必须通过。（原来的 `ios-screenshots` 模拟器截图任务已删除。）

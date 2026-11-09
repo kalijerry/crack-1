@@ -10,6 +10,9 @@ on:
       map_id:
         description: "只处理这张地图（留空 = 全部）"
         required: false
+      exclude:
+        description: "不用的会话（会话名，逗号分隔，比如位置对不上的那次）"
+        required: false
       force:
         description: "会话没变也重建"
         type: boolean
@@ -43,6 +46,7 @@ jobs:
           HPASS_TOKEN: ${{ secrets.HPASS_TOKEN }}
           HPASS_BUILD: ios/HPASSKit/.build/release/hpass-build
           MAP_ID: ${{ github.event.inputs.map_id }}
+          EXCLUDE: ${{ github.event.inputs.exclude }}
           FORCE: ${{ github.event.inputs.force == 'true' && '1' || '0' }}
           DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '0' }}
         run: python3 tools/cloud_build.py

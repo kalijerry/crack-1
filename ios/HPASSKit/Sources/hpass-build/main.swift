@@ -80,7 +80,14 @@ do {
     let shelfSigns = ShelfSigns(map: map, walkable: SessionEvaluator.walkable(map))
 
     // 磁场建图流水线（三遍融合 + 标签锚定修正 + 质量筛选 + 只用主体分量）：和评估共用 MultiSessionFusion.buildProduction
-    guard let pb = fusion.buildProduction(sessions, ble: bleSamples, signs: signSamples, tagPositions: tagPos) else {
+    guard let pb = fusion.buildProduction(sessions, ble: bleSamples, signs: signSamples, tagPositions: tagPos,
+                                          onAllRejected: { reports in
+        for q in reports {
+            let ble = q.bleMedianM.map { String(format: "标签 %.1f m（最差 %.1f）", $0, q.bleWorstM ?? 0) } ?? "标签 -"
+            let mag = q.magResidualUT.map { String(format: "磁场残差 %.1f µT（最差 %.1f）", $0, q.magWorstUT ?? 0) } ?? "磁场 -"
+            print("❌ \(q.name)：不用 —— \(q.reason ?? "")（\(ble)，\(mag)，\(q.windows) 段里 \(q.bad) 段不合格）")
+        }
+    }) else {
         print("没有合格的会话，不出图"); exit(3)
     }
     if pb.signObservations > 0 { print("货架标签：\(pb.signObservations) 次") }

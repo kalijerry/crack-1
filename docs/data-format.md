@@ -8,6 +8,7 @@ iOS 和 Android 采集端输出完全相同的格式，`tools/calibrate.py` 直�
 |---|---|
 | `meta.json` | 平台、机型、系统版本、App 版本、开始/结束时间、设备标签 |
 | `ble.csv` | 每条广播一行 |
+| `wifi.csv` | 每次 Wi-Fi 扫描里每个 AP 一行（可选，只有 Android 能扫） |
 | `imu.csv` | 约 50 Hz，每个样本一行 |
 | `marks.csv` | 每次打点一行 |
 
@@ -29,6 +30,22 @@ t_ms,point_id,esl_id,rssi,src,mfg_hex
 - `rssi`：dBm。iOS 上 RSSI 返回 127 表示不可用，这类记录直接丢弃。
 - `src`：发出广播的设备标识。Android 记录 MAC 地址；iOS 拿不到 MAC，记录 CoreBluetooth 分配的 peripheral UUID。
 - `mfg_hex`：完整的厂商数据，**包含** 2 字节公司 ID（小端序）。
+
+## wifi.csv
+
+```
+t_ms,bssid,rssi,freq
+```
+
+可选文件。iOS 第三方 App 拿不到 Wi-Fi 扫描结果，只有 Android 采集端（和公开数据集转换脚本 `tools/bench/ilc_convert.py`）会写；
+定位只在评估加 `--wifi` 时用（`public/pdr/cold-wifi` 场景）。
+
+- `t_ms`：这一轮扫描结果上报的时刻。同一轮扫描的各个 AP 用同一个 `t_ms`，读取时按 `t_ms` 分组成一次扫描。
+- `bssid`：AP 的 MAC 地址，小写，冒号分隔，例如 `a8:0c:ca:03:9d:d7`。
+- `rssi`：dBm。
+- `freq`：信道中心频率（MHz），例如 2437、5180。
+
+系统会把之前缓存的旧结果混进新一轮扫描里：AP「最后一次被看到」的时刻比上报时刻早 5 秒以上的不写进来。
 
 ## imu.csv
 

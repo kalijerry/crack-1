@@ -1,20 +1,20 @@
 {
  "tier": "nightly",
  "runs": 5,
- "commit": "6e0795d1873f00be9de59f40d6e7e724532952bd",
- "created": "2026-11-08T18:27:33Z",
+ "commit": "",
+ "created": "2026-11-08T23:59:39Z",
  "results": [
   {
    "id": "public/pdr/track-mag",
    "metrics": {
     "replays": 75,
-    "points": 22083,
-    "median_cm": 1212.0,
-    "p75_cm": 6011.3,
-    "p90_cm": 9177.3,
-    "wrong_fix": 0.581,
-    "within2m": 0.2173,
-    "coverage": 0.8601,
+    "points": 24592,
+    "median_cm": 93.9,
+    "p75_cm": 156.4,
+    "p90_cm": 240.9,
+    "wrong_fix": 0.01,
+    "within2m": 0.8386,
+    "coverage": 0.9578,
     "first_fix_m": 0,
     "fixed_share": 1.0
    }
@@ -23,14 +23,29 @@
    "id": "public/pdr/cold-mag",
    "metrics": {
     "replays": 75,
-    "points": 16982,
-    "median_cm": 7238.6,
-    "p75_cm": 10511.6,
-    "p90_cm": 13223.5,
-    "wrong_fix": 0.9908,
-    "within2m": 0.0019,
-    "coverage": 0.6614,
-    "first_fix_m": 15.2,
+    "points": 0,
+    "median_cm": null,
+    "p75_cm": null,
+    "p90_cm": null,
+    "wrong_fix": null,
+    "within2m": null,
+    "coverage": 0.0,
+    "first_fix_m": null,
+    "fixed_share": 0.0
+   }
+  },
+  {
+   "id": "public/pdr/cold-mag-search",
+   "metrics": {
+    "replays": 75,
+    "points": 18868,
+    "median_cm": 6941.4,
+    "p75_cm": 9840.3,
+    "p90_cm": 12514.3,
+    "wrong_fix": 0.9791,
+    "within2m": 0.0084,
+    "coverage": 0.7349,
+    "first_fix_m": 14.9,
     "fixed_share": 1.0
    }
   },
@@ -38,28 +53,43 @@
    "id": "public/pdr/cold-mag-radio",
    "metrics": {
     "replays": 75,
-    "points": 1825,
-    "median_cm": 2161.5,
-    "p75_cm": 3040.6,
-    "p90_cm": 6038.2,
-    "wrong_fix": 0.9759,
-    "within2m": 0.0027,
-    "coverage": 0.0711,
+    "points": 556,
+    "median_cm": 1492.8,
+    "p75_cm": 1861.9,
+    "p90_cm": 2042.6,
+    "wrong_fix": 1.0,
+    "within2m": 0.0,
+    "coverage": 0.0217,
     "first_fix_m": 34.8,
-    "fixed_share": 0.4533
+    "fixed_share": 0.28
+   }
+  },
+  {
+   "id": "public/pdr/cold-wifi",
+   "metrics": {
+    "replays": 75,
+    "points": 14934,
+    "median_cm": 197.7,
+    "p75_cm": 380.7,
+    "p90_cm": 572.3,
+    "wrong_fix": 0.1658,
+    "within2m": 0.5054,
+    "coverage": 0.5817,
+    "first_fix_m": 22.4,
+    "fixed_share": 1.0
    }
   },
   {
    "id": "public/pdr-sparse/track-mag",
    "metrics": {
     "replays": 75,
-    "points": 13585,
-    "median_cm": 3092.3,
-    "p75_cm": 7459.1,
-    "p90_cm": 10496.9,
-    "wrong_fix": 0.6676,
-    "within2m": 0.1814,
-    "coverage": 0.5291,
+    "points": 24190,
+    "median_cm": 90.2,
+    "p75_cm": 152.9,
+    "p90_cm": 228.6,
+    "wrong_fix": 0.0076,
+    "within2m": 0.8631,
+    "coverage": 0.9422,
     "first_fix_m": 0,
     "fixed_share": 1.0
    }
@@ -68,13 +98,13 @@
    "id": "public/pdr/track-mag-radio",
    "metrics": {
     "replays": 75,
-    "points": 5800,
-    "median_cm": 517.6,
-    "p75_cm": 1684.2,
-    "p90_cm": 4858.2,
-    "wrong_fix": 0.5097,
-    "within2m": 0.3562,
-    "coverage": 0.2259,
+    "points": 23632,
+    "median_cm": 120.2,
+    "p75_cm": 183.2,
+    "p90_cm": 291.4,
+    "wrong_fix": 0.0394,
+    "within2m": 0.7932,
+    "coverage": 0.9204,
     "first_fix_m": 0,
     "fixed_share": 1.0
    }
@@ -83,13 +113,13 @@
    "id": "public/vio/track-mag",
    "metrics": {
     "replays": 75,
-    "points": 22483,
-    "median_cm": 1245.9,
-    "p75_cm": 6854.2,
-    "p90_cm": 9272.7,
-    "wrong_fix": 0.5793,
-    "within2m": 0.2184,
-    "coverage": 0.8819,
+    "points": 25495,
+    "median_cm": 39.2,
+    "p75_cm": 86.8,
+    "p90_cm": 159.2,
+    "wrong_fix": 0.0008,
+    "within2m": 0.9399,
+    "coverage": 1.0,
     "first_fix_m": 0,
     "fixed_share": 1.0
    }
@@ -98,14 +128,29 @@
    "id": "public/vio/cold-mag",
    "metrics": {
     "replays": 75,
-    "points": 17217,
-    "median_cm": 7070.5,
-    "p75_cm": 10329.1,
-    "p90_cm": 13451.7,
-    "wrong_fix": 0.9645,
-    "within2m": 0.0156,
-    "coverage": 0.6753,
-    "first_fix_m": 15.6,
+    "points": 0,
+    "median_cm": null,
+    "p75_cm": null,
+    "p90_cm": null,
+    "wrong_fix": null,
+    "within2m": null,
+    "coverage": 0.0,
+    "first_fix_m": null,
+    "fixed_share": 0.0
+   }
+  },
+  {
+   "id": "public/vio/cold-mag-search",
+   "metrics": {
+    "replays": 75,
+    "points": 18691,
+    "median_cm": 6818.7,
+    "p75_cm": 9921.1,
+    "p90_cm": 12808.6,
+    "wrong_fix": 0.9783,
+    "within2m": 0.0079,
+    "coverage": 0.7331,
+    "first_fix_m": 14.7,
     "fixed_share": 1.0
    }
   }

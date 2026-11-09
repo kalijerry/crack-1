@@ -32,13 +32,7 @@ do {
     guard !build.isEmpty, !test.isEmpty else { print("--build 和 --test 都要给"); exit(2) }
     let overlap = Set(build.map(\.standardizedFileURL)).intersection(test.map(\.standardizedFileURL))
     if !overlap.isEmpty { print("⚠️ 有会话同时在建图和测试里：\(overlap.map(\.lastPathComponent))，结果会偏乐观") }
-    let (field, bleMap, reps) = try SessionEvaluator.buildMaps(sessions: build, map: map)
-    for r in reps { print("建图 \(r.name)：样本 \(r.samplesUsed)" + (r.warnings.isEmpty ? "" : "，⚠️ \(r.warnings.joined(separator: "；"))")) }
-    print("磁场图：有数据 \(field.coveredCells) 格；蓝牙指纹：\(bleMap.map { "\($0.tags.count) 个标签" } ?? "无")")
-    if CommandLine.arguments.contains("--old-ble") { BLEAssist.defaultTagRanges = false }
-    if CommandLine.arguments.contains("--no-pregate") { BLEAssist.defaultPreGate = false }
-    if CommandLine.arguments.contains("--no-covgate") { BLEAssist.defaultCoverageGate = false }
-    var ble = CommandLine.arguments.contains("--no-ble") ? nil : bleMap
+    // 标签位置表：建图时和 hpass-build 一样用来修正轨迹 / 质量筛选，测试时用来修正参考轨迹
     var refTags: [String: Point2]?
     if let p = arg("--tag-locations") ?? arg("--esl-locations"), let t = try? String(contentsOfFile: p, encoding: .utf8) {
         let locs = TagLocations.parse(t, map: map)
@@ -47,14 +41,70 @@ do {
         refTags = tp
         print("参考轨迹：用标签锚定修正")
     }
+    // 磁场图默认用云端出图同一份流水线（MultiSessionFusion.buildProduction）的融合核心：全局解偏移 + 标签修正，
+    // 不做质量筛选、不排除和主体连不上的分量（原因见 SessionEvaluator.MapBuild.fusion）；
+    // --map-build production = 和云端完全一样（磁场图只用主体分量）；sequential = 手机上按顺序逐个对齐的老办法
+    let modes: [String: SessionEvaluator.MapBuild] = ["sequential": .sequential, "production": .production, "fusion": .fusion]
+    let mapMode = modes[arg("--map-build") ?? "fusion"] ?? .fusion
+    // --wifi：Wi-Fi 冷启动（只有 Android 能扫 Wi-Fi；见 WiFiColdStartProfile），用建图会话的 wifi.csv 建指纹
+    let useWiFi = CommandLine.arguments.contains("--wifi")
+    let built = try SessionEvaluator.buildMaps(sessions: build, map: map, mode: mapMode, tagPositions: refTags ?? [:],
+                                               withWiFi: useWiFi)
+    let field = built.field, bleMap = built.ble
+    for r in built.reports {
+        let off = r.offsetUT.map { String(format: "，偏移 |B| %+.1f Bz %+.1f Bh %+.1f µT", $0.total, $0.vertical, $0.horizontal) } ?? ""
+        print("建图 \(r.name)：样本 \(r.samplesUsed)" + off + (r.warnings.isEmpty ? "" : "，⚠️ \(r.warnings.joined(separator: "；"))"))
+    }
+    for x in built.rejected { print("建图不用 \(x.name)：\(x.reason)") }
+    var summary = "建图：\(build.count) 个会话，"
+    summary += mapMode == .production ? "合格 \(build.count - built.rejected.count) 个" : "不做质量筛选"
+    summary += "，\(built.components) 个连通分量"
+    if !built.offMain.isEmpty {
+        summary += "，不在主体里 \(built.offMain.count) 个"
+        summary += built.magExcluded.isEmpty ? "（仍在磁场图里；云端出图会排除）" : "（磁场图没用）"
+    }
+    summary += "，磁场 \(field.coveredCells) 格"
+    print(summary)
+    print("磁场图：有数据 \(field.coveredCells) 格；蓝牙指纹：\(bleMap.map { "\($0.tags.count) 个标签" } ?? "无")")
+    if useWiFi {
+        guard let w = built.wifi else { print("--wifi：建图会话里没有 Wi-Fi 扫描（wifi.csv）"); exit(2) }
+        print("Wi-Fi 指纹：\(w.entries.count) 次扫描")
+    }
+    if CommandLine.arguments.contains("--old-ble") { BLEAssist.defaultTagRanges = false }
+    if CommandLine.arguments.contains("--no-pregate") { BLEAssist.defaultPreGate = false }
+    if CommandLine.arguments.contains("--no-covgate") { BLEAssist.defaultCoverageGate = false }
+    if CommandLine.arguments.contains("--fixed-ble-ranges") { BLEAssist.defaultLearnedRanges = false }
+    if let r = bleMap?.learnedRanges {
+        print("蓝牙标签范围（学到的，P90）：" + r.map { "≥\(Int($0.minRssi)) dBm \(Int($0.rangeCm / 100)) m" }.joined(separator: "，"))
+    }
+    var ble = CommandLine.arguments.contains("--no-ble") ? nil : bleMap
     if ble != nil, let p = arg("--tag-locations") ?? arg("--esl-locations"), let t = try? String(contentsOfFile: p, encoding: .utf8) {
         ble = TagLocations.seededBLEMap(TagLocations.parse(t, map: map), learned: bleMap)
         print("蓝牙底图：标签位置表 + 学到的，\(ble!.tags.count) 个标签")
+    }
+    // 诊断：只导出测试会话「实测特征 vs 地图在参考位置」的残差（每 50 cm 一条），不跑定位
+    if let rp = arg("--residuals") {
+        var csv = "session,t_ms,path_cm,f_total,f_vertical,f_horizontal,m_total,m_vertical,m_horizontal,s_total,s_vertical,s_horizontal" + "\n"
+        func f3(_ v: MagneticFeature?) -> String {
+            v.map { String(format: "%.3f,%.3f,%.3f", $0.total, $0.vertical, $0.horizontal) } ?? ",,"
+        }
+        for t in test {
+            for r in try SessionEvaluator.residualSamples(dir: t, field: field) {
+                csv += "\(t.lastPathComponent),\(r.tMs),\(String(format: "%.1f", r.pathCm)),\(f3(r.feature)),\(f3(r.mean)),\(f3(r.sigma))" + "\n"
+            }
+        }
+        try csv.write(toFile: rp, atomically: true, encoding: .utf8)
+        print("残差已写到 \(rp)")
+        exit(0)
     }
     let walk = SessionEvaluator.walkable(map)
     var out: [EvalReport] = []
     // 粒子滤波有随机性（加上字典遍历顺序每次不同），单次结果波动很大：--runs N 跑 N 次（不同随机种子），报中位和范围
     let runs = max(Int(arg("--runs") ?? "1") ?? 1, 1)
+    // 运动来源（只影响 --oracle-start 的跟踪配置档，见 MagneticConfig.tracking）：vio = 视觉里程计，pdr = 计步（默认）
+    let odoArg = arg("--odometry") ?? "pdr"
+    guard let odometry = OdometrySource(rawValue: odoArg) else { print("--odometry 只能是 vio 或 pdr"); exit(2) }
+    if CommandLine.arguments.contains("--oracle-start") { print("跟踪配置档：\(odometry.rawValue)") }
     for t in test {
         var rs: [EvalReport] = []
         for k in 0..<runs {
@@ -68,8 +118,38 @@ do {
                 if let w = arg("--win").flatMap(Double.init) { cfg.offsetWindowUpdates = w }
                 if let w = arg("--missing").flatMap(Double.init) { cfg.missingDataPenalty = w }
                 if CommandLine.arguments.contains("--adaptive") { cfg.adaptiveMagWeight = true }
+                if CommandLine.arguments.contains("--wall-slide") { cfg.wallSlide = true }
+                // 似然标定的试验开关（默认不给 = 用配置档里的值）
+                if let v = arg("--obs-sigma-floor").flatMap(Double.init) { cfg.observationSigmaFloorUT = v }
+                if let v = arg("--mag-corr-cm").flatMap(Double.init) { cfg.magneticCorrelationCm = v }
+                if let v = arg("--converged-mag-weight").flatMap(Double.init) { cfg.convergedMagWeight = v }
+                if let v = arg("--offset-warmup").flatMap(Int.init) { cfg.offsetWarmupUpdates = v }
+                if let v = arg("--offset-window").flatMap(Int.init) { cfg.offsetMedianWindow = v }
+                if let v = arg("--lost-updates").flatMap(Int.init) { cfg.lostUpdates = v }
+                if let v = arg("--lost-confidence").flatMap(Double.init) { cfg.lostConfidence = v }
+                if let v = arg("--lost-confidence-prior").flatMap(Double.init) { cfg.lostConfidenceWithExternalPrior = v }
+                if let v = arg("--confidence-scale").flatMap(Double.init) { cfg.confidenceScaleCm = v }
+                if let v = arg("--cluster-radius").flatMap(Double.init) { cfg.clusterRadiusCm = v }
+                if CommandLine.arguments.contains("--hard-ble-tracking") { cfg.bleSoftTracking = false }
+                if CommandLine.arguments.contains("--ble-soft-no-recover") { cfg.bleSoftLocalRecovery = false }
+                if let w = arg("--ble-soft-weight").flatMap(Double.init) { cfg.bleSoftPriorWeight = w }
+                if let w = arg("--ble-soft-sigma").flatMap(Double.init) { cfg.bleSoftPriorSigmaCm = w }
+                if let w = arg("--ble-soft-range-weight").flatMap(Double.init) { cfg.bleSoftRangeWeight = w }
+                // 冷启动收敛门的单项覆盖（实验用；--cold-gate 打开推荐值，这几项再改其中一项）
+                if let v = arg("--cold-min-path").flatMap(Double.init) { cfg.coldMinPathCm = v }
+                if let v = arg("--cold-mode-ratio").flatMap(Double.init) { cfg.coldModeRatio = v }
+                if let v = arg("--cold-streak").flatMap(Int.init) { cfg.coldMinStreak = v }
+                if let v = arg("--cold-ess").flatMap(Double.init) { cfg.coldMinEffectiveRatio = v }
+                if let v = arg("--cold-temp").flatMap(Double.init) { cfg.coldSearchTemperature = v }
+                // 只靠地磁的冷启动不报位置（产品决定，见 MagneticConfig.magOnlyColdStartReports）
+                if CommandLine.arguments.contains("--no-mag-only-cold-fix") { cfg.magOnlyColdStartReports = false }
+                if let v = arg("--uniform-inject").flatMap(Int.init) { cfg.uniformHeadingForInjection = v != 0 }
             }, seed: UInt64(k + 1), refTagPositions: refTags,
-                                                  oracleStart: CommandLine.arguments.contains("--oracle-start"))
+                                                  oracleStart: CommandLine.arguments.contains("--oracle-start"),
+                                                  odometry: odometry,
+                                                  // 冷启动收敛门：只在冷启动、还没用过蓝牙先验时起作用；--oracle-start 的跟踪从不用
+                                                  coldStartGate: CommandLine.arguments.contains("--cold-gate"),
+                                                  wifi: useWiFi ? built.wifi : nil)
             if runs == 1 { print(r.line) }
             rs.append(r)
         }

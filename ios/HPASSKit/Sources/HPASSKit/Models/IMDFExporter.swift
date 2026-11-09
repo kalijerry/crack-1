@@ -1,4 +1,6 @@
+#if canImport(CryptoKit)
 import CryptoKit
+#endif
 import Foundation
 
 /// 一个场馆的多层 map.json → IMDF 压缩包（manifest + address / venue / building / footprint / level / unit /
@@ -43,7 +45,7 @@ public enum IMDFExporter {
     public static func uuid5(_ ns: UUID, _ name: String) -> String {
         var bytes = withUnsafeBytes(of: ns.uuid) { Array($0) }
         bytes += Array(name.utf8)
-        var h = Array(Array(Insecure.SHA1.hash(data: bytes)).prefix(16))
+        var h = Array(SHA1Digest.hash(bytes).prefix(16))
         h[6] = (h[6] & 0x0F) | 0x50
         h[8] = (h[8] & 0x3F) | 0x80
         let hex = h.map { String(format: "%02x", $0) }.joined()

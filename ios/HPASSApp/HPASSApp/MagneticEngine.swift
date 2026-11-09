@@ -666,32 +666,23 @@ final class MagneticEngine: ObservableObject {
 
     private func makeLocalizer(field: MagneticFieldMap, start: Point2?, headingUnknown: Bool = false,
                                priorFraction: Double = 0) -> MagneticLocalizer {
-        var cfg = MagneticConfig()
-        // 冷启动时航向只来自罗盘，偏差可能很大
-        if start == nil || headingUnknown { cfg.initialHeadingBiasSigmaDeg = 30 }
-        if useVisualOdometry && start != nil {
-            // 视觉里程计的位移和航向都比计步准得多，粒子不用撒那么开；丢跟踪退回计步时仍留有余量
-            cfg.initialHeadingBiasSigmaDeg = 5
-            cfg.headingBiasWalkDegPerM = 1
-            cfg.positionNoiseFraction = 0.04
-            cfg.initialScaleSigma = 0.03
-            cfg.scaleWalkPerM = 0.003
-        }
-        if useVisualOdometry && ARKitLogger.isSupported {
-            // 视觉里程计时：
-            // - 以垂直分量 Bz 为主：人掉头时，手机偏置的估计误差会让水平分量 Bh 和总强度 |B| 的误差反过来，Bz 不受影响；
-            // - 跳到远处另一个簇要连续确认 15 次（约 7.5 m）：视觉里程计一路漂移不到 1%，地磁只该做小修正；
-            // - 收敛后粒子噪声调小，不会沿着「长得像」的通道滑走。
-            cfg.featureWeights = (0.5, 1.0, 0.25)
-            cfg.jumpConfirmUpdates = 15
-            cfg.convergedPositionNoiseFraction = 0.03
+        var cfg: MagneticConfig
+        if start != nil {
+            // 已知起点：和评估的已知起点分支同一份跟踪配置档（HPASSKit MagneticConfig.tracking），
+            // 视觉里程计 / 计步各一套；跟踪策略（远跳要确认、丢了先在附近找回、地磁按覆盖打折）都在里面。
+            // 这里只是初值：每一步按实际在推粒子的来源 loc.setOdometry(.vio / .pdr)（视觉里程计没对齐、跟丢、
+            // 启动失败时是计步在推，要用计步那套参数）
+            let odometry: OdometrySource = useVisualOdometry && ARKitLogger.isSupported ? .vio : .pdr
+            cfg = MagneticConfig.tracking(odometry: odometry, headingKnown: !headingUnknown)
+        } else {
+            // 冷启动配置档（HPASSKit MagneticConfig.liveColdStart，评估的冷启动同一套）：
+            // 只靠地磁不报位置，等蓝牙 / 贴近标签 / 货架标识牌给出外部先验，或用户指起点
+            cfg = MagneticConfig.liveColdStart(visualOdometry: useVisualOdometry && ARKitLogger.isSupported)
         }
         cfg.lateralWeight = depthMode == .fuse ? 1 : 0
-        // 每次读数的整体水平会差 10～16 µT（磁力计偏置估计不同）：没定到按起伏找，定到后估出偏移再按绝对值比
-        cfg.hybridOffset = true
         let loc = MagneticLocalizer(field: field, walkable: MagMapStore.shared.walkableMap(), config: cfg)
         loc.raycaster = MagMapStore.shared.raycaster()
-        loc.reset(start: start, spreadCm: 50, headingUnknown: headingUnknown, priorFraction: priorFraction)
+        loc.reset(start: start, spreadCm: TrackingProfile.startSpreadCm, headingUnknown: headingUnknown, priorFraction: priorFraction)
         return loc
     }
 
@@ -1244,6 +1235,10 @@ final class MagneticEngine: ObservableObject {
                 return "正在认房间：拿着手机对着墙和家具慢慢转一圈（视觉定位，一般几秒）。" +
                     (MagMapStore.shared.field != nil ? "同时也在用地磁找。" : "")
             }
+            if bleTagsHeard == 0 {
+                // 冷启动配置档（MagneticConfig.liveColdStart）只靠地磁不报位置：要等外部先验或用户定点
+                return "没听到蓝牙标签：只靠地磁自动定位很容易定到长得像的别处，所以先不显示位置。长按地图定点，或走到货架标识牌 / 蓝牙标签旁。"
+            }
             if let s = searchStarted, Date().timeIntervalSince(s) > 45 {
                 return "找了 \(Int(Date().timeIntervalSince(s))) 秒还没定到：可能不在采集过的区域（地图上绿色涂过的地方才能自动定位），或这里磁场太平。可以走到采集过的通道再走一段，或者长按地图手动定点。"
             }
@@ -1402,6 +1397,7 @@ final class MagneticEngine: ObservableObject {
             var est: MagneticEstimate?
             if let loc = pipe.localizer {
                 bleTick(pipe: pipe, tMs: s.tMs, loc: loc)
+                loc.setOdometry(.pdr)       // 这一步是计步在推（视觉里程计没对齐 / 跟丢 / 没开起来）：跟踪档用计步那套参数
                 let e = loc.step(delta: delta, feature: feat, trust: pipe.trustNow)
                 est = e
                 shown = e.position
@@ -1424,6 +1420,7 @@ final class MagneticEngine: ObservableObject {
                 return
             }
             bleTick(pipe: pipe, tMs: s.tMs, loc: loc)
+            loc.setOdometry(.pdr)
             let est = loc.step(delta: delta, feature: feat, trust: pipe.trustNow)
             pipe.estimate = est
             emit(pipe: pipe, tMs: out.tMs, shown: est.position, unc: est.uncertaintyCm, est: est,
@@ -1494,6 +1491,7 @@ final class MagneticEngine: ObservableObject {
             let step = pipe.vioAccum
             pipe.vioAccum = .zero
             bleTick(pipe: pipe, tMs: t, loc: loc)
+            loc.setOdometry(.vio)
             let e = loc.step(delta: step, feature: pipe.latest, trust: pipe.trustNow)
             // 朝向：用地图上显示位置的移动方向（ARKit 自己的方向和地图差一个未知旋转）
             if let ls = pipe.lastShown {
@@ -1564,6 +1562,7 @@ final class MagneticEngine: ObservableObject {
                 let lat = pipe.pendingLateral
                 pipe.pendingLateral = nil
                 bleTick(pipe: pipe, tMs: t, loc: loc)
+                loc.setOdometry(.vio)
                 let e = loc.step(delta: step, feature: pipe.latest, trust: pipe.trustNow, lateral: lat)
                 est = e
                 shown = e.position

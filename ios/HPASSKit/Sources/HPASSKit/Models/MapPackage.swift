@@ -51,8 +51,13 @@ public enum MapPackage {
 
     public enum PackageError: Error, CustomStringConvertible {
         case badFormat(String)
+        /// 这个平台没有 zlib 压缩（Foundation 的 NSData.compressed 只在苹果平台有）
+        case unsupportedPlatform
         public var description: String {
-            switch self { case .badFormat(let s): return "地图包格式不对：\(s)" }
+            switch self {
+            case .badFormat(let s): return "地图包格式不对：\(s)"
+            case .unsupportedPlatform: return "这个平台不支持地图包压缩（只在苹果平台可用）"
+            }
         }
     }
 
@@ -77,11 +82,29 @@ public enum MapPackage {
         section(paint ?? Data())
         section(tagCSV ?? Data())
         section(direction ?? Data())
-        return try (out as NSData).compressed(using: .zlib) as Data
+        return try zlib(out, compress: true)
+    }
+
+    /// 苹果平台用 Foundation 的 zlib；其他平台（Windows / Linux 上编译评估工具）不支持地图包。
+    static var compressionAvailable: Bool {
+        #if canImport(Darwin)
+        return true
+        #else
+        return false
+        #endif
+    }
+
+    private static func zlib(_ data: Data, compress: Bool) throws -> Data {
+        #if canImport(Darwin)
+        return compress ? try (data as NSData).compressed(using: .zlib) as Data
+                        : try (data as NSData).decompressed(using: .zlib) as Data
+        #else
+        throw PackageError.unsupportedPlatform
+        #endif
     }
 
     public static func decode(_ compressed: Data) throws -> Contents {
-        let d = try (compressed as NSData).decompressed(using: .zlib) as Data
+        let d = try zlib(compressed, compress: false)
         var r = Reader(d)
         guard try r.bytes(4) == Data(magic) else { throw PackageError.badFormat("开头不是 HPMP") }
         let v: UInt16 = try r.int()

@@ -22,8 +22,10 @@ enum SyntheticRoom {
         (20 + 8 * sin(p.x / 90) + 5 * cos(p.y / 70), 5 + 6 * sin(p.y / 80 + p.x / 200), -43 + 7 * sin(p.x / 110 + p.y / 95))
     }
 
-    /// 路线：第一段要沿 +y 直走 1.5 m 以上（设朝向用），然后按 waypoints 折线走
-    static func writeSession(_ dir: URL, waypoints: [Point2], phi: Double = 0.6, speed: Double = 100) throws {
+    /// 路线：第一段要沿 +y 直走 1.5 m 以上（设朝向用），然后按 waypoints 折线走。
+    /// magOffset：这个会话整体的磁场偏移（µT，设备系 = 世界系）。加在校准磁场上：原始减去估出的偏置后，特征里就整体差这么多
+    static func writeSession(_ dir: URL, waypoints: [Point2], phi: Double = 0.6, speed: Double = 100,
+                             magOffset: (Double, Double, Double) = (0, 0, 0)) throws {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let a0 = Point2(37, -12), p0 = waypoints[0]
         func ar(_ p: Point2) -> Point2 {
@@ -42,7 +44,7 @@ enum SyntheticRoom {
         let bias = (80.0, -110.0, -650.0)
         for (i, p) in pts.enumerated() {
             let t = T0 + Int64(i * 10), f = field(p)
-            if i % 2 == 0 { imu += "\(t),0,0,9.81,0,0,0,\(f.0),\(f.1),\(f.2)\n" }
+            if i % 2 == 0 { imu += "\(t),0,0,9.81,0,0,0,\(f.0 + magOffset.0),\(f.1 + magOffset.1),\(f.2 + magOffset.2)\n" }
             raw += "\(t),\(f.0 + bias.0),\(f.1 + bias.1),\(f.2 + bias.2)\n"
             if i % 3 == 0 { let a = ar(p); pose += "\(t),\(a.x / 100),0,\(a.y / 100),0,0,0,1,2\n" }
         }

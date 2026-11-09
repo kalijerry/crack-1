@@ -69,10 +69,11 @@ final class GraphLocalizationTests: XCTestCase {
 
     private struct Result { var errors: [Double]; var wrongAisle: Int; var total: Int; var convergedAt: Double? }
 
-    private func run(cold: Bool, useWalkable: Bool, seed: UInt64, headingOffsetDeg: Double = 5) -> Result {
+    private func run(cold: Bool, useWalkable: Bool, seed: UInt64, headingOffsetDeg: Double = 5,
+                     config: MagneticConfig = .init()) -> Result {
         let map = surveyMap(noise: 0.4, seed: seed)
         let walk = useWalkable ? WalkableMap(crosses: crosses, widthCm: width, heightCm: height) : nil
-        let loc = MagneticLocalizer(field: map, walkable: walk, seed: seed)
+        let loc = MagneticLocalizer(field: map, walkable: walk, config: config, seed: seed)
         loc.reset(start: cold ? nil : route[0], spreadCm: 80)
         var rng = MagRNG(seed: seed &+ 99)
         var errors: [Double] = [], wrong = 0, total = 0, walked = 0.0
@@ -131,6 +132,47 @@ final class GraphLocalizationTests: XCTestCase {
         XCTAssertGreaterThan(r.total, 20)
         XCTAssertLessThan(r.errors[r.errors.count / 2], 200)
         XCTAssertLessThanOrEqual(Double(r.wrongAisle) / Double(max(r.total, 1)), 0.1)
+    }
+
+    /// 冷启动收敛门：要走够路才宣布定到；定到之后照样找对通道。
+    func testColdStartGateWaitsForMinimumPath() {
+        var cfg = MagneticConfig()
+        cfg.applyColdStartGate()
+        XCTAssertGreaterThan(cfg.coldMinPathCm, 0)
+        let r = run(cold: true, useWalkable: true, seed: 21, config: cfg)
+        XCTAssertNotNil(r.convergedAt)
+        XCTAssertGreaterThanOrEqual(r.convergedAt ?? 0, cfg.coldMinPathCm / 100 - 1)
+        XCTAssertGreaterThan(r.total, 20)
+        XCTAssertLessThan(r.errors[r.errors.count / 2], 200)
+        XCTAssertLessThanOrEqual(Double(r.wrongAisle) / Double(max(r.total, 1)), 0.1)
+    }
+
+    /// magOnlyColdStartReports = false：只靠地磁的冷启动一律不宣布定到（同样的走法，默认能定到）；
+    /// 用过外部位置先验之后照常收敛；已知起点不受影响。
+    func testMagOnlyColdStartCanBeSwitchedOff() {
+        var off = MagneticConfig()
+        off.magOnlyColdStartReports = false
+        XCTAssertNotNil(run(cold: true, useWalkable: true, seed: 21).convergedAt)
+        XCTAssertNil(run(cold: true, useWalkable: true, seed: 21, config: off).convergedAt)
+        let a = run(cold: false, useWalkable: true, seed: 11)
+        let b = run(cold: false, useWalkable: true, seed: 11, config: off)
+        XCTAssertEqual(a.errors, b.errors)
+        XCTAssertFalse(off.coldStartGateEnabled)                 // 和收敛门是两回事
+        let loc = MagneticLocalizer(field: surveyMap(noise: 0.4, seed: 2), config: off, seed: 2)
+        loc.reset(start: nil)
+        XCTAssertTrue(loc.magOnlyColdStartSuppressed)
+        loc.applyPositionPrior(Point2(aisleXs[2], 1500), sigmaCm: 400, weight: 1)
+        XCTAssertFalse(loc.magOnlyColdStartSuppressed)
+    }
+
+    /// 冷启动收敛门对已知起点（跟踪）没有任何影响：同样的随机种子结果完全一样。
+    func testColdStartGateDoesNotAffectKnownStart() {
+        var cfg = MagneticConfig()
+        cfg.applyColdStartGate()
+        let a = run(cold: false, useWalkable: true, seed: 11)
+        let b = run(cold: false, useWalkable: true, seed: 11, config: cfg)
+        XCTAssertEqual(a.errors, b.errors)
+        XCTAssertEqual(a.wrongAisle, b.wrongAisle)
     }
 
     /// 冷启动、站着不动：要做第一次观测更新，但不能宣布收敛（只靠一个读数不可能唯一）。

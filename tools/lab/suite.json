@@ -9,24 +9,33 @@
   "scenarios": [
     {"id": "public/pdr/track-mag", "dataset": "ilc-pdr", "flags": ["--oracle-start", "--no-ble"],
      "title": "已知起点 · 只地磁 · 无摄像头", "tiers": ["pr", "nightly"], "gate": true},
-    {"id": "public/pdr/cold-mag", "dataset": "ilc-pdr", "flags": ["--no-ble"],
-     "title": "冷启动 · 只地磁 · 无摄像头", "tiers": ["pr", "nightly"], "gate": true},
+    {"id": "public/pdr/cold-mag", "dataset": "ilc-pdr", "flags": ["--no-ble", "--no-mag-only-cold-fix"],
+     "title": "冷启动 · 只地磁 · 无摄像头（App 冷启动配置档：只靠地磁不报位置；一个位置都不报，只监看、不拦）", "tiers": ["nightly"], "gate": false,
+     "target": {"wrong_fix": 0.2, "no_fix_ok": true}},
+    {"id": "public/pdr/cold-mag-search", "dataset": "ilc-pdr", "flags": ["--no-ble"],
+     "title": "冷启动搜索 · 只地磁 · 无摄像头（照常报位置：量共用的冷启动搜索，和基线比）", "tiers": ["pr", "nightly"], "gate": true},
     {"id": "public/pdr/cold-mag-radio", "dataset": "ilc-pdr", "flags": [],
      "title": "冷启动 · 地磁 + 蓝牙 · 无摄像头", "tiers": ["pr", "nightly"], "gate": true},
+    {"id": "public/pdr/cold-wifi", "dataset": "ilc-pdr", "flags": ["--wifi", "--no-ble"],
+     "title": "冷启动 · Wi-Fi + 地磁 · 无摄像头（只有 Android 能扫 Wi-Fi）", "tiers": ["pr", "nightly"], "gate": true},
     {"id": "public/pdr-sparse/track-mag", "dataset": "ilc-pdr-sparse", "flags": ["--oracle-start", "--no-ble"],
      "title": "稀疏建图（走几趟）· 已知起点 · 只地磁", "tiers": ["pr", "nightly"], "gate": true},
     {"id": "public/pdr/track-mag-radio", "dataset": "ilc-pdr", "flags": ["--oracle-start"],
      "title": "已知起点 · 地磁 + 蓝牙 · 无摄像头", "tiers": ["nightly"], "gate": true},
-    {"id": "public/vio/track-mag", "dataset": "ilc-arkit", "flags": ["--oracle-start", "--no-ble"],
+    {"id": "public/vio/track-mag", "dataset": "ilc-arkit", "flags": ["--oracle-start", "--no-ble", "--odometry", "vio"],
      "title": "已知起点 · 只地磁 · 视觉里程计", "tiers": ["nightly"], "gate": true},
-    {"id": "public/vio/cold-mag", "dataset": "ilc-arkit", "flags": ["--no-ble"],
-     "title": "冷启动 · 只地磁 · 视觉里程计", "tiers": ["nightly"], "gate": true}
+    {"id": "public/vio/cold-mag", "dataset": "ilc-arkit", "flags": ["--no-ble", "--odometry", "vio", "--no-mag-only-cold-fix"],
+     "title": "冷启动 · 只地磁 · 视觉里程计（App 冷启动配置档：只靠地磁不报位置；一个位置都不报，只监看、不拦）", "tiers": ["nightly"], "gate": false,
+     "target": {"wrong_fix": 0.2, "no_fix_ok": true}},
+    {"id": "public/vio/cold-mag-search", "dataset": "ilc-arkit", "flags": ["--no-ble", "--odometry", "vio"],
+     "title": "冷启动搜索 · 只地磁 · 视觉里程计（照常报位置：量共用的冷启动搜索，和基线比）", "tiers": ["nightly"], "gate": true}
   ],
   "private": {
     "note": "自采数据（后台的建图 / 测试会话）。站点名只用哈希代号，公开仓库的报告里不出现任何站点信息",
     "protocols": {
       "walk-once": {"title": "走一遍建图 → 换一天测试（Oriient 的核心指标）", "flags": []},
-      "all-builds": {"title": "全部建图会话融合 → 测试", "flags": []}
+      "all-builds": {"title": "全部建图会话融合 → 测试", "flags": []},
+      "track": {"title": "全部建图会话融合 → 已知起点跟踪（App 实时定位的跟踪配置档 MagneticConfig.tracking）", "flags": ["--oracle-start"]}
     },
     "tiers": ["pr", "nightly"],
     "gate": true

@@ -27,12 +27,12 @@ mkdir mloc && cd mloc && unzip -q ../mloc_sample.zip
 ## 转换
 
 ```bash
-python3 tools/bench/ilc_convert.py <楼层目录> <输出目录> [--drift arkit|pdr|none] [--test-n 15] [--test-min-s 45] [--seed 1]
+python3 tools/bench/ilc_convert.py <楼层目录> <输出目录> [--drift arkit|pdr|none] [--test-n 15] [--test-min-s 45] [--seed 1] [--walkable geojson|paths]
 ```
 
 输出 `map.json`（宽高 + `floorPolygons`）、`build/<trace>/`、`test/<trace>/`，均是我们的会话格式。假设与近似：
 
-- **地图**：只有宽高 + 可走区域。可走区域 = 建图 trace 的真值路径占 1 m 格后外扩 2 m（不看测试 trace）；没有货架、没有通道中心线（所以不做自动贴通道，也没有通道走向先验）。
+- **地图**：只有宽高 + 可走区域。可走区域默认来自楼层平面图 `geojson_map.json`（`--walkable geojson`）：楼层外轮廓（`properties.type == "floor"`）减去全部单元多边形（店铺、辅助面、不开放区域等），坐标按外轮廓的外包框线性映射到 [0, 宽] × [0, 高]（y 不翻转），50 cm 栅格、向单元里放宽 0.75 m（waypoint 之间按直线插值会切过店铺的角），再合并成矩形。转换时把 waypoint / 测试真值落在可走区域里的比例写进 `manifest.json` 的 `walkable` 核对映射（这一层都是 100%）。这样可走区域和走了几趟建图无关。`--walkable paths` 是老办法：建图 trace 的真值路径占 1 m 格后外扩 2 m（不看测试 trace），建图稀疏时大半条测试路线会落在「不可走」里。没有货架、没有通道中心线（所以不做自动贴通道，也没有通道走向先验）。
 - **真值**：waypoint 很稀疏（约每 5 s 一个），按时间线性插值（假设点间匀速直走），所以真值本身有 1～2 m 级的误差，磁场图因此偏糊。
 - **建图会话**：位姿 = 真值，锚点 = 全部 waypoint；磁场用 `TYPE_MAGNETIC_FIELD_UNCALIBRATED`（→ `mag_raw.csv`）和校准值（→ `imu.csv`）。
 - **蓝牙**：iBeacon 的 MAC 当作标签 ID，RSSI 照搬；beacon 位置未知，由 `BLEFingerprintBuilder` 从建图 trace 学（指纹格子 + 标签位置），能当标签的至少 20 个才启用。注意这些 beacon 不是我们针对的蓝牙标签，也可能有移动设备。
@@ -51,11 +51,11 @@ tools/bench/run_ilc.sh <楼层目录> <工作目录> [每个会话重复次数]
 
 ```bash
 cd <工作目录>/arkit
-ios/HPASSKit/.build/release/hpass-eval --map map.json --build build --test test --runs 5 [--no-ble] [--oracle-start]
+ios/HPASSKit/.build/release/hpass-eval --map map.json --build build --test test --runs 5 [--no-ble] [--oracle-start [--odometry vio]]
 python3 tools/bench/dr_baseline.py <工作目录>/arkit/test     # 纯推算下限
 ```
 
-对代码的小改动：`hpass-eval` 的 `--build/--test` 可以直接给父目录；`--oracle-start`（已知起点和朝向的跟踪模式，不含冷启动）；`--no-hybrid`；末尾打印 `【汇总】`（所有点混合的中位/P90/错定率）；评估器读 `truth.csv`。
+对代码的小改动：`hpass-eval` 的 `--build/--test` 可以直接给父目录；`--oracle-start`（已知起点和朝向的跟踪模式，不含冷启动；配置用和 App 已知起点时同一份跟踪配置档 `MagneticConfig.tracking`）；`--odometry vio|pdr`（跟踪配置档按哪种运动来源，默认 pdr；公开 vio 场景传 vio）；`--no-hybrid`；末尾打印 `【汇总】`（所有点混合的中位/P90/错定率）；评估器读 `truth.csv`。
 
 ## 结果（15 条测试 trace × 5 次随机种子；误差单位 cm，错定 = 误差 > 5 m）
 

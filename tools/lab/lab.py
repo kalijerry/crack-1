@@ -95,27 +95,73 @@ def ladder_level(m: dict, ladder: list[dict]) -> str | None:
     return best
 
 
-def compare(cur: dict, base: dict | None, tolerance: dict) -> dict:
-    """逐项和基线比：regressions / improvements 是 [(指标, 基线, 现在)]。"""
-    res = {"regressions": [], "improvements": [], "new": base is None}
+LOWER_IS_BETTER = ("median_cm", "p75_cm", "p90_cm", "wrong_fix", "first_fix_m")
+
+
+# 场景目标里不是指标的选项
+TARGET_OPTIONS = ("no_fix_ok",)
+
+
+def target_thresholds(target: dict) -> dict:
+    """场景目标里的指标门槛（去掉 no_fix_ok 这类选项）"""
+    return {k: v for k, v in target.items() if k not in TARGET_OPTIONS}
+
+
+def target_metric(m: dict, k: str, no_fix_ok: bool = False):
+    """场景目标里用的指标值。一个位置都没报时错定率没有定义：只有场景目标明说 "no_fix_ok": true
+    （「宁可不报」，例如 App 冷启动配置档 MagneticConfig.liveColdStart 只靠地磁不报位置）才按 0 算；否则是 None，算没达标 / 退步。"""
+    v = m.get(k)
+    if v is None and no_fix_ok and k == "wrong_fix" and m.get("points") == 0 and m.get("replays"):
+        return 0.0
+    return v
+
+
+def meets_target(m: dict, target: dict) -> bool:
+    """场景自己的目标（suite.json 里场景的 "target"）：列出的门槛同时满足才算达标，没列的不看。"""
+    ok0 = bool(target.get("no_fix_ok"))
+    for k, thr in target_thresholds(target).items():
+        v = target_metric(m, k, ok0)
+        if v is None:
+            return False
+        if (v > thr) if k in LOWER_IS_BETTER else (v < thr):
+            return False
+    return True
+
+
+def scenario_target(r: dict, suite: dict) -> dict | None:
+    """结果条目（或场景定义）的场景目标；没有就是 None（用完整档位）。"""
+    if r.get("target"):
+        return r["target"]
+    s = next((s for s in suite.get("scenarios", []) if s["id"] == r.get("id")), None)
+    return (s or {}).get("target")
+
+
+def compare(cur: dict, base: dict | None, tolerance: dict, keys=None, no_fix_ok: bool = False) -> dict:
+    """逐项和基线比：regressions / improvements / changes 是 [(指标, 基线, 现在)]。
+    keys 不是 None 时只有这些指标变差算退步，其余指标变差只记进 changes（只显示，不拦）——
+    场景目标不看的指标（例如只看错定的冷启动场景的覆盖）按设计就会变。no_fix_ok 见 target_metric。"""
+    res = {"regressions": [], "improvements": [], "changes": [], "new": base is None}
     if base is None:
         return res
     for k, rule in tolerance.items():
         b, c = base.get(k), cur.get(k)
+        if keys is not None:
+            b, c = target_metric(base, k, no_fix_ok), target_metric(cur, k, no_fix_ok)
         if b is None:
             continue
+        bad = res["regressions"] if keys is None or k in keys else res["changes"]
         if c is None:
-            res["regressions"].append((k, b, c))
+            bad.append((k, b, c))
             continue
         slack = abs(b) * rule.get("rel", 0) + rule.get("abs", 0)
         if rule["better"] == "lower":
             if c > b + slack:
-                res["regressions"].append((k, b, c))
+                bad.append((k, b, c))
             elif c < b - slack:
                 res["improvements"].append((k, b, c))
         else:
             if c < b - slack:
-                res["regressions"].append((k, b, c))
+                bad.append((k, b, c))
             elif c > b + slack:
                 res["improvements"].append((k, b, c))
     return res
@@ -158,20 +204,40 @@ def site_label(map_id: str) -> str:
 
 # ───────────────────────── 准备数据 ─────────────────────────
 
-def prepare_public(suite: dict, ilc_floor: Path, work: Path):
-    conv = ROOT / "tools" / "bench" / "ilc_convert.py"
+CONVERT_KEY_FILE = ".convert-key"
+
+
+def convert_key(conv: Path, args: list[str]) -> str:
+    """转换缓存键：转换脚本内容 + 转换参数（不含输入 / 输出路径）。脚本或参数一变，缓存的转换结果就作废。"""
+    h = hashlib.sha256(conv.read_bytes())
+    h.update(b"\n" + json.dumps(args).encode())
+    return h.hexdigest()[:16]
+
+
+def prepare_public(suite: dict, ilc_floor: Path, work: Path, conv: Path | None = None, run=subprocess.run):
+    conv = conv or ROOT / "tools" / "bench" / "ilc_convert.py"
     for name, ds in suite["datasets"].items():
         if ds.get("kind") != "ilc":
             continue
         dst = work / "public" / name
-        if (dst / "manifest.json").exists():
-            print(f"[lab] {name} 已转换，跳过")
-            continue
-        cmd = [sys.executable, str(conv), str(ilc_floor), str(dst), "--drift", ds["drift"]]
+        args = ["--drift", ds["drift"]]
         if ds.get("build_max"):
-            cmd += ["--build-max", str(ds["build_max"])]
+            args += ["--build-max", str(ds["build_max"])]
+        key = convert_key(conv, args)
+        key_file = dst / CONVERT_KEY_FILE
+        if (dst / "manifest.json").exists():
+            old = key_file.read_text().strip() if key_file.exists() else ""
+            if old == key:
+                print(f"[lab] {name} 已转换（{key}），跳过")
+                continue
+            print(f"[lab] {name} 的转换脚本或参数变了（{old or '无记录'} → {key}），重新转换")
+        if dst.exists():
+            shutil.rmtree(dst)
+        cmd = [sys.executable, str(conv), str(ilc_floor), str(dst)] + args
         print("[lab] " + " ".join(cmd[1:]))
-        subprocess.run(cmd, check=True)
+        run(cmd, check=True)
+        dst.mkdir(parents=True, exist_ok=True)
+        key_file.write_text(key + "\n")
 
 
 def _req(url, token, path):
@@ -236,20 +302,30 @@ def run_eval(eval_cmd: list[str], cwd: Path, build: str, test: str, runs: int, f
         out = Path(td) / "r.json"
         cmd = eval_cmd + ["--map", "map.json", "--build", build, "--test", test, "--runs", str(runs),
                           *flags, "--json", str(out)]
-        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout_s)
+        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=timeout_s)
         if p.returncode != 0 or not out.exists():
             tail = (p.stdout or "")[-1500:] + (p.stderr or "")[-1500:]
             raise RuntimeError(f"hpass-eval 失败（退出码 {p.returncode}）：{tail}")
+        # 建图摘要（会话数、合格数、连通分量、哪些会话不在主体里）进 Lab 日志
+        for line in (p.stdout or "").splitlines():
+            if line.startswith("建图："):
+                print(f"[lab]   {line}")
         return json.loads(out.read_text(encoding="utf-8"))
 
 
-def run_suite(suite: dict, tier: str, work: Path, eval_cmd: list[str], only: str | None = None) -> dict:
+def run_suite(suite: dict, tier: str, work: Path, eval_cmd: list[str], only: str | None = None,
+              jobs: int = 1) -> dict:
+    """jobs > 1 时各场景并行回放（本地多核用；CI 默认 1）。结果顺序和场景顺序一致。"""
     runs = suite["runs"][tier]
-    results = []
+    tasks = []
 
     def record(sid, title, gate, fn, extra=None):
         if only and only not in sid:
             return
+        tasks.append((sid, title, gate, fn, extra))
+
+    def execute(sid, title, gate, fn, extra):
         t0 = time.time()
         entry = {"id": sid, "title": title, "gate": gate}
         try:
@@ -261,13 +337,13 @@ def run_suite(suite: dict, tier: str, work: Path, eval_cmd: list[str], only: str
         if extra:
             entry.update(extra)
         print(f"[lab] {sid}：{entry.get('metrics') or entry.get('error')}（{entry['seconds']} s）", flush=True)
-        results.append(entry)
+        return entry
 
     for s in public_scenarios(suite, tier):
         d = work / "public" / s["dataset"]
         record(s["id"], s["title"], s.get("gate", False),
                lambda d=d, s=s: run_eval(eval_cmd, d, "build", "test", runs, s["flags"]),
-               {"dataset": s["dataset"]})
+               {"dataset": s["dataset"], **({"target": s["target"]} if s.get("target") else {})})
 
     priv = suite.get("private", {})
     mf = work / "private" / "manifest.json"
@@ -291,6 +367,12 @@ def run_suite(suite: dict, tier: str, work: Path, eval_cmd: list[str], only: str
                            lambda d=d, site=site, pcfg=pcfg: run_eval(
                                eval_cmd, d, ",".join("build/" + b for b in site["build"]),
                                ",".join("test/" + t for t in site["test"]), runs, pcfg["flags"]))
+    if jobs > 1 and len(tasks) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=jobs) as ex:
+            results = list(ex.map(lambda t: execute(*t), tasks))
+    else:
+        results = [execute(*t) for t in tasks]
     return {"kind": "lab", "tier": tier, "runs": runs, "commit": os.environ.get("GITHUB_SHA", ""),
             "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "results": results}
 
@@ -307,6 +389,11 @@ def _fmt(k, v):
     if k.endswith("_m"):
         return f"{v:.1f} m"
     return str(v)
+
+
+def target_text(target: dict) -> str:
+    s = "、".join(f"{NAMES[k]} {'≤' if k in LOWER_IS_BETTER else '≥'} {_fmt(k, v)}" for k, v in target_thresholds(target).items())
+    return s + ("；不报位置也算" if target.get("no_fix_ok") else "")
 
 
 NAMES = {"median_cm": "中位", "p75_cm": "P75", "p90_cm": "P90", "wrong_fix": "错定", "coverage": "覆盖",
@@ -327,8 +414,12 @@ def build_report(res: dict, baseline: dict | None, suite: dict) -> tuple[str, bo
                 regressed = True
             notes.append(f"- `{r['id']}` 运行失败：`{(r.get('error') or '')[:300]}`")
             continue
-        cmp_ = compare(m, base_map.get(r["id"]), suite["tolerance"]) if r["id"] in base_map else {"new": True,
-                                                                                                    "regressions": [], "improvements": []}
+        target = scenario_target(r, suite)
+        if r["id"] in base_map:
+            cmp_ = compare(m, base_map[r["id"]], suite["tolerance"], keys=set(target_thresholds(target)) if target else None,
+                           no_fix_ok=bool((target or {}).get("no_fix_ok")))
+        else:
+            cmp_ = {"new": True, "regressions": [], "improvements": [], "changes": []}
         if r.get("gate") and cmp_["regressions"]:
             regressed = True
         if cmp_["new"]:
@@ -339,12 +430,24 @@ def build_report(res: dict, baseline: dict | None, suite: dict) -> tuple[str, bo
             verdict = "🟢 改善：" + "，".join(f"{NAMES[k]} {_fmt(k, b)}→{_fmt(k, c)}" for k, b, c in cmp_["improvements"])
         else:
             verdict = "⚪ 持平"
-        level = ladder_level(m, suite["ladder"]) or "未达「可用」"
+        if cmp_.get("changes"):
+            verdict += "（目标不看：" + "，".join(f"{NAMES[k]} {_fmt(k, b)}→{_fmt(k, c)}" for k, b, c in cmp_["changes"]) + "）"
         gap = []
-        if m.get("median_cm") is not None and m["median_cm"] > targets["median_cm"]:
-            gap.append(f"中位差 {(m['median_cm'] - targets['median_cm']) / 100:.1f} m")
-        if m.get("wrong_fix") is not None and m["wrong_fix"] > targets["wrong_fix"]:
-            gap.append(f"错定多 {(m['wrong_fix'] - targets['wrong_fix']) * 100:.0f} 点")
+        if target:
+            # 场景自己的目标（例如只靠地磁冷启动只看错定）：档位列只写达没达标，差距按目标算
+            level = ("✅ 达标" if meets_target(m, target) else "未达标") + f"（场景目标：{target_text(target)}）"
+            if m.get("points") == 0:
+                level += "，没有报位置"
+            for k, thr in target_thresholds(target).items():
+                v = target_metric(m, k, bool(target.get("no_fix_ok")))
+                if v is not None and ((v > thr) if k in LOWER_IS_BETTER else (v < thr)):
+                    gap.append(f"{NAMES[k]} {_fmt(k, v)}")
+        else:
+            level = ladder_level(m, suite["ladder"]) or "未达「可用」"
+            if m.get("median_cm") is not None and m["median_cm"] > targets["median_cm"]:
+                gap.append(f"中位差 {(m['median_cm'] - targets['median_cm']) / 100:.1f} m")
+            if m.get("wrong_fix") is not None and m["wrong_fix"] > targets["wrong_fix"]:
+                gap.append(f"错定多 {(m['wrong_fix'] - targets['wrong_fix']) * 100:.0f} 点")
         rows.append(f"| {r['title']}<br>`{r['id']}` | {_fmt('median_cm', m['median_cm'])} | {_fmt('p75_cm', m['p75_cm'])} | "
                     f"{_fmt('p90_cm', m['p90_cm'])} | {_fmt('wrong_fix', m['wrong_fix'])} | {_fmt('coverage', m['coverage'])} | "
                     f"{_fmt('first_fix_m', m['first_fix_m'])} | {level}{'（' + '，'.join(gap) + '）' if gap else ''}<br>{verdict} |")
@@ -359,6 +462,8 @@ def build_report(res: dict, baseline: dict | None, suite: dict) -> tuple[str, bo
                    f"覆盖 ≥ {lv['coverage'] * 100:g}%" for lv in suite["ladder"])
     md += ["<details><summary>口径说明</summary>", "",
            f"- 档位：{lad}。",
+           "- 有「场景目标」的场景（例如只靠地磁冷启动：只看错定 ≤ 20%，不要求覆盖）只按自己的目标判达标，"
+           "退步也只看目标里的指标；其余指标的变化写在「目标不看」里，只显示不拦。",
            "- 公开数据（Microsoft Indoor Location Competition 2.0 商场一层）的测试位姿是合成漂移，真值是稀疏路标插值，只适合比较版本之间的相对变化。",
            "- 自采数据的站点只用哈希代号。`walk-once` = 每个建图会话单独建图（只走一遍），换一天的测试会话来测。",
            "- 退步判定：中位、P90 变差超过 15% + 0.3 / 0.6 m，错定率多 5 个点，覆盖少 7 个点，定到率少 10 个点。",
@@ -382,6 +487,7 @@ def main(argv=None):
     p.add_argument("--eval", required=True, help="hpass-eval 可执行文件")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--only", help="只跑 id 含这个字符串的场景")
+    p.add_argument("--jobs", type=int, default=1, help="并行回放的场景数（本地多核用）")
     p = sub.add_parser("report")
     p.add_argument("--results", type=Path, required=True)
     p.add_argument("--baseline", type=Path)
@@ -400,7 +506,7 @@ def main(argv=None):
     elif a.cmd == "prepare-private":
         prepare_private(a.work)
     elif a.cmd == "run":
-        res = run_suite(suite, a.tier, a.work, [str(Path(a.eval).resolve())], a.only)
+        res = run_suite(suite, a.tier, a.work, [str(Path(a.eval).resolve())], a.only, a.jobs)
         a.out.write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
     elif a.cmd == "report":
         res = json.loads(a.results.read_text(encoding="utf-8"))

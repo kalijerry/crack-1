@@ -78,16 +78,40 @@ public struct WalkableMap {
         rows = Int((heightCm / cellCm).rounded(.up))
         state = [UInt8](repeating: 0, count: cols * rows)
         axis = [Float](repeating: 0, count: cols * rows)
-        for j in 0..<rows {
-            for i in 0..<cols {
-                let p = Point2((Double(i) + 0.5) * cellCm, (Double(j) + 0.5) * cellCm)
-                guard floor.contains(where: { pointInPolygon(p, $0) }) else { continue }
-                if obstacles.contains(where: { pointInRotatedRect(p, center: Point2($0.x, $0.y), width: $0.width, height: $0.height,
-                                                                   rotationDeg: $0.rotation, margin: marginCm) }) { continue }
-                state[j * cols + i] = 1
+        // 每个多边形 / 家具只在自己的外包框里栅格化（地面多边形可能上千个，逐格对全部多边形测太慢）；结果与逐格测相同
+        for poly in floor where poly.count >= 3 {
+            guard let (i0, i1, j0, j1) = cellRange(minX: poly.map(\.x).min()!, maxX: poly.map(\.x).max()!,
+                                                   minY: poly.map(\.y).min()!, maxY: poly.map(\.y).max()!) else { continue }
+            for j in j0...j1 {
+                for i in i0...i1 where state[j * cols + i] == 0 {
+                    if pointInPolygon(Point2((Double(i) + 0.5) * cellCm, (Double(j) + 0.5) * cellCm), poly) { state[j * cols + i] = 1 }
+                }
+            }
+        }
+        for o in obstacles {
+            let r = o.rotation * Double.pi / 180
+            let hw = o.width / 2 + marginCm, hh = o.height / 2 + marginCm
+            let ex = abs(cos(r)) * hw + abs(sin(r)) * hh, ey = abs(sin(r)) * hw + abs(cos(r)) * hh
+            guard let (i0, i1, j0, j1) = cellRange(minX: o.x - ex, maxX: o.x + ex, minY: o.y - ey, maxY: o.y + ey) else { continue }
+            for j in j0...j1 {
+                for i in i0...i1 where state[j * cols + i] != 0 {
+                    let p = Point2((Double(i) + 0.5) * cellCm, (Double(j) + 0.5) * cellCm)
+                    if pointInRotatedRect(p, center: Point2(o.x, o.y), width: o.width, height: o.height,
+                                          rotationDeg: o.rotation, margin: marginCm) { state[j * cols + i] = 0 }
+                }
             }
         }
         for k in 0..<state.count where state[k] != 0 { walkableIndices.append(k) }
+    }
+
+    /// 格心落在 [minX, maxX] × [minY, maxY]（cm）里的格子的列、行范围（含两端，裁到地图内，稍放宽一格）；没有返回 nil
+    private func cellRange(minX: Double, maxX: Double, minY: Double, maxY: Double) -> (Int, Int, Int, Int)? {
+        guard minX.isFinite, maxX.isFinite, minY.isFinite, maxY.isFinite,
+              maxX >= -cellCm, maxY >= -cellCm, minX <= widthCm + cellCm, minY <= heightCm + cellCm else { return nil }
+        let i0 = max(Int((max(minX, 0) / cellCm).rounded(.down)) - 1, 0), i1 = min(Int((min(maxX, widthCm) / cellCm).rounded(.up)) + 1, cols - 1)
+        let j0 = max(Int((max(minY, 0) / cellCm).rounded(.down)) - 1, 0), j1 = min(Int((min(maxY, heightCm) / cellCm).rounded(.up)) + 1, rows - 1)
+        guard i0 <= i1, j0 <= j1 else { return nil }
+        return (i0, i1, j0, j1)
     }
 
     /// 第 k 格能不能走（k = 行 × cols + 列）

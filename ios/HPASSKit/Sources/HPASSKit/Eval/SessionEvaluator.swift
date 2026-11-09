@@ -127,7 +127,9 @@ public enum SessionEvaluator {
         }
     }
 
-    public static func walkable(_ map: StoreMap) -> WalkableMap? {
+    /// - Parameter rooms: 地图有单元（房间 / 走廊）时用房间约束版（墙挡住、门打通、带房间编号，见 `RoomGraph`）
+    public static func walkable(_ map: StoreMap, rooms: Bool = false) -> WalkableMap? {
+        if rooms, map.crosses.isEmpty, let w = WalkableMap(roomsOf: map) { return w }
         if !map.crosses.isEmpty { return WalkableMap(crosses: map.crosses, widthCm: map.width, heightCm: map.height) }
         if !map.floor.isEmpty {
             return WalkableMap(floor: map.floor, obstacles: map.physicalShelves, widthCm: map.width, heightCm: map.height)

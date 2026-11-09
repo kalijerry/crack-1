@@ -57,6 +57,11 @@ public struct StoreMap {
     public var floor: [[Point2]] = []
     /// 房间扫描的地图：ARKit 世界坐标（扫描时的、也是视觉特征地图的）→ 地图坐标。视觉重定位后直接用它算位置。
     public var arAlign: MapARTransform?
+    /// 单元（房间 / 走廊 / 卫生间…，map.json 的 `units`）：id + IMDF 类别 + 地面多边形（cm）。
+    /// 没有 `units` 的地图（老的 IMDF 转换结果）为空，见 `roomUnits`。
+    public var units: [MapUnit] = []
+    /// 不可走单元的多边形（map.json 的 `obstaclePolygons`：结构、设备间、非公共区…）
+    public var obstacleFloor: [[Point2]] = []
 
     public init(mapId: Int? = nil, floorId: Int? = nil, floorName: String? = nil,
                 width: Double, height: Double, shelves: [ShelfRect], crosses: [CrossSegment],
@@ -69,6 +74,59 @@ public struct StoreMap {
         self.shelves = shelves
         self.crosses = crosses
         self.others = others
+    }
+}
+
+/// 地图上的一个单元（房间、走廊…）。polygon 是地图坐标（cm）。
+public struct MapUnit: Hashable {
+    public var id: String
+    /// IMDF unit category（room / walkway / restroom / structure …），小写
+    public var category: String
+    public var name: String?
+    public var polygon: [Point2]
+
+    public init(id: String, category: String = "room", name: String? = nil, polygon: [Point2]) {
+        self.id = id
+        self.category = category.lowercased()
+        self.name = name
+        self.polygon = polygon
+    }
+
+    public var isWalkable: Bool { IMDFUnitCategory.isWalkable(category) }
+}
+
+/// 墙 / 门 / 开口这类「中心 + 长度 + 厚度 + 方向」的矩形（cm，度；width 沿墙方向，thickness 垂直于墙）。
+public struct MapRect: Hashable {
+    public var center: Point2
+    public var width: Double
+    public var thickness: Double
+    public var rotationDeg: Double
+
+    public init(center: Point2, width: Double, thickness: Double, rotationDeg: Double) {
+        self.center = center
+        self.width = width
+        self.thickness = thickness
+        self.rotationDeg = rotationDeg
+    }
+}
+
+extension StoreMap {
+    /// 墙（MapWall）。只有房间扫描的地图有；IMDF 没有墙，单元边界就是墙。
+    public var walls: [MapRect] {
+        others.filter { $0.shapeType == "MapWall" }
+            .map { MapRect(center: Point2($0.x, $0.y), width: $0.width, thickness: $0.height, rotationDeg: $0.rotation) }
+    }
+
+    /// 门和开口（MapDoor、MapOpening）：房间之间能走过去的地方。
+    public var doors: [MapRect] {
+        others.filter { $0.shapeType == "MapDoor" || $0.shapeType == "MapOpening" }
+            .map { MapRect(center: Point2($0.x, $0.y), width: $0.width, thickness: $0.height, rotationDeg: $0.rotation) }
+    }
+
+    /// 房间约束用的单元：有 `units` 就用它；没有时（老的 IMDF 转换结果）把每块可走地面当一个 room，编号 F1、F2…
+    public var roomUnits: [MapUnit] {
+        if !units.isEmpty { return units }
+        return floor.enumerated().map { MapUnit(id: "F\($0.offset + 1)", category: "room", polygon: $0.element) }
     }
 }
 
@@ -245,6 +303,21 @@ public enum StoreDataLoader {
                 let v = arr.compactMap(num)
                 return stride(from: 0, to: v.count - 1, by: 2).map { Point2(v[$0], v[$0 + 1]) }
             }.filter { $0.count >= 3 }
+        }
+        func poly(_ v: Any?) -> [Point2] {
+            let f = (v as? [Any] ?? []).compactMap(num)
+            return stride(from: 0, to: f.count - 1, by: 2).map { Point2(f[$0], f[$0 + 1]) }
+        }
+        if let us = root["units"] as? [[String: Any]] {
+            map.units = us.enumerated().compactMap { k, u in
+                let p = poly(u["polygon"])
+                guard p.count >= 3 else { return nil }
+                let id = (u["id"]).map(str) ?? "U\(k + 1)"
+                return MapUnit(id: id, category: u["category"] as? String ?? "room", name: u["name"] as? String, polygon: p)
+            }
+        }
+        if let polys = root["obstaclePolygons"] as? [Any] {
+            map.obstacleFloor = polys.map(poly).filter { $0.count >= 3 }
         }
         if let a = root["arAlign"] as? [String: Any], let phi = num(a["phi"]), let x = num(a["pRefX"]), let y = num(a["pRefY"]) {
             map.arAlign = MapARTransform(pRef: Point2(x, y), aRef: Point2(num(a["aRefX"]) ?? 0, num(a["aRefY"]) ?? 0), phi: phi)

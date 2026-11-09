@@ -109,6 +109,9 @@ public struct ScanRegistry: Codable, Equatable {
     public var scans: [ScanRecord]
     /// 用户填的类别 / 名字（按全局单元编号），和扫描段无关，重新合成时套回去
     public var unitLabels: [String: UnitLabel] = [:]
+    /// 删掉的段用过、别的段没用的全局单元编号：不再分配给新房间（否则新房间会拿到旧房间的编号，
+    /// 套上旧房间的类别 / 名字，按编号记的采集 / 场地数据也会指到另一个房间）
+    public var retiredUnitIds: [String]?
 
     public init(mapId: String, frameId: String, frameAlign: MapARTransform?, geometryVersion: Int64,
                 scans: [ScanRecord] = [], name: String? = nil) {
@@ -186,8 +189,14 @@ public struct ScanRegistry: Codable, Equatable {
 
     public func removing(_ id: String, nowMs: Int64) -> ScanRegistry {
         var r = self
-        guard r.scans.contains(where: { $0.id == id }) else { return self }
+        guard let gone = r.scans.first(where: { $0.id == id }) else { return self }
         r.scans.removeAll { $0.id == id }
+        let still = r.assignedUnitIds
+        let freed = Set(gone.unitIds.values).subtracting(still)
+        if !freed.isEmpty {
+            r.retiredUnitIds = Array(Set(r.retiredUnitIds ?? []).union(freed)).sorted()
+            for u in freed { r.unitLabels[u] = nil }
+        }
         return r.bumpedVersion(nowMs: nowMs)
     }
 
@@ -217,6 +226,9 @@ public struct ScanRegistry: Codable, Equatable {
 
     /// 所有段已经分配出去的全局单元编号
     public var assignedUnitIds: Set<String> { Set(scans.flatMap { $0.unitIds.values }) }
+
+    /// 分配新编号时要避开的：已分配的 + 删掉的段退役的
+    public var reservedUnitIds: Set<String> { assignedUnitIds.union(retiredUnitIds ?? []) }
 
     /// 下一个没用过的全局单元编号 R<n>（n = 已用的 R 编号最大值 + 1）
     public static func nextUnitId(used: Set<String>) -> String {

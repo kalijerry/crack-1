@@ -86,7 +86,7 @@ public enum MapComposer {
         }
         var items: [Item] = []
         var units: [UnitW] = []
-        var used = reg.assignedUnitIds
+        var used = reg.reservedUnitIds
 
         for (k, rec) in ordered.enumerated() where rec.enabled {
             guard let root = roots[rec.id], let ri = reg.scans.firstIndex(where: { $0.id == rec.id }) else { continue }

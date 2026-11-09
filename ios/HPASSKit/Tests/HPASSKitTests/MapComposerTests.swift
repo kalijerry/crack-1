@@ -147,6 +147,29 @@ final class MapComposerTests: XCTestCase {
         XCTAssertTrue(wb.contains { $0.center.distance(to: oldV1) < 3 })
     }
 
+    func testRemovedScanUnitIdsAreNotReused() throws {
+        let f = try twoScans()
+        let first = try MapComposer.compose(registry: f.reg, scans: f.scans)
+        XCTAssertEqual(first.registry.scans.first { $0.id == "s2" }?.unitIds["meeting"], "R1")
+        // 给右段的会议室起名，然后整段删掉
+        var reg = first.registry.relabel(unit: "R1", category: "room", name: "会议室", nowMs: 2500)
+        reg = reg.removing("s2", nowMs: 2600)
+        XCTAssertEqual(Set(reg.retiredUnitIds ?? []), ["R1", "R2"])
+        XCTAssertNil(reg.unitLabels["R1"], "只属于删掉那段的单元，名字一起删")
+        // 重新扫右边：新房间不能拿到删掉的编号，也不能套上旧名字
+        let t = try O.truth(from: f.rightJ, O.frameB, to: f.leftJ, O.frameA)
+        reg = reg.adding(.init(id: "s3", createdMs: 3000, inBaseFrame: false, toMap: t.translated(by: first.originShift ?? .zero),
+                               alignment: .geometry), nowMs: 3000)
+        let res = try MapComposer.compose(registry: reg, scans: ["s1": f.leftJ, "s3": f.rightJ])
+        let ids = try XCTUnwrap(res.registry.scans.first { $0.id == "s3" }?.unitIds)
+        XCTAssertFalse(ids.values.contains("R1")); XCTAssertFalse(ids.values.contains("R2"))
+        XCTAssertEqual(Set(ids.values), ["R3", "R4"])
+        let units = MapGeometry.units(try O.root(res.json))
+        XCTAssertFalse(units.contains { $0.name == "会议室" })
+        // 编码往返保留退役编号；老注册表没有这个键也能读
+        XCTAssertEqual(try XCTUnwrap(ScanRegistry.decode(try res.registry.encoded())).retiredUnitIds, ["R1", "R2"])
+    }
+
     func testGhostCopyOfOldRoomIsDropped() throws {
         let leftJ = try O.build(O.left, O.frameA, frameId: "F1")
         var reg = try ScanRegistry.newMap(mapId: "m", frameId: "F1", scanId: "s1", scanJSON: leftJ, createdMs: 1)

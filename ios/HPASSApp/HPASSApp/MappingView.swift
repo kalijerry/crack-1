@@ -572,7 +572,12 @@ struct MappingView: View {
 
     private func minutes(_ remainingCm: Double) -> Int { max(Int(remainingCm / 100 / 0.8 / 60), 1) }
 
+    /// 开始前先体检磁力计（偏置变了就强制画 8 字校准），通过后才真正开始
     private func start() {
+        MagCalibrationCenter.shared.gate { startNow() }
+    }
+
+    private func startNow() {
         Haptics.heavy()
         startFraction = survey.coverage.paintGrid?.fraction ?? 0
         survey.start(note: note)

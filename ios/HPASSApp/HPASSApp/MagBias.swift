@@ -7,6 +7,7 @@ import HPASSKit
 /// 实时定位的磁场 = 原始磁力计 − 这个偏置。偏置从哪来：
 /// 1. 建图 / 采集会话（参考系含磁力计，有 iOS 校准值）结束时，用整次会话「原始 − 校准」的中位数存一份（`learned`）；
 ///    没有存档时的实时定位（参考系含磁力计）攒够 `liveMinSeconds` 秒，结束时也存一份（`live`），下次定位就用固定偏置；
+///    「画 8 字」校准（MagCalibration.swift，陀螺仪姿态 + 原始磁力计）存的是 `calibrated`，一周内采集学到的差得多不覆盖它；
 /// 2. 没有存档时，实时定位里用原始读数做球面拟合在线估计（`sphere_fit`，要手机转过足够多的朝向）。
 /// 换保护壳 / 磁吸附件后偏置会变：建图或采集一次就会刷新存档。
 enum MagBiasStore {
@@ -24,6 +25,8 @@ enum MagBiasStore {
     static let liveMinSeconds = 30
     /// 这么新的存档（毫秒）核对没通过也不作废，只这次不用
     static let keepFreshMs = 86_400_000.0
+    /// 采集学到的偏置和一周内画 8 字校准的相差超过这个（µT）就不覆盖校准值
+    static let learnedOverrideUT = 30.0
 
     static func load() -> Stored? {
         guard let d = UserDefaults.standard.data(forKey: key),
@@ -75,7 +78,18 @@ final class MagBiasLearner: @unchecked Sendable {
     /// 学到了就存档（会话结束时调用）。
     func persistIfReady() {
         lock.lock(); let b = tracker.bias; lock.unlock()
-        if let b { MagBiasStore.save(b, source: "learned") }
+        guard let b else { return }
+        // 一周内「画 8 字」校准出来的偏置比「原始 − iOS 校准」可靠（iOS 跟不上偏置跳变）：差得多就不覆盖
+        if let s = MagBiasStore.load(), s.source == "calibrated",
+           Double(Fmt.nowMs() - s.savedMs) < 7 * 86_400_000 {
+            let d = ((b.0 - s.bias[0]) * (b.0 - s.bias[0]) + (b.1 - s.bias[1]) * (b.1 - s.bias[1])
+                     + (b.2 - s.bias[2]) * (b.2 - s.bias[2])).squareRoot()
+            if d > MagBiasStore.learnedOverrideUT {
+                AppLog.w("地磁", "采集学到的偏置和画 8 字校准的差 \(Int(d)) µT，保留校准值（iOS 校准可能还没跟上）")
+                return
+            }
+        }
+        MagBiasStore.save(b, source: "learned")
     }
 }
 

@@ -688,7 +688,9 @@ struct MagneticView: View {
                     Toggle("同时测地磁定位精度", isOn: $survey.evaluate)
                 }
                 if paintMode { zonePicker }
-                bigButton("开始建图采集", name: "建图·开始") { survey.start(note: surveyNote) }
+                bigButton("开始建图采集", name: "建图·开始") {
+                    MagCalibrationCenter.shared.gate { survey.start(note: surveyNote) }
+                }
                     .disabled(!store.usesStoreMap)
             } else {
                 Text(surveyInstruction).font(.callout)

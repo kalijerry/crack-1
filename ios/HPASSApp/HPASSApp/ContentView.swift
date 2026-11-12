@@ -39,6 +39,7 @@ struct ContentView: View {
     @State private var tab: AppTab = DemoMode.initialTab.flatMap(AppTab.init(rawValue:)) ?? .navigate
     @ObservedObject private var storeData = StoreDataStore.shared
     @ObservedObject private var store = MagMapStore.shared
+    @ObservedObject private var magCal = MagCalibrationCenter.shared
 
     var body: some View {
         TabView(selection: $tab) {
@@ -77,5 +78,14 @@ struct ContentView: View {
         .onChange(of: store.crosses.count) { _ in AppEngines.shared.configureCoverage() }
         // 启动时拉一次云端：普通模式自动装上云端正式地图，重装 App 后打开就有
         .task { if !DemoMode.isOn { await CloudMaps.shared.refresh() } }
+        // 开始建图采集前的磁力计体检（约 2 秒）和强制校准页
+        .overlay {
+            if magCal.checking {
+                ProgressView("检查磁力计…")
+                    .padding(20)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+            }
+        }
+        .fullScreenCover(isPresented: $magCal.presented) { MagCalibrationView() }
     }
 }

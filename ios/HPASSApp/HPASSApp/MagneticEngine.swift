@@ -234,6 +234,10 @@ final class MagneticEngine: ObservableObject {
     @Published private(set) var reviewEstTrail: [Point2] = []
     /// 复核：视觉已经认出房间（有真值了）
     @Published private(set) var reviewHasTruth = false
+    /// 视觉校验（普通实时定位也做）：最近一次视觉位置的时间。超过几秒没更新（摄像头关了、跟丢）界面就不画黄点
+    @Published private(set) var reviewTruthAt: Date?
+    /// 普通实时定位时视觉校验在不在录（地图有视觉特征地图和 ARKit → 地图对齐时自动打开）
+    @Published private(set) var visualCheckOn = false
     static let reviewTrailCapacity = 1500
     /// 实时定位录制的附加 meta（盲测模式填），开始和结束时各取一次
     var liveExtraMeta: (() -> [String: Any])?
@@ -1055,7 +1059,11 @@ final class MagneticEngine: ObservableObject {
         reviewTruthTrail = []
         reviewEstTrail = []
         reviewHasTruth = false
-        guard reviewMode, let d = liveSessionDir, let t = StoreDataStore.shared.map?.arAlign else { return }
+        reviewTruthAt = nil
+        visualCheckOn = false
+        // 复核模式之外也录：地图有视觉对齐时，普通实时定位也拿视觉位置（黄点）自动校验地磁混合定位，写 review.csv
+        guard let d = liveSessionDir, let t = StoreDataStore.shared.map?.arAlign else { return }
+        visualCheckOn = !reviewMode
         let w = try? CSVWriter(url: d.appendingPathComponent("review.csv"),
                                header: "t_ms,truth_x_cm,truth_y_cm,est_x_cm,est_y_cm,err_cm,unc_cm,converged,steps")
         queue.sync {
@@ -1065,12 +1073,19 @@ final class MagneticEngine: ObservableObject {
             pipe.reviewLastMs = 0
             pipe.reviewLastPublishMs = 0
         }
-        UIApplication.shared.isIdleTimerDisabled = true
-        AppLog.i("复核", "开始视觉复核：起点 \(reviewStartFromVisual ? "视觉" : "地磁自动定位")，视觉位置只当真值")
+        if reviewMode { UIApplication.shared.isIdleTimerDisabled = true }
+        if reviewMode {
+            AppLog.i("复核", "开始视觉复核：起点 \(reviewStartFromVisual ? "视觉" : "地磁自动定位")，视觉位置只当真值")
+        } else {
+            AppLog.i("复核", "视觉自动校验已打开：认出房间后视觉位置画成黄点，和定位位置逐 0.2 秒比，写 review.csv")
+        }
     }
 
     private func stopReviewRecording() {
-        guard reviewMode else { return }
+        let wasCheck = visualCheckOn
+        visualCheckOn = false
+        reviewTruthAt = nil
+        guard reviewMode || wasCheck else { return }
         let stats: PositionReviewStats = queue.sync {
             pipe.reviewWriter?.close()
             pipe.reviewWriter = nil
@@ -1078,8 +1093,8 @@ final class MagneticEngine: ObservableObject {
             return pipe.reviewStats
         }
         reviewStats = stats
-        UIApplication.shared.isIdleTimerDisabled = false
-        AppLog.i("复核", "复核结束：\(stats.count) 个样本，误差中位 \(stats.medianCm.map { Fmt.f($0 / 100, 2) } ?? "—") m，"
+        if reviewMode { UIApplication.shared.isIdleTimerDisabled = false }
+        AppLog.i("复核", (reviewMode ? "" : "视觉自动校验：") + "复核结束：\(stats.count) 个样本，误差中位 \(stats.medianCm.map { Fmt.f($0 / 100, 2) } ?? "—") m，"
                  + "P90 \(stats.p90Cm.map { Fmt.f($0 / 100, 2) } ?? "—") m，2 m 内 \(stats.withinShare(200).map { "\(Int($0 * 100))%" } ?? "—")")
     }
 
@@ -1104,6 +1119,7 @@ final class MagneticEngine: ObservableObject {
         Task { @MainActor in
             self.reviewStats = stats
             self.reviewTruth = truth
+            self.reviewTruthAt = Date()
             self.reviewEstimate = est
             self.reviewHasTruth = true
             self.reviewTruthTrail.append(truth)
@@ -1237,7 +1253,7 @@ final class MagneticEngine: ObservableObject {
             meta["battery_end"] = Double(UIDevice.current.batteryLevel)
             meta["thermal_end"] = ProcessInfo.processInfo.thermalState.rawValue
             meta["visual_fixes"] = visualFixes
-            if reviewMode { meta["review"] = reviewStats.summary() }
+            if reviewMode || reviewStats.count > 0 { meta["review"] = reviewStats.summary() }
         }
         if reviewMode {
             meta["purpose"] = "review"

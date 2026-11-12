@@ -54,6 +54,24 @@ async function listPrefix(env, prefix, limit = 500) {
   return out.sort((a, b) => (a.uploaded < b.uploaded ? 1 : -1));
 }
 
+/// 让 GitHub Actions 跑云端建图（map-build.yml）。要 Worker secret GH_TOKEN（细粒度令牌，本仓库 Actions 读写），
+/// 由部署工作流从 Actions 密钥 MAP_BUILD_TOKEN 写进来。没配返回 null。
+async function dispatchMapBuild(env, inputs) {
+  if (!env.GH_TOKEN) return null;
+  const repo = env.GH_REPO || "kalijerry/indoor_navigatoin";
+  const r = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/map-build.yml/dispatches`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer " + env.GH_TOKEN,
+      accept: "application/vnd.github+json",
+      "user-agent": "hpass-telemetry",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ ref: "main", inputs }),
+  });
+  return { ok: r.status === 204, status: r.status, text: r.status === 204 ? "" : (await r.text()).slice(0, 300) };
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -111,6 +129,8 @@ export default {
           method: "POST",
           body: JSON.stringify({ type: "event", name: "session_uploaded", session: name, t: Date.now() }),
         }));
+        // 建图采集传上来就自动重建（会话没变的地图云端会跳过；同时只跑一个，排队）
+        if (name.startsWith("ios_survey_") && env.GH_TOKEN) ctx.waitUntil(dispatchMapBuild(env, {}).catch(() => null));
         return json({ ok: true, key });
       }
       if (request.method === "GET") {
@@ -252,6 +272,34 @@ export default {
         return new Response(o.body, { headers: { "content-type": "application/octet-stream",
           "content-disposition": `attachment; filename="${name}"` } });
       }
+    }
+
+    // 强制重建地图（看板 / App 的按钮）：{"map_id": "...", "force": true}
+    if (path === "/api/rebuild" && request.method === "POST") {
+      let b = {};
+      try { b = await request.json(); } catch (_) { b = {}; }
+      const inputs = { force: b.force === false ? "false" : "true" };
+      if (b.map_id) {
+        if (!safeName(String(b.map_id))) return json({ error: "名字不合法" }, 400);
+        inputs.map_id = String(b.map_id);
+      }
+      const r = await dispatchMapBuild(env, inputs);
+      if (!r) return json({ error: "后台还没配 GitHub 令牌：仓库 Actions 密钥加 MAP_BUILD_TOKEN 后重新部署后台（见 server/telemetry/README.md）" }, 503);
+      if (!r.ok) return json({ error: `GitHub 拒绝了（HTTP ${r.status}）：${r.text}` }, 502);
+      return json({ ok: true, message: "已开始重建，大约 3～5 分钟后手机上的地图会自动更新" });
+    }
+
+    // 云端建图不用的会话（名字列表）：cloud_build.py 每次都读
+    if (path === "/api/config/exclude") {
+      if (request.method === "PUT") {
+        let list;
+        try { list = await request.json(); } catch (_) { return json({ error: "要 JSON 数组" }, 400); }
+        if (!Array.isArray(list) || !list.every((x) => typeof x === "string" && safeName(x))) return json({ error: "要会话名数组" }, 400);
+        await env.DATA.put("config/exclude.json", JSON.stringify(list), { httpMetadata: { contentType: "application/json" } });
+        return json({ ok: true, count: list.length });
+      }
+      const o = await env.DATA.get("config/exclude.json");
+      return new Response(o ? o.body : "[]", { headers: { "content-type": "application/json; charset=utf-8" } });
     }
 
     // 评估报告

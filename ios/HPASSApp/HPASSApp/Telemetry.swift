@@ -305,6 +305,24 @@ final class Telemetry: ObservableObject {
         return d
     }
 
+    /// 让云端马上重新生成这张地图（不管会话变没变）。返回给人看的结果
+    func requestRebuild(mapId: String) async -> String {
+        guard var r = request("api/rebuild", method: "POST") else { return CloudError.notConfigured.description }
+        r.timeoutInterval = 30
+        r.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body = (try? JSONSerialization.data(withJSONObject: ["map_id": mapId, "force": true])) ?? Data()
+        do {
+            let (d, resp) = try await URLSession.shared.upload(for: r, from: body)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            let obj = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any]
+            let msg = (obj?["message"] as? String) ?? (obj?["error"] as? String) ?? "HTTP \(code)"
+            AppLog.i("后台", "请求重建地图 \(mapId)：\(msg)")
+            return msg
+        } catch {
+            return "请求失败：\(error.localizedDescription)"
+        }
+    }
+
     /// 后台会话列表的请求（没配地址时 nil）
     func sessionsRequest() -> URLRequest? { request("api/sessions", method: "GET") }
 

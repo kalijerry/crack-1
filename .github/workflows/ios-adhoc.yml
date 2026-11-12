@@ -77,13 +77,18 @@ jobs:
         run: |
           brew install xcodegen
           python3 - <<'PY'
-          import os, re
+          import os, re, datetime
           p = "project.yml"; s = open(p).read()
           s = s.replace("PRODUCT_BUNDLE_IDENTIFIER: com.example.hpassapp", "PRODUCT_BUNDLE_IDENTIFIER: " + os.environ["BUNDLE_ID"])
           s = s.replace("CODE_SIGN_STYLE: Automatic",
                         "CODE_SIGN_STYLE: Manual\n        DEVELOPMENT_TEAM: " + os.environ["TEAM_ID"] +
                         "\n        CODE_SIGN_IDENTITY: \"Apple Distribution\"\n        PROVISIONING_PROFILE_SPECIFIER: \"" + os.environ["PROFILE_NAME"] + "\"")
-          s = re.sub(r'CURRENT_PROJECT_VERSION: "\d+"', 'CURRENT_PROJECT_VERSION: "' + os.environ["GITHUB_RUN_NUMBER"] + '"', s)
+          # 版本号：project.yml 里的「主.次」+ 第几次打包，如 0.1.57；构建号同为打包序号；再写入构建时间和提交号
+          run = os.environ["GITHUB_RUN_NUMBER"]
+          s = re.sub(r'MARKETING_VERSION: "(\d+)\.(\d+)(?:\.\d+)?"', lambda m: f'MARKETING_VERSION: "{m[1]}.{m[2]}.{run}"', s)
+          s = re.sub(r'CURRENT_PROJECT_VERSION: "\d+"', 'CURRENT_PROJECT_VERSION: "' + run + '"', s)
+          s = s.replace('HPASS_BUILD_DATE: ""', 'HPASS_BUILD_DATE: "' + datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") + '"')
+          s = s.replace('HPASS_COMMIT: ""', 'HPASS_COMMIT: "' + os.environ["GITHUB_SHA"][:7] + '"')
           open(p, "w").write(s)
           PY
           xcodegen generate

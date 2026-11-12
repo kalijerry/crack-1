@@ -185,7 +185,12 @@ struct SettingsView: View {
             HStack {
                 Text("版本")
                 Spacer()
-                Text(Self.version).foregroundStyle(DS.Palette.textSecondary)
+                Text(AppVersion.display).foregroundStyle(DS.Palette.textSecondary)
+            }
+            HStack {
+                Text("构建时间")
+                Spacer()
+                Text(AppVersion.buildDateText).foregroundStyle(DS.Palette.textSecondary)
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text("只用手机的室内定位").font(.callout.weight(.semibold))
@@ -203,10 +208,43 @@ struct SettingsView: View {
             }
         } header: { Text("关于") }
     }
+}
 
-    private static var version: String {
-        let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "-"
-        let b = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "-"
-        return "\(v) (\(b))"
+/// App 版本信息：版本号 / 构建号由 CI（ios-adhoc.yml）按打包序号写入，构建时间和提交号写在 Info.plist 的自定义键里
+enum AppVersion {
+    private static func info(_ key: String) -> String {
+        (Bundle.main.object(forInfoDictionaryKey: key) as? String ?? "").trimmingCharacters(in: .whitespaces)
+    }
+    static var version: String { info("CFBundleShortVersionString") }
+    static var build: String { info("CFBundleVersion") }
+    static var commit: String { info("HPASSCommit") }
+
+    /// 「0.1.57（57）」；构建号已含在版本号末尾时只显示版本号
+    static var display: String {
+        let v = version.isEmpty ? "-" : version
+        if build.isEmpty || v.hasSuffix("." + build) { return v }
+        return "\(v)（\(build)）"
+    }
+
+    /// CI 打包时写入的构建时间；本机 Xcode 编译时没有，就用可执行文件的修改时间
+    static var buildDate: Date? {
+        let s = info("HPASSBuildDate")
+        if !s.isEmpty, let d = ISO8601DateFormatter().date(from: s) { return d }
+        guard let path = Bundle.main.executablePath,
+              let attrs = try? FileManager.default.attributesOfItem(atPath: path) else { return nil }
+        return attrs[.modificationDate] as? Date
+    }
+
+    /// 「2026-11-12 19:58 · a1b2c3d」，本机编译的标「本机编译」
+    static var buildDateText: String {
+        var parts: [String] = []
+        if let d = buildDate {
+            let f = DateFormatter()
+            f.locale = Locale(identifier: "zh_CN")
+            f.dateFormat = "yyyy-MM-dd HH:mm"
+            parts.append(f.string(from: d))
+        }
+        parts.append(commit.isEmpty ? "本机编译" : commit)
+        return parts.joined(separator: " · ")
     }
 }

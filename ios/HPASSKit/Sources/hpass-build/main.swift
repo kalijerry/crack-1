@@ -44,6 +44,8 @@ struct Report: Encodable {
     var magExcluded: [String]
     /// 地图自愈：实时定位记录并进磁场图的情况（没给 --live 为 nil）
     var live: LiveFieldMerger.Report?
+    /// 多遍互相对齐：每遍挪了多少、转了多少（会话名 → 修正）
+    var registration: [String: SessionRegistration.Rigid]?
 }
 
 guard let mapPath = arg("--map"), let out = arg("--out"), let id = arg("--id") else {
@@ -95,6 +97,12 @@ do {
         guard let st = pb.corrections[s.name] else { continue }
         print(String(format: "蓝牙标签 / 货架标签修正 %@：蓝牙标签读数 %d、货架标签 %d，人−蓝牙标签中位 %.1f → %.1f m，最大挪动 %.1f m",
                      s.name, st.readings, st.signs ?? 0, st.beforeMedianM, st.afterMedianM, st.maxShiftM))
+    }
+    for s in sessions {
+        guard let g = pb.registration[s.name] else { continue }
+        let res = g.residualBefore.map { b in String(format: "，磁场残差 %.1f → %.1f µT", b, g.residualAfter ?? b) } ?? "，和别的遍重叠不够（只按可走区域）"
+        print(String(format: "多遍对齐 %@：挪 %+.0f, %+.0f cm、转 %+.0f°%@，在可走区域里 %.0f%% → %.0f%%",
+                     s.name, g.dx, g.dy, g.rotDeg, res, g.insideBefore * 100, g.insideAfter * 100))
     }
     let quality = pb.quality
     let corrStats = pb.corrections
@@ -265,7 +273,8 @@ do {
                          fieldCells: rm.field.coveredCells, bleTags: ble?.tags.count ?? 0, coverage: coverage, coveredM2: covered,
                          walkableM2: walkableM2, unfinishedCorridors: unfinished, tests: tests, packageBytes: pkg.count, warnings: warnings,
                          tagMismatches: tagMismatches, quality: quality, corrections: corrStats,
-                         zones: zoneStatus, nextZone: nextZone, nextZoneEntry: nextEntry, magExcluded: magExcluded, live: liveReport)
+                         zones: zoneStatus, nextZone: nextZone, nextZoneEntry: nextEntry, magExcluded: magExcluded, live: liveReport,
+                         registration: pb.registration.isEmpty ? nil : pb.registration)
         let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         try enc.encode(rep).write(to: URL(fileURLWithPath: rp))
     }

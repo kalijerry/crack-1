@@ -49,15 +49,21 @@ public final class MultiSessionFusion {
 
     /// - filters: 每个会话只用哪些时刻的样本（质量筛选的结果；nil = 都用）
     /// - corrections: 每个会话的标签锚定轨迹修正（TagTrajectoryCorrector；nil = 不修正）
+    /// - rigid: 每个会话的多遍互相对齐修正（SessionRegistration；nil = 不修正），对齐好之后整体套上
     public func fuse(_ sessions: [SurveySession], filters: [((Int64) -> Bool)?]? = nil,
-                     corrections: [((Int64) -> Point2)?]? = nil) -> Result {
+                     corrections: [((Int64) -> Point2)?]? = nil,
+                     rigid: [SessionRegistration.Rigid?]? = nil) -> Result {
         // 1. 每个会话：对齐、算样本、单独统计
         var prepared: [(rep: SurveySessionReport, samples: [(Point2, MagneticFeature)], snap: MagneticFieldBuilder.Snapshot)] = []
         for (si, s) in sessions.enumerated() {
             let b = SurveyMapBuilder(widthCm: map.width, heightCm: map.height, crosses: map.crosses, cellCm: cellCm)
             if let fs = filters, si < fs.count { b.sampleFilter = fs[si] }
             if let cs = corrections, si < cs.count { b.correction = cs[si] }
-            let (rep, samples) = b.prepare(s)
+            var (rep, samples) = b.prepare(s)
+            if let rs = rigid, si < rs.count, let r = rs[si], !r.isIdentity {
+                samples = samples.map { (r.apply($0.0), $0.1) }
+                rep.track = rep.track.map { ($0.tMs, r.apply($0.p)) }
+            }
             let own = MagneticFieldBuilder(widthCm: map.width, heightCm: map.height, cellCm: cellCm)
             for (p, f) in samples { _ = own.add(position: p, feature: f) }
             prepared.append((rep, samples, own.snapshot()))

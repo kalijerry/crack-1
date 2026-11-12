@@ -39,7 +39,10 @@ final class ProductionMapBuildTests: XCTestCase {
     func build(_ set: String, _ names: [String] = all,
                _ options: MultiSessionFusion.ProductionOptions = .cloud) throws -> MultiSessionFusion.ProductionBuild {
         let s = try load(set, names)
-        return try XCTUnwrap(fusion.buildProduction(s, ble: Array(repeating: [], count: s.count), options: options))
+        // 这里测的是偏移联合求解 / 分量排除，要求精确到 0.05 µT：关掉多遍对齐（它会把轨迹挪几厘米），对齐另有 SessionRegistrationTests
+        var opt = options
+        if opt.registration == nil { opt.registration = false }
+        return try XCTUnwrap(fusion.buildProduction(s, ble: Array(repeating: [], count: s.count), options: opt))
     }
     func offset(_ r: MultiSessionFusion.Result, _ name: String) throws -> MagneticFeature {
         try XCTUnwrap(r.reports.first { $0.name == name }?.offsetUT, name)
@@ -136,7 +139,7 @@ final class ProductionMapBuildTests: XCTestCase {
         XCTAssertEqual(pr.offMain, ["e"])
         XCTAssertTrue(pr.rejected.isEmpty, "\(pr.rejected)")
         XCTAssertEqual(pr.reports.map(\.name), ["a", "b", "c", "d"])
-        let cloud = try build("off")
+        let cloud = try build("off", Self.all, .init(registration: true))   // 和 buildMaps 一样（这张图没有通道，自动对齐）
         XCTAssertEqual(pr.field.cells, cloud.magnetic.field.cells)
         let fu = try SessionEvaluator.buildMaps(sessions: dirs("off", Self.all), map: map)
         XCTAssertTrue(fu.magExcluded.isEmpty)

@@ -129,6 +129,8 @@ private final class MagPipeline {
     var pendingLateral: LateralObservation?
     var lastLatLeft: Double?
     var lastLatRight: Double?
+    var lastWallLeft: Double?
+    var lastWallRight: Double?
 
     // 视觉复核：ARKit 认出房间后的相机位置换到地图当真值，和地磁混合定位逐帧比（见 PositionReviewStats）
     var reviewAlign: MapARTransform?
@@ -1906,6 +1908,10 @@ final class MagneticEngine: ObservableObject {
 
     /// 深度相机量到的左右货架距离（在引擎队列上）。
     private nonisolated func handleLateral(_ lat: DepthLateral, pipe: MagPipeline) {
+        pipe.lastWallLeft = lat.wallLeftCm
+        pipe.lastWallRight = lat.wallRightCm
+        // 只有墙距离（前方视野里没东西）时保留上一次的货架距离，不让它闪成空
+        guard lat.leftCm != nil || lat.rightCm != nil else { return }
         pipe.lastLatLeft = lat.leftCm
         pipe.lastLatRight = lat.rightCm
         guard pipe.mode == .live, pipe.vioActive, let phi = pipe.aligner.rotationRad else { return }
@@ -1929,7 +1935,7 @@ final class MagneticEngine: ObservableObject {
         let vioT = pipe.vioEnabled ? pipe.vioTracking : 0
         let aligned = pipe.vioActive, progress = pipe.vioProgress
         let pdr = pipe.pdrDistanceCm
-        let lat = Self.lateralDescription(pipe.lastLatLeft, pipe.lastLatRight)
+        let lat = Self.lateralDescription(pipe.lastLatLeft, pipe.lastLatRight, wallLeft: pipe.lastWallLeft, wallRight: pipe.lastWallRight)
         // AR 叠加：以「界面上显示的位置」为锚点，这样地磁修正了位置，AR 里的货架也跟着挪，和地图上的点一致。
         // 旋转：对齐过的用对齐器的；冷启动用地磁轨迹和 ARKit 轨迹拟合出来的。地磁没把握时不显示。
         var alignment: MapARTransform?
@@ -1975,9 +1981,12 @@ final class MagneticEngine: ObservableObject {
         }
     }
 
-    private nonisolated static func lateralDescription(_ l: Double?, _ r: Double?) -> String {
-        guard l != nil || r != nil else { return "" }
-        return "左 \(l.map { String(Int($0)) } ?? "—") / 右 \(r.map { String(Int($0)) } ?? "—") cm"
+    private nonisolated static func lateralDescription(_ l: Double?, _ r: Double?, wallLeft: Double? = nil, wallRight: Double? = nil) -> String {
+        func f(_ v: Double?) -> String { v.map { String(Int($0)) } ?? "—" }
+        var parts: [String] = []
+        if l != nil || r != nil { parts.append("左 \(f(l)) / 右 \(f(r)) cm") }
+        if wallLeft != nil || wallRight != nil { parts.append("墙 左 \(f(wallLeft)) / 右 \(f(wallRight)) cm") }
+        return parts.joined(separator: " · ")
     }
 
     private func applyFix(position p: Point2, uncertainty: Double, heading: Double, steps: Int,

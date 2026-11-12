@@ -12,6 +12,10 @@ struct DepthLateral {
     var rightPoints: Int
     /// 相机朝向在 ARKit 水平面上的单位向量 (x, z)
     var forwardAR: (x: Double, z: Double)
+    /// 从相机水平往左 / 往右打射线，到 ARKit 识别出的竖直平面（墙、柜子侧面）的距离（cm）；没打到为 nil。
+    /// 和 leftCm / rightCm 不同：那个只看相机前方视野里最近的东西（常是桌椅、人），这个是身体两侧的墙
+    var wallLeftCm: Double? = nil
+    var wallRightCm: Double? = nil
 }
 
 /// 视觉里程计（ARKit 世界跟踪，16 Pro 上带 LiDAR）：
@@ -102,7 +106,7 @@ final class ARKitLogger: NSObject, ARSessionDelegate {
         self.wantsDepth = wantsDepth && Self.supportsLiDAR
         if self.wantsDepth, let lateralFile {
             lateralWriter = try CSVWriter(url: lateralFile,
-                                          header: "t_ms,left_cm,right_cm,left_n,right_n,fwd_ar_x,fwd_ar_z")
+                                          header: "t_ms,left_cm,right_cm,left_n,right_n,fwd_ar_x,fwd_ar_z,wall_left_cm,wall_right_cm")
         }
         frameCounter = 0
         let cfg = makeConfig(worldMap: worldMap)
@@ -122,6 +126,7 @@ final class ARKitLogger: NSObject, ARSessionDelegate {
         let cfg = ARWorldTrackingConfiguration()
         cfg.worldAlignment = .gravity
         cfg.planeDetection = [.horizontal]                  // 用来找地面高度（AR 叠加要把地图贴在地上）
+        if wantsDepth { cfg.planeDetection.insert(.vertical) }   // 墙：量身体两侧到墙的距离（wallLateral）
         if wantsMesh { cfg.sceneReconstruction = .mesh }
         cfg.environmentTexturing = .none
         if wantsDepth { cfg.frameSemantics = .sceneDepth }
@@ -273,11 +278,19 @@ final class ARKitLogger: NSObject, ARSessionDelegate {
 
         // 深度：30 Hz 里每 3 帧取一次，约 10 Hz
         if wantsDepth, state == 2, frameCounter % 6 == 0, let depth = frame.sceneDepth {
-            if let lat = lateral(from: depth, camera: frame.camera, t: t) {
+            let walls = wallLateral(camera: frame.camera)
+            var lat = lateral(from: depth, camera: frame.camera, t: t)
+            if lat == nil, let w = walls, w.left != nil || w.right != nil {
+                lat = DepthLateral(tMs: t, leftCm: nil, rightCm: nil, leftPoints: 0, rightPoints: 0, forwardAR: w.fwd)
+            }
+            if var lat {
+                lat.wallLeftCm = walls?.left
+                lat.wallRightCm = walls?.right
                 lateralWriter?.append([
                     "\(t)", lat.leftCm.map { Fmt.f($0, 1) } ?? "", lat.rightCm.map { Fmt.f($0, 1) } ?? "",
                     "\(lat.leftPoints)", "\(lat.rightPoints)",
                     Fmt.f(lat.forwardAR.x, 4), Fmt.f(lat.forwardAR.z, 4),
+                    lat.wallLeftCm.map { Fmt.f($0, 1) } ?? "", lat.wallRightCm.map { Fmt.f($0, 1) } ?? "",
                 ].joined(separator: ","))
                 onLateral?(lat)
             }
@@ -373,6 +386,29 @@ final class ARKitLogger: NSObject, ARSessionDelegate {
     /// 注意：深度图和相机内参是传感器方向（横屏），ARKit 的 `camera.transform` 对应同一个传感器坐标系，
     /// 所以下面的反投影都在传感器坐标系里做，不需要处理手机竖屏旋转。
     /// **这一步没有在真机上验证过**，所以默认只记录、不参与定位；用 `hpass-replay` 对照地图核对之后再打开。
+    /// 从相机位置水平往左、往右各打一条射线，打到 ARKit 已经识别出的竖直平面（墙 / 柜子侧面），返回水平距离（cm）。
+    /// 竖直平面是边走边从相机画面里认出来的，走过的墙会一直留着，所以身体两侧（相机看不到的方向）也量得到。
+    private func wallLateral(camera: ARCamera) -> (left: Double?, right: Double?, fwd: (x: Double, z: Double))? {
+        let tr = camera.transform
+        let cam = SIMD3<Float>(tr.columns.3.x, tr.columns.3.y, tr.columns.3.z)
+        let look = -SIMD3<Float>(tr.columns.2.x, tr.columns.2.y, tr.columns.2.z)
+        var fwd = SIMD2<Float>(look.x, look.z)
+        let fn = simd_length(fwd)
+        guard fn > 0.35 else { return nil }
+        fwd /= fn
+        let leftDir = SIMD3<Float>(fwd.y, 0, -fwd.x)       // 和 lateral 里的「左」同一个约定
+        func cast(_ d: SIMD3<Float>) -> Double? {
+            let q = ARRaycastQuery(origin: cam, direction: d, allowing: .existingPlaneGeometry, alignment: .vertical)
+            for hit in session.raycast(q) {
+                let p = hit.worldTransform.columns.3
+                let dist = simd_length(SIMD2<Float>(p.x - cam.x, p.z - cam.z))
+                if dist >= 0.15 && dist <= 8 { return Double(dist) * 100 }
+            }
+            return nil
+        }
+        return (cast(leftDir), cast(-leftDir), (Double(fwd.x), Double(fwd.y)))
+    }
+
     private func lateral(from depth: ARDepthData, camera: ARCamera, t: Int64) -> DepthLateral? {
         let map = depth.depthMap
         CVPixelBufferLockBaseAddress(map, .readOnly)

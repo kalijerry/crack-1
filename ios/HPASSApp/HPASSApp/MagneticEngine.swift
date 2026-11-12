@@ -195,7 +195,22 @@ final class MagneticEngine: ObservableObject {
 
     /// 当前地图有视觉特征地图（房间扫描时存的）和 ARKit → 地图的变换：可以视觉定位
     var visualAvailable: Bool {
-        cameraAllowed && MapLibrary.shared.activeWorldMapURL != nil && StoreDataStore.shared.map?.arAlign != nil
+        cameraAllowed && StoreDataStore.shared.map?.arAlign != nil && visualSource != nil
+    }
+    /// 视觉认房间用的特征地图和它的「ARKit → 地图」变换（见 MapLibrary.liveVisualSource）；读文件，缓存 5 秒
+    var visualSource: MapLibrary.VisualSource? {
+        let lib = MapLibrary.shared
+        let key = "\(lib.activeId ?? "")|\(lib.geometryRevision)|\(StoreDataStore.shared.map?.frameId ?? "")"
+        if let c = visualSourceCache, c.key == key, Date().timeIntervalSince(c.at) < 5 { return c.value }
+        let v = lib.activeId.flatMap { lib.liveVisualSource($0, mapAlign: StoreDataStore.shared.map?.arAlign) }
+        visualSourceCache = (key, Date(), v)
+        return v
+    }
+    private var visualSourceCache: (key: String, at: Date, value: MapLibrary.VisualSource?)?
+    /// 视觉位置换到地图用的变换：载入的特征地图自己的（扫描段的可能和地图的 arAlign 不同），否则地图的 arAlign
+    private var liveAlign: MapARTransform? {
+        guard let t = StoreDataStore.shared.map?.arAlign else { return nil }
+        return visualSource?.align ?? t
     }
     @Published private(set) var uncertaintyCm: Double = 0
     /// 用磁罗盘持续修正航向。钢货架附近罗盘常偏，默认关，只靠陀螺。
@@ -979,7 +994,7 @@ final class MagneticEngine: ObservableObject {
     /// 还没有粒子滤波（这张地图没有磁场图）时，它就是一个外部给的起点。
     private func applyVisualFix(camera cam: simd_float4x4) {
         if reviewMode { applyReviewStart(camera: cam); return }
-        guard phase == .live, isTracking || searching, let t = StoreDataStore.shared.map?.arAlign else { return }
+        guard phase == .live, isTracking || searching, let t = liveAlign else { return }
         guard VisualFixPolicy.acceptsFix(enhancementEnabled: cameraAllowed, posture: posture,
                                          arTrackingNormal: vioTracking == 2) else {
             AppLog.i("地磁", "视觉认出房间，但条件不满足（姿态 \(posture.title)，跟踪 \(vioTracking)），不当观测用")
@@ -1030,7 +1045,7 @@ final class MagneticEngine: ObservableObject {
 
     /// 复核时视觉认出房间：不当观测。起点选「视觉」且还没开始推算时，拿它当起点（相当于用户长按定点 + 设朝向），之后完全不管。
     private func applyReviewStart(camera cam: simd_float4x4) {
-        guard phase == .live, let t = StoreDataStore.shared.map?.arAlign else { return }
+        guard phase == .live, let t = liveAlign else { return }
         visualFixes += 1
         reviewHasTruth = true
         endVisualSearch()
@@ -1062,7 +1077,7 @@ final class MagneticEngine: ObservableObject {
         reviewTruthAt = nil
         visualCheckOn = false
         // 复核模式之外也录：地图有视觉对齐时，普通实时定位也拿视觉位置（黄点）自动校验地磁混合定位，写 review.csv
-        guard let d = liveSessionDir, let t = StoreDataStore.shared.map?.arAlign else { return }
+        guard let d = liveSessionDir, let t = liveAlign else { return }
         visualCheckOn = !reviewMode
         let w = try? CSVWriter(url: d.appendingPathComponent("review.csv"),
                                header: "t_ms,truth_x_cm,truth_y_cm,est_x_cm,est_y_cm,err_cm,unc_cm,converged,steps")
@@ -1274,14 +1289,16 @@ final class MagneticEngine: ObservableObject {
         let dir: URL? = arLoggedThisSession ? nil : liveFilesDir
         let lateralFile = dir?.appendingPathComponent("depth_lateral.csv")
         do {
-            let wm = visualAvailable ? MapLibrary.shared.activeWorldMapURL.flatMap(ARKitLogger.loadWorldMap) : nil
+            let src = visualAvailable ? visualSource : nil
+            let wm = src.flatMap { ARKitLogger.loadWorldMap($0.url) }
+            if let src, wm == nil { AppLog.w("地磁", "视觉特征地图（\(src.label)）读不出来，只做普通跟踪") }
             try ar.start(dir: dir, wantsDepth: depthMode != .off, lateralFile: lateralFile, worldMap: wm)
             arRunning = true
             if dir != nil { arLoggedThisSession = true }
             shelfSigns = StoreDataStore.shared.map.map { ShelfSigns(map: $0, walkable: MagMapStore.shared.walkableMap()) }
             let reader = signReader
             ar.onFrame = { f, t in reader.process(f, tMs: t) }
-            if wm != nil { AppLog.i("地磁", "已载入视觉特征地图：手机竖着对着房间就能认出位置（只当位置观测）") }
+            if wm != nil { AppLog.i("地磁", "已载入视觉特征地图（\(src?.label ?? "")）：手机竖着对着房间就能认出位置（只当位置观测）") }
             let mode: DepthMode = (reviewMode && depthMode == .fuse) ? .logOnly : depthMode    // 复核：深度不参与定位
             let h = headingRad
             queue.sync {

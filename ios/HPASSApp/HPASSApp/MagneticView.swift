@@ -180,7 +180,11 @@ struct MagneticView: View {
     private var visualCheckText: String? {
         guard engine.visualCheckOn || engine.reviewHasTruth else { return nil }
         let s = engine.reviewStats
-        guard engine.reviewHasTruth else { return "等摄像头认出房间（竖着拿、对着房间）" }
+        guard engine.reviewHasTruth else {
+            if !engine.visualEnhancement { return "打开「视觉增强」才有黄点" }
+            if engine.visualSource == nil { return "这张地图没有视觉特征地图，认不出房间、没有黄点（地图详情里重扫一段会生成）" }
+            return "等摄像头认出房间（竖着拿、对着墙和家具慢慢转一圈）"
+        }
         func m(_ cm: Double?) -> String { cm.map { Fmt.f($0 / 100, 1) + " m" } ?? "—" }
         let now = freshVisualPosition == nil ? "视觉暂时没有" : "现在差 " + m(s.lastErrorCm)
         let within = s.withinShare(100).map { "，1 m 内 \(Int($0 * 100))%" } ?? ""

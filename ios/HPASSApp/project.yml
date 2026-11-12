@@ -9,6 +9,9 @@ settings:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
+    # CI（ios-adhoc.yml）打包时写入：构建时间（UTC ISO 8601）和提交号；本机编译时为空，App 里显示「本机编译」
+    HPASS_BUILD_DATE: ""
+    HPASS_COMMIT: ""
 packages:
   HPASSKit:
     path: ../HPASSKit
@@ -24,6 +27,11 @@ targets:
       path: HPASSApp/Info.plist
       properties:
         CFBundleDisplayName: 室内定位
+        # 不写的话 xcodegen 默认填死 1.0 / 1，App 里永远显示 1.0
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        HPASSBuildDate: $(HPASS_BUILD_DATE)
+        HPASSCommit: $(HPASS_COMMIT)
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIRequiresFullScreen: true

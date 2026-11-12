@@ -10,7 +10,8 @@ left_cm / right_cm（相机前方视野里最近的东西，常是桌椅，只�
 对每一行：用定位位置和前后 1.5 s 的行进方向，在地图上往左右打射线（地板多边形边、障碍物、墙），
 得到「地图上这个位置两侧到墙」的距离，再和实测比：
 - 宽度：实测 左+右 和 地图 左+右 比，差很多说明地图上这段通道画宽 / 画窄了（和定位准不准无关）；
-- 横向偏差：(左−右)/2 实测和地图比，说明定位点在通道里横向偏到哪边、偏多少。
+- 横向偏差：(左−右)/2 实测和地图比，说明定位点在通道里横向偏到哪边、偏多少；
+- 只量到一侧的样本单独比这一侧（地图−实测：正 = 地图上墙比实际远）。
 左右约定按两种都算，取和实测相关性高的那种（地图 y 轴方向不同会让左右对调）。
 """
 import argparse
@@ -97,7 +98,7 @@ def analyse(segs, d):
     for z in depth:
         ml = num(z.get("wall_left_cm")) if has_wall else num(z.get("left_cm"))
         mr = num(z.get("wall_right_cm")) if has_wall else num(z.get("right_cm"))
-        if ml is None or mr is None:
+        if ml is None and mr is None:
             continue
         t = float(z["t_ms"])
         i = bisect.bisect_left(tt, t)
@@ -112,10 +113,23 @@ def analyse(segs, d):
         ux, uy = dx / n, dy / n
         a = ray(segs, p, (uy, -ux))
         b = ray(segs, p, (-uy, ux))
-        if a is None or b is None:
-            continue
         rows.append((t, ml, mr, a, b, p[0], p[1]))
     name = os.path.basename(os.path.normpath(d))
+    # 单侧对照：哪一侧量到就和地图同一侧比（左右约定取两种里中位误差小的）
+    def side_err(sg):
+        e = []
+        for r in rows:
+            ml_map, mr_map = (r[3], r[4]) if sg == 1 else (r[4], r[3])
+            if r[1] is not None and ml_map is not None: e.append(("左", ml_map - r[1]))
+            if r[2] is not None and mr_map is not None: e.append(("右", mr_map - r[2]))
+        return e
+    e1, e2 = side_err(1), side_err(-1)
+    es = e1 if median([abs(x[1]) for x in e1] or [1e9]) <= median([abs(x[1]) for x in e2] or [1e9]) else e2
+    for side in ("左", "右"):
+        v = [x[1] for x in es if x[0] == side]
+        if v:
+            print(f"{name}：{side}侧 {len(v)} 个样本，地图−实测 中位 {median(v):+.0f} cm，|差| 中位 {median([abs(x) for x in v]):.0f}、P90 {pct([abs(x) for x in v], 90):.0f} cm")
+    rows = [r for r in rows if None not in (r[1], r[2], r[3], r[4])]
     if not rows:
         print(f"{name}：没有两侧都量到、又在走动的样本（{src}）")
         return []

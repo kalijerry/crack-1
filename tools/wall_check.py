@@ -40,7 +40,10 @@ def load_map(path):
     for e in r.get("mapElementList", []):
         if e.get("shapeType") == "MapWall":
             x, y, w, h = e["x"], e["y"], e["width"], e["height"]
-            poly([(x - w / 2, y - h / 2), (x + w / 2, y - h / 2), (x + w / 2, y + h / 2), (x - w / 2, y + h / 2)])
+            a = math.radians(e.get("rotation", 0) or 0)       # 绕中心转（地图 y 向下，和 App 画法一致）
+            c, s_ = math.cos(a), math.sin(a)
+            corners = [(-w / 2, -h / 2), (w / 2, -h / 2), (w / 2, h / 2), (-w / 2, h / 2)]
+            poly([(x + dx * c - dy * s_, y + dx * s_ + dy * c) for dx, dy in corners])
     return segs
 
 

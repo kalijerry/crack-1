@@ -178,6 +178,33 @@ extension MapLibrary {
         return best
     }
 
+    /// 实时定位时视觉认房间用的特征地图，和它的「ARKit → 合成地图」变换。
+    ///
+    /// 优先在用的那份（变换就是地图的 arAlign）。没有时（例如重扫时没认出旧房间、按墙的形状对齐的段，
+    /// 它的特征地图不在基准坐标系里，不会装成在用的那份），用启用的扫描段里最新的、自己存了特征地图的那段：
+    /// 段的 AR 坐标系 →（段的 arAlign）→ 段坐标 →（段的 toMap）→ 合成地图。
+    struct VisualSource: Equatable {
+        var url: URL
+        var align: MapARTransform
+        /// 在用 / 扫描段 id
+        var label: String
+    }
+
+    func liveVisualSource(_ id: String, mapAlign: MapARTransform?) -> VisualSource? {
+        if let u = worldMapURL(id), let a = mapAlign { return VisualSource(url: u, align: a, label: "在用") }
+        guard let r = storedRegistry(id) else { return nil }
+        let fm = FileManager.default
+        for s in r.ordered.reversed() where s.enabled {
+            let d = scanDir(id, s.id)
+            let u = d.appendingPathComponent(Self.worldMapFile)
+            guard fm.fileExists(atPath: u.path),
+                  let side = (try? Data(contentsOf: d.appendingPathComponent(WorldMapSidecar.fileName))).flatMap(WorldMapSidecar.decode)
+            else { continue }
+            return VisualSource(url: u, align: side.arAlign.transform.compose(s.transform), label: "扫描段 \(s.id)")
+        }
+        return nil
+    }
+
     /// 第一次扫描生成新地图：`scans/<scanId>/` 里已经写好这一段的文件。合成、加进地图库并切换过去。
     @discardableResult
     func createFromScan(mapId id: String, name: String, scanId: String, frameId: String,

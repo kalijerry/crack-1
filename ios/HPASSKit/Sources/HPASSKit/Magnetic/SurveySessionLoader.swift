@@ -50,7 +50,7 @@ public enum SurveySessionLoader {
             guard r.count >= 4, let t = Int64(r[0]), let x = Double(r[1]), let y = Double(r[2]), let z = Double(r[3]) else { return nil }
             return (t, (x, y, z))
         }
-        let poses = try rows("arkit_pose.csv").compactMap { r -> SurveySession.Pose? in
+        var poses = try rows("arkit_pose.csv").compactMap { r -> SurveySession.Pose? in
             guard r.count >= 9, let t = Int64(r[0]), let x = Double(r[1]), let z = Double(r[3]) else { return nil }
             return SurveySession.Pose(tMs: t, a: Point2(x * 100, z * 100), normal: r[8] == "2")
         }
@@ -62,7 +62,6 @@ public enum SurveySessionLoader {
         }
         // App 0.1.22～0.1.23 的 ARKit 时间戳在手机睡眠后会慢几十秒（ARKitLogger 只在创建时算一次时钟差）：
         // 锚点里记着当时的 AR 坐标，按它把位姿时间对回来，磁场才落在正确位置
-        var poses = poses
         if let off = poseClockOffsetMs(poses: poses, anchors: anchors) {
             poses = poses.map { SurveySession.Pose(tMs: $0.tMs - off, a: $0.a, normal: $0.normal) }
         }

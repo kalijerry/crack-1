@@ -28,7 +28,7 @@ public final class CollectionQualityMonitor {
             case .magAnomaly: return "磁场异常：拿掉磁吸壳 / 支架，离开磁铁"
             case .tagMismatch: return "轨迹和蓝牙标签对不上：长按地图修正位置"
             case .signMismatch: return "轨迹和货架标签对不上：长按地图修正位置"
-            case .magMismatch: return "磁场和已有地图对不上：长按地图修正位置"
+            case .magMismatch: return "磁场和已有地图对不上：位置偏了就长按地图修正（一直这样说明地图该重采，照常上传）"
             case .jump: return "轨迹漂了（修正跳得很远）：多修正几次"
             }
         }
@@ -46,6 +46,9 @@ public final class CollectionQualityMonitor {
         public var pathM: Double
         public var bleMedianM: Double?
         public var magResidualUT: Double?
+        /// 只因为「磁场和已有地图对不上」才差（别的都好）时，不算这一条的分数。
+        /// 整次会话大部分段都对不上 = 地图过期 / 当初采得不对，不是这次走偏了：这些段不当差段（见 `finish`）
+        public var scoreIgnoringMap: Int?
     }
 
     public enum Level: String, Codable { case good, fair, poor }
@@ -82,6 +85,8 @@ public final class CollectionQualityMonitor {
         public var pathM: Double
         public var autoStopped: Bool
         public var stopReason: String?
+        /// 大部分段和已有磁场图对不上：判为地图过期，这些段照用（云端拿它重建）。旧 quality.json 没有 = nil
+        public var mapStale: Bool?
         /// 各种问题出现在几段里
         public var issueCounts: [String: Int]
         public var windowList: [Window]
@@ -199,6 +204,18 @@ public final class CollectionQualityMonitor {
     public func finish(tMs: Int64, autoStopped: Bool = false) -> Summary {
         advance(tMs)
         if t0 != nil, cur.poses > 0 { close() }
+        // 地图过期：判过磁场的段里超过一半对不上（至少 2 段）。这时「对不上」说明的是地图，不是这次采集：
+        // 只因为这一条差的段改回不算它的分数，不丢、不拖累整次（否则地图永远没法用新数据更新）
+        let judged = windows.filter { $0.magResidualUT != nil }
+        let mismatched = judged.filter { $0.issues.contains(.magMismatch) }.count
+        let stale = mismatched >= 2 && Double(mismatched) > Double(judged.count) * 0.5
+        if stale {
+            for i in windows.indices {
+                guard let s = windows[i].scoreIgnoringMap else { continue }
+                windows[i].score = s
+                windows[i].bad = s < badScore
+            }
+        }
         let counted = windows.filter(\.counted)
         let bad = counted.filter(\.bad).count
         let score = counted.isEmpty ? 0 : Int((Double(counted.map(\.score).reduce(0, +)) / Double(counted.count)).rounded())
@@ -233,7 +250,8 @@ public final class CollectionQualityMonitor {
         return Summary(score: score, grade: Self.grade(score), kept: reason == nil, reason: reason,
                        windows: windows.count, counted: counted.count, bad: bad,
                        droppedSpans: spans, droppedSpansMs: spansMs, pathM: (totalPath / 100).rounded(),
-                       autoStopped: autoStopped, stopReason: stopReason, issueCounts: counts, windowList: windows)
+                       autoStopped: autoStopped, stopReason: stopReason, mapStale: stale ? true : nil,
+                       issueCounts: counts, windowList: windows)
     }
 
     public static func grade(_ score: Int) -> String { score >= 80 ? "好" : score >= 60 ? "一般" : "差" }
@@ -263,7 +281,11 @@ public final class CollectionQualityMonitor {
         windows.append(w)
         cur = Acc()
         curIndex += 1
-        let counted = windows.filter(\.counted)
+        // 自动停止不看「磁场和已有地图对不上」：采的人当场改不了地图，停下来只会让地图永远更新不了
+        let counted = windows.filter(\.counted).map { w -> Window in
+            guard let s = w.scoreIgnoringMap else { return w }
+            var x = w; x.score = s; x.bad = s < badScore; return x
+        }
         var streak = 0
         for x in counted.reversed() { if x.bad { streak += 1 } else { break } }
         let recent = counted.suffix(liveWindows)
@@ -326,12 +348,17 @@ public final class CollectionQualityMonitor {
             if m > gate.magMaxResidualUT { issues.append(.magMismatch) }
         }
         if a.maxJump > jumpCm { issues.append(.jump) }
+        let base = s
         if issues.contains(where: { [Issue.tagMismatch, .signMismatch, .magMismatch, .jump].contains($0) }) { s = min(s, 20) }
         let score = Int(max(0, min(100, s)).rounded())
         let bad = a.poses > 0 && score < badScore
+        // 只因为磁场和地图对不上才差：记下不算这一条的分数
+        let otherFatal = issues.contains(where: { [Issue.tagMismatch, .signMismatch, .jump].contains($0) })
+        let ignoringMap: Int? = issues.contains(.magMismatch) && !otherFatal ? Int(max(0, min(100, base)).rounded()) : nil
         return Window(index: index, startMs: startMs, score: score, bad: bad,
                       counted: bad || a.path >= movingCm, issues: issues,
-                      pathM: (a.path / 10).rounded() / 10, bleMedianM: bleM, magResidualUT: magM)
+                      pathM: (a.path / 10).rounded() / 10, bleMedianM: bleM, magResidualUT: magM,
+                      scoreIgnoringMap: ignoringMap)
     }
 }
 

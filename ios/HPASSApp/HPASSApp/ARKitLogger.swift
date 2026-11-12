@@ -64,7 +64,9 @@ final class ARKitLogger: NSObject, ARSessionDelegate {
     private var lateralWriter: CSVWriter?
     private var frameCounter = 0
     private var wantsDepth = false
-    private let epochOffset = Date().timeIntervalSince1970 - ProcessInfo.processInfo.systemUptime
+    /// ARFrame.timestamp（开机后秒数，不含睡眠）→ Unix 时间的差。每帧现算：这个对象跟着引擎活一整个 App 生命周期，
+    /// 手机锁屏睡眠后差值会变；以前只在创建时算一次，睡过一会儿再采集，arkit_pose.csv 的时间就比 IMU / 锚点慢几十秒
+    private var epochOffset: TimeInterval { Date().timeIntervalSince1970 - ProcessInfo.processInfo.systemUptime }
 
     /// 深度相机在左右两侧找墙时用到的参数
     private let assumedHoldHeightM: Float = 1.3     // 手持高度：相机离地面

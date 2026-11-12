@@ -50,7 +50,7 @@ public enum SurveySessionLoader {
             guard r.count >= 4, let t = Int64(r[0]), let x = Double(r[1]), let y = Double(r[2]), let z = Double(r[3]) else { return nil }
             return (t, (x, y, z))
         }
-        let poses = try rows("arkit_pose.csv").compactMap { r -> SurveySession.Pose? in
+        var poses = try rows("arkit_pose.csv").compactMap { r -> SurveySession.Pose? in
             guard r.count >= 9, let t = Int64(r[0]), let x = Double(r[1]), let z = Double(r[3]) else { return nil }
             return SurveySession.Pose(tMs: t, a: Point2(x * 100, z * 100), normal: r[8] == "2")
         }
@@ -60,9 +60,61 @@ public enum SurveySessionLoader {
             return SurveySession.Anchor(tMs: t, kind: String(r[1]), map: Point2(mx, my) + shift, ar: Point2(ax, az),
                                         heading: Double(r[6]))
         }
+        // App 0.1.22～0.1.23 的 ARKit 时间戳在手机睡眠后会慢几十秒（ARKitLogger 只在创建时算一次时钟差）：
+        // 锚点里记着当时的 AR 坐标，按它把位姿时间对回来，磁场才落在正确位置
+        if let off = poseClockOffsetMs(poses: poses, anchors: anchors) {
+            poses = poses.map { SurveySession.Pose(tMs: $0.tMs - off, a: $0.a, normal: $0.normal) }
+        }
         var session = SurveySession(name: dir.lastPathComponent, imu: imu, raw: raw, poses: poses, anchors: anchors)
         session.qualityDrops = qualityDrops(dir)
         return session
+    }
+
+    /// ARKit 位姿时间和锚点（IMU）时间差了多少毫秒：锚点时刻 t 的 AR 坐标应该等于位姿在 t + off 的插值。
+    /// 只在差 ≥ 1 秒、对上后锚点误差 ≤ 20 cm、不改时误差 > 50 cm 时返回（正常会话返回 nil）。
+    public static func poseClockOffsetMs(poses: [SurveySession.Pose], anchors: [SurveySession.Anchor]) -> Int64? {
+        guard poses.count >= 10, anchors.count >= 2 else { return nil }
+        let ts = poses.map { $0.tMs }
+        func at(_ t: Int64) -> Point2? {
+            guard let f = ts.first, let l = ts.last, t >= f, t <= l else { return nil }
+            var lo = 0, hi = ts.count - 1
+            while hi - lo > 1 {
+                let mid = (lo + hi) / 2
+                if ts[mid] <= t { lo = mid } else { hi = mid }
+            }
+            let dt = Double(ts[hi] - ts[lo])
+            let w = dt > 0 ? Double(t - ts[lo]) / dt : 0
+            let a = poses[lo].a, b = poses[hi].a
+            return Point2(a.x + (b.x - a.x) * w, a.y + (b.y - a.y) * w)
+        }
+        func err(_ off: Int64) -> Double? {
+            var sum = 0.0, n = 0
+            for an in anchors {
+                guard let p = at(an.tMs + off) else { continue }
+                let dx = p.x - an.ar.x, dy = p.y - an.ar.y
+                sum += (dx * dx + dy * dy).squareRoot()
+                n += 1
+            }
+            return n >= 2 ? sum / Double(n) : nil
+        }
+        if let e0 = err(0), e0 <= 50 { return nil }
+        let aMin = anchors.map { $0.tMs }.min()!, aMax = anchors.map { $0.tMs }.max()!
+        let lo = ts.first! - aMax, hi = ts.last! - aMin
+        guard hi > lo else { return nil }
+        var best: (e: Double, off: Int64)?
+        var off = lo
+        while off <= hi {
+            if let e = err(off), best == nil || e < best!.e { best = (e, off) }
+            off += 250
+        }
+        guard var b = best else { return nil }
+        var fine = b.off - 250
+        while fine <= b.off + 250 {
+            if let e = err(fine), e < b.e { b = (e, fine) }
+            fine += 10
+        }
+        guard abs(b.off) >= 1000, b.e <= 20 else { return nil }
+        return b.off
     }
 
     /// 采集时质量打分判为差的时段（quality.json 的 droppedSpansMs；没有 = 旧会话，不丢）

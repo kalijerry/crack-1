@@ -39,6 +39,8 @@ struct ContentView: View {
     @State private var tab: AppTab = DemoMode.initialTab.flatMap(AppTab.init(rawValue:)) ?? .navigate
     @ObservedObject private var storeData = StoreDataStore.shared
     @ObservedObject private var store = MagMapStore.shared
+    @ObservedObject private var magCal = MagCalibrationCenter.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         TabView(selection: $tab) {
@@ -77,5 +79,12 @@ struct ContentView: View {
         .onChange(of: store.crosses.count) { _ in AppEngines.shared.configureCoverage() }
         // 启动时拉一次云端：普通模式自动装上云端正式地图，重装 App 后打开就有
         .task { if !DemoMode.isOn { await CloudMaps.shared.refresh() } }
+        // 磁力计体检：回到前台、传感器空闲时查一次本机偏置还对不对，不对就强制弹校准
+        .onChange(of: scenePhase) { phase in if phase == .active { magCal.checkIfIdle() } }
+        .task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            magCal.checkIfIdle()
+        }
+        .fullScreenCover(isPresented: $magCal.presented) { MagCalibrationView() }
     }
 }

@@ -5,7 +5,8 @@ import HPASSKit
 ///
 /// 定位改用不含磁力计的姿态参考系（`.xArbitraryZVertical`）后，CoreMotion 不再给「iOS 校准后磁场」，
 /// 实时定位的磁场 = 原始磁力计 − 这个偏置。偏置从哪来：
-/// 1. 建图 / 采集会话（参考系含磁力计，有 iOS 校准值）结束时，用「原始 − 校准」的中位数存一份（`learned`）；
+/// 1. 建图 / 采集会话（参考系含磁力计，有 iOS 校准值）结束时，用整次会话「原始 − 校准」的中位数存一份（`learned`）；
+///    没有存档时的实时定位（参考系含磁力计）攒够 `liveMinSeconds` 秒，结束时也存一份（`live`），下次定位就用固定偏置；
 /// 2. 没有存档时，实时定位里用原始读数做球面拟合在线估计（`sphere_fit`，要手机转过足够多的朝向）。
 /// 换保护壳 / 磁吸附件后偏置会变：建图或采集一次就会刷新存档。
 enum MagBiasStore {
@@ -19,6 +20,8 @@ enum MagBiasStore {
 
     /// 存档超过这么多天不再直接用（换壳 / 加磁吸附件后偏置会变）。占位值，待自采 iPhone 双机数据标定
     static let maxAgeDays = 30.0
+    /// 实时定位学偏置：至少攒这么多秒「原始 − 校准」才存（短了中位数还在跟着 iOS 漂）
+    static let liveMinSeconds = 30
 
     static func load() -> Stored? {
         guard let d = UserDefaults.standard.data(forKey: key),
@@ -48,7 +51,8 @@ enum MagBiasStore {
 /// 采集会话里顺带学偏置：原始磁力计（传感器线程）和 iOS 校准后磁场（IMU 线程）配对，结束时存档。线程安全。
 final class MagBiasLearner: @unchecked Sendable {
     private let lock = NSLock()
-    private let tracker = RawBiasTracker()
+    /// 整次会话的中位数（和云端建图 SurveyMapBuilder.features 同一个口径）；不够 20 秒不存
+    private let tracker = RawBiasTracker(windowSeconds: 3600, minSeconds: 20)
     private var lastRaw: (t: Int64, v: (Double, Double, Double))?
 
     func reset() {

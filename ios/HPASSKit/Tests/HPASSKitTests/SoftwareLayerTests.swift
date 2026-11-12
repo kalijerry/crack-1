@@ -260,4 +260,26 @@ final class RawBiasTrackerTests: XCTestCase {
         XCTAssertFalse(tr.isReady)
         XCTAssertNil(tr.corrected((1, 1, 1)))
     }
+
+    /// 整段窗口（windowSeconds 很大）：前面几分钟的偏置也一直算在中位数里；secondsSeen 不受窗口限制，reset 清零
+    func testWholeSessionWindowAndSecondsSeen() {
+        let tr = RawBiasTracker(windowSeconds: 3600, minSeconds: 20)
+        let roll = RawBiasTracker()                                   // 默认 180 秒窗口
+        let good = (30.0, 90.0, -630.0)
+        for i in 0..<(300 * 50) {                                      // 5 分钟：前 4 分钟 iOS 估得对，最后 1 分钟偏 40 µT
+            let t = Int64(i * 20)
+            let ios = i < 240 * 50 ? good : (good.0 + 40, good.1, good.2)
+            let raw = (good.0 + 25, good.1 + 5, good.2 - 40)
+            let cal = (raw.0 - ios.0, raw.1 - ios.1, raw.2 - ios.2)
+            tr.add(tMs: t, raw: raw, calibrated: cal)
+            roll.add(tMs: t, raw: raw, calibrated: cal)
+            if i == 15 * 50 { XCTAssertFalse(tr.isReady) }             // 不够 20 秒
+        }
+        XCTAssertEqual(tr.bias!.0, good.0, accuracy: 0.5)
+        XCTAssertEqual(tr.secondsSeen, 299)
+        XCTAssertEqual(roll.secondsSeen, 299)
+        tr.reset()
+        XCTAssertEqual(tr.secondsSeen, 0)
+        XCTAssertFalse(tr.isReady)
+    }
 }

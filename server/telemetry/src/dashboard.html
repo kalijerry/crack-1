@@ -240,6 +240,18 @@ async function loadReports() {
       box.appendChild(div);
       continue;
     }
+    if (data && data.kind === "collection_eval") {
+      // 采集 / 定位效果评估（tools/collection_eval.py）：每张地图一行
+      const v = (x, u) => (x != null ? x + (u || "") : "—");
+      const rows = Object.entries(data.maps || {}).map(([mid, g]) => { const s = g.summary || {};
+        return `<tr><td>${esc(mid)}</td><td>${s.surveys}（${v(s.survey_path_m, " m")}）</td><td>${v(s.sessions_in_field)}</td>` +
+          `<td>${s.coverage != null ? Math.round(s.coverage * 100) + "%" : "—"}</td><td>${v(s.revisit_raw_ut, " µT")} / ${v(s.revisit_ios_ut, " µT")}</td>` +
+          `<td>${s.live_scored}/${s.live_sessions}</td><td>${v(s.live_err_rms_m, " m")}</td><td>${v(s.live_jumps_per_min)}</td></tr>`; }).join("");
+      div.innerHTML = `<h2>${esc(o.key.replace("reports/", ""))}</h2><div class="kv">采集 / 定位效果评估 · ${esc(data.created || "")}</div>` +
+        `<table><tr><th>地图</th><th>建图采集</th><th>进磁场图</th><th>覆盖</th><th>回访一致性 原始 / iOS</th><th>可评定位</th><th>定位误差</th><th>跳 &gt;3 m /分钟</th></tr>${rows}</table>`;
+      box.appendChild(div);
+      continue;
+    }
     if (!Array.isArray(data)) {
       // 云端融合报告
       const sess = (data.sessions || []).map((s) => `<tr><td>${esc(s.name)}</td><td>${s.cells}</td><td>${s.offset.map((x) => x.toFixed(1)).join(" / ")}</td><td>${s.component}</td><td>${esc((s.warnings || []).join("；"))}</td></tr>`).join("");

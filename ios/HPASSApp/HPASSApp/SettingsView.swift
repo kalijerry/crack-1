@@ -76,7 +76,7 @@ struct SettingsView: View {
                            subtitle: "认出看屏 / 口袋 / 包里 / 打电话 / 甩手，分别处理（实验，下次开始定位生效）")
             }
             LoggedButton(name: "设置·校准磁力计") {
-                MagCalibrationCenter.shared.require("手动校准：换了手机壳、拿掉磁吸配件后，或者觉得方向不对时做一次")
+                MagCalibrationCenter.shared.calibrateManually()
             } label: {
                 DSRowLabel(title: "校准磁力计", systemImage: "infinity", tint: DS.Palette.info,
                            subtitle: "拿手机画 8 字，算出手机自身的磁场；方向老是不对时做一次")

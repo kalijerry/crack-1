@@ -186,7 +186,6 @@ final class MagBiasEstimator {
             bias = nil
             source = .rejected
             polluted = true
-            MagCalibrationCenter.recheckSoon()
         }
     }
 

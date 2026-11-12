@@ -6,8 +6,8 @@ import SwiftUI
 ///
 /// 为什么要有：这台测试机的硬铁偏置隔几天就跳 100～300 µT（磁吸配件 / 被磁化），iOS 自己的校准跟不上，
 /// 还照样报「高精度」，于是地磁定位、指南针、建图都会偏。
-/// - 体检：App 回到前台、传感器空闲时，读 2 秒原始磁力计，用本机存的偏置扣掉后 |B| 应该像地磁（15～90 µT）。
-///   没有存档、或者对不上，就弹全屏校准。
+/// - 体检：每次开始建图采集前，读 2 秒原始磁力计，用本机存的偏置扣掉后 |B| 应该像地磁（15～90 µT）。
+///   没有存档、或者对不上，就弹全屏校准，校准好了才开始采集。
 /// - 校准：用户拿手机画 8 字，用陀螺仪姿态 + 原始磁力计解偏置（HardIronCalibration），
 ///   达标（转够、残差小、地磁强度合理、结果稳定）才存档关掉；不达标一直在这页。
 @MainActor
@@ -23,8 +23,6 @@ final class MagCalibrationCenter: ObservableObject {
     @Published private(set) var finished: HardIronCalibration.Result?
     @Published private(set) var elapsed: Double = 0
 
-    /// 两次自动体检至少隔这么久
-    static let checkIntervalS: Double = 600
     /// 校准页一直没达标多久后，给一个「这次先跳过」
     static let skipAfterS: Double = 90
 
@@ -35,21 +33,23 @@ final class MagCalibrationCenter: ObservableObject {
         q.maxConcurrentOperationCount = 1
         return q
     }()
-    private var lastCheck: Date?
-    private var checking = false
+    /// 正在做采集前体检（约 2 秒），界面显示「检查磁力计…」
+    @Published private(set) var checking = false
+    /// 体检 / 校准通过后要做的事（开始采集）
+    private var pending: (@MainActor () -> Void)?
     private var startedAt: Date?
     private static let owner = "磁力计校准"
 
     // MARK: 体检
 
-    /// 回到前台 / 启动时调用。传感器被别的页面占着就不查（下次再查）。
-    func checkIfIdle(force: Bool = false) {
-        guard !DemoMode.isOn, !presented, !checking, manager.isMagnetometerAvailable else { return }
-        guard SensorArbiter.shared.current == nil else { return }
-        if !force, let t = lastCheck, Date().timeIntervalSince(t) < Self.checkIntervalS { return }
-        lastCheck = Date()
+    /// 开始建图采集前调用：先读 2 秒原始磁力计核对本机偏置，通过才执行 `action`；
+    /// 没有存档或对不上就弹全屏校准，校准完成（或超时后跳过）再执行。
+    func gate(_ action: @escaping @MainActor () -> Void) {
+        guard !DemoMode.isOn, manager.isMagnetometerAvailable else { action(); return }
+        guard !checking, !presented else { return }
+        pending = action
         guard let stored = MagBiasStore.load() else {
-            require("这台手机还没有做过磁力计校准")
+            require("这台手机还没有做过磁力计校准，采集前要先做一次")
             return
         }
         checking = true
@@ -66,29 +66,33 @@ final class MagCalibrationCenter: ObservableObject {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             guard self.checking else { return }
             self.manager.stopMagnetometerUpdates()
-            let samples = box.all
             self.checking = false
             SensorArbiter.shared.release(Self.owner + "·检查")
-            guard let med = HardIronCheck.medianField(raw: samples, bias: stored.bias) else { return }
+            guard let med = HardIronCheck.medianField(raw: box.all, bias: stored.bias) else {
+                self.runPending()       // 读不到数就不拦
+                return
+            }
             if HardIronCheck.plausibleUT.contains(med) {
-                AppLog.i("地磁", "磁力计体检通过：扣掉本机偏置后 |B| \(Int(med)) µT（偏置来源 \(stored.source)）")
+                AppLog.i("地磁", "采集前磁力计体检通过：扣掉本机偏置后 |B| \(Int(med)) µT（偏置来源 \(stored.source)）")
+                self.runPending()
             } else {
-                AppLog.w("地磁", "磁力计体检没通过：扣掉本机偏置后 |B| \(Int(med)) µT，正常 \(Int(HardIronCheck.plausibleUT.lowerBound))～\(Int(HardIronCheck.plausibleUT.upperBound))；偏置变了，要重新校准")
-                self.require("手机自身的磁场变了（扣掉旧偏置后读到 \(Int(med)) µT，正常是 15～90 µT）。常见原因：磁吸配件、磁铁靠近过手机。")
+                AppLog.w("地磁", "采集前磁力计体检没通过：扣掉本机偏置后 |B| \(Int(med)) µT，正常 \(Int(HardIronCheck.plausibleUT.lowerBound))～\(Int(HardIronCheck.plausibleUT.upperBound))；偏置变了，要重新校准")
+                self.require("手机自身的磁场变了（扣掉旧偏置后读到 \(Int(med)) µT，正常是 15～90 µT），采集前要重新校准。常见原因：磁吸配件、磁铁靠近过手机。")
             }
         }
     }
 
-    /// 定位时偏置核对没通过：下次回到前台 / 空闲时马上体检，不等 10 分钟
-    nonisolated static func recheckSoon() {
-        Task { @MainActor in shared.lastCheck = nil }
+    private func runPending() {
+        let a = pending
+        pending = nil
+        a?()
     }
 
     private func cancelCheck() {
         guard checking else { return }
         manager.stopMagnetometerUpdates()
         checking = false
-        lastCheck = nil
+        pending = nil
     }
 
     /// 设置页手动校准，或者体检没通过
@@ -173,7 +177,13 @@ final class MagCalibrationCenter: ObservableObject {
         if skipped { AppLog.w("地磁", "磁力计校准没达标就跳过了，地磁定位这次会不准") }
         stopSensors()
         presented = false
-        lastCheck = Date()
+        runPending()
+    }
+
+    /// 设置页手动校准：不接任何后续动作
+    func calibrateManually() {
+        pending = nil
+        require("手动校准：换了手机壳、拿掉磁吸配件后，或者觉得方向不对时做一次")
     }
 }
 

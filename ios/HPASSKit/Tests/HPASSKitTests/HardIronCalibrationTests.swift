@@ -7,13 +7,22 @@ final class HardIronCalibrationTests: XCTestCase {
 
     /// 绕 x、y、z 依次转的矩阵（设备 → 世界）
     private func rot(_ a: Double, _ b: Double, _ c: Double) -> [[Double]] {
-        let rx = [[1, 0, 0], [0, cos(a), -sin(a)], [0, sin(a), cos(a)]]
-        let ry = [[cos(b), 0, sin(b)], [0, 1, 0], [-sin(b), 0, cos(b)]]
-        let rz = [[cos(c), -sin(c), 0], [sin(c), cos(c), 0], [0, 0, 1]]
-        func mul(_ p: [[Double]], _ q: [[Double]]) -> [[Double]] {
-            (0..<3).map { i in (0..<3).map { j in (0..<3).map { p[i][$0] * q[$0][j] }.reduce(0, +) } }
-        }
+        let rx: [[Double]] = [[1, 0, 0], [0, cos(a), -sin(a)], [0, sin(a), cos(a)]]
+        let ry: [[Double]] = [[cos(b), 0, sin(b)], [0, 1, 0], [-sin(b), 0, cos(b)]]
+        let rz: [[Double]] = [[cos(c), -sin(c), 0], [sin(c), cos(c), 0], [0, 0, 1]]
         return mul(rz, mul(ry, rx))
+    }
+
+    private func mul(_ p: [[Double]], _ q: [[Double]]) -> [[Double]] {
+        var out = [[Double]](repeating: [0, 0, 0], count: 3)
+        for i in 0..<3 {
+            for j in 0..<3 {
+                var s = 0.0
+                for k in 0..<3 { s += p[i][k] * q[k][j] }
+                out[i][j] = s
+            }
+        }
+        return out
     }
 
     /// 合成「画 8 字」：读数 m = Rᵀ w + b + 噪声
@@ -24,9 +33,17 @@ final class HardIronCalibrationTests: XCTestCase {
         for k in 0..<n {
             let t = Double(k) / 25
             let r = rot(amp * sin(0.5 * t), 0.8 * amp * sin(1.0 * t), 0.6 * amp * sin(0.7 * t + 1))
-            var m = (0..<3).map { j in (0..<3).map { r[$0][j] * world[$0] }.reduce(0, +) + bias[j] }
-            m = m.map { $0 + Double.random(in: -noise...noise, using: &g) * 1.7 + extraField * sin(3.1 * t) }
-            let given = transpose ? (0..<3).map { i in (0..<3).map { j in r[j][i] } } : r
+            var m = [0.0, 0.0, 0.0]
+            for j in 0..<3 {
+                var v = bias[j]
+                for i in 0..<3 { v += r[i][j] * world[i] }
+                let jitter = Double.random(in: -noise...noise, using: &g) * 1.7
+                m[j] = v + jitter + extraField * sin(3.1 * t)
+            }
+            var given = r
+            if transpose {
+                for i in 0..<3 { for j in 0..<3 { given[i][j] = r[j][i] } }
+            }
             cal.add(raw: (m[0], m[1], m[2]), rotation: given)
             if cal.result != nil { return }
         }
@@ -65,7 +82,7 @@ final class HardIronCalibrationTests: XCTestCase {
 
     func testQuickCheckSpotsShiftedBias() {
         let stored = [31.0, 100.0, -636.0]          // 11/9 的偏置
-        let now = (0..<60).map { _ in (-3.0 + 20, -98.0 + 5, -637.0 - 45) }   // 今天的读数
+        let now = [(Double, Double, Double)](repeating: (17.0, -93.0, -682.0), count: 60)   // 今天的读数
         XCTAssertEqual(HardIronCheck.shifted(raw: now, bias: stored), true)
         XCTAssertEqual(HardIronCheck.shifted(raw: now, bias: bias), false)
         XCTAssertNil(HardIronCheck.shifted(raw: Array(now.prefix(5)), bias: bias))

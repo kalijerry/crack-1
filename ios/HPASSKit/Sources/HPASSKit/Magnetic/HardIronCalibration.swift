@@ -79,13 +79,27 @@ public struct HardIronCalibration {
         if spanProg < 1 || countProg < 1 { issue = .needMoreRotation; return }
         if r.rmsUT > target.maxRmsUT { issue = .noisy(rmsUT: r.rmsUT); progress = min(progress, 0.9); return }
         if !target.fieldUT.contains(r.fieldUT) { issue = .fieldOutOfRange(fieldUT: r.fieldUT); progress = min(progress, 0.9); return }
-        let stable = recent.count >= 3 && recent.allSatisfy { p in
-            zip(p, r.bias).map { ($0 - $1) * ($0 - $1) }.reduce(0, +).squareRoot() <= target.stableUT
-        }
+        var stable = recent.count >= 3
+        for p in recent where Self.distance(p, r.bias) > target.stableUT { stable = false }
         if !stable { issue = .needMoreRotation; progress = min(progress, 0.95); return }
         issue = nil
         progress = 1
         result = r
+    }
+
+    static func transposed(_ m: [[Double]]) -> [[Double]] {
+        var t = m
+        for i in 0..<3 { for j in 0..<3 { t[i][j] = m[j][i] } }
+        return t
+    }
+
+    static func distance(_ a: [Double], _ b: [Double]) -> Double {
+        var s = 0.0
+        for k in 0..<min(a.count, b.count) {
+            let d = a[k] - b[k]
+            s += d * d
+        }
+        return s.squareRoot()
     }
 
     /// 最小二乘解 (w, b)：每个样本三行  [I | R] (w; b) = R m。返回偏置、|w|、残差 RMS。
@@ -94,7 +108,7 @@ public struct HardIronCalibration {
         var ata = [[Double]](repeating: [Double](repeating: 0, count: 6), count: 6)
         var atb = [Double](repeating: 0, count: 6)
         for (m, r0) in s {
-            let r = transpose ? (0..<3).map { i in (0..<3).map { j in r0[j][i] } } : r0
+            let r = transpose ? transposed(r0) : r0
             for i in 0..<3 {
                 var row = [Double](repeating: 0, count: 6)
                 row[i] = 1
@@ -110,7 +124,7 @@ public struct HardIronCalibration {
         let w = Array(x[0..<3]), b = Array(x[3..<6])
         var se = 0.0
         for (m, r0) in s {
-            let r = transpose ? (0..<3).map { i in (0..<3).map { j in r0[j][i] } } : r0
+            let r = transpose ? transposed(r0) : r0
             let d = [m[0] - b[0], m[1] - b[1], m[2] - b[2]]
             for i in 0..<3 {
                 let e = r[i][0] * d[0] + r[i][1] * d[1] + r[i][2] * d[2] - w[i]

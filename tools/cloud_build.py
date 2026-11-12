@@ -13,7 +13,7 @@
    上传地图包（版本 = 现在，盖过手机上生成的）和报告（/api/reports/build_<地图>_<时间>.json）。
 
 环境变量：HPASS_URL（后台地址）、HPASS_TOKEN（口令）、HPASS_BUILD（hpass-build 可执行文件路径）、
-MAP_ID（可选，只处理这一张）、EXCLUDE（可选，不用的会话名，逗号分隔）、FORCE=1（会话没变也重建）、LIVE_MAX（每张地图最多用最近多少个实时记录，默认 40）、DRY_RUN=1（只算、不上传）。会话数据只放在临时目录，不进仓库、不进 artifact。
+MAP_ID（可选，只处理这一张）、EXCLUDE（可选，不用的会话名，逗号分隔；后台 /api/config/exclude 的名单也会合并进来）、FORCE=1（会话没变也重建）、LIVE_MAX（每张地图最多用最近多少个实时记录，默认 40）、DRY_RUN=1（只算、不上传）。会话数据只放在临时目录，不进仓库、不进 artifact。
 """
 import io, json, math, os, struct, subprocess, sys, tempfile, time, urllib.parse, urllib.request, zipfile, zlib
 
@@ -72,6 +72,14 @@ from cloud_build_lib import (survey_summary, format_survey_summary, WM_FILE, WM_
 
 def main():
     work = tempfile.mkdtemp(prefix="hpass-")
+    # 后台存的排除名单（/api/config/exclude，比如带磁吸配件采的那几次），和 EXCLUDE 合并
+    try:
+        saved = get_json("/api/config/exclude")
+        if saved:
+            EXCLUDE.update(x for x in saved if isinstance(x, str))
+            print(f"后台排除名单 {len(saved)} 个会话")
+    except (urllib.error.HTTPError, ValueError):
+        pass
     sessions = get_json("/api/sessions")
     print(f"后台有 {len(sessions)} 个会话")
     groups = {}                                     # map_id -> {"build": [...], "test": [...], "live": [...]}

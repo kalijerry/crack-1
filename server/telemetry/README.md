@@ -20,6 +20,10 @@ npx wrangler deploy                      # 输出 https://hpass-telemetry.<你�
 main 上 `server/telemetry` 有改动时，GitHub Actions「Deploy telemetry worker」自动 `wrangler deploy`（也可以在 Actions 页手动跑）。
 要先在仓库 Settings → Secrets and variables → Actions 里加 `CLOUDFLARE`（API 令牌）（Cloudflare 后台 My Profile → API Tokens，「Edit Cloudflare Workers」模板）；账号不止一个时再加 `CLOUDFLARE_ACCOUNT_ID`。
 
+**重建地图按钮 / 采集上传后自动重建**：再加一个 Actions 密钥 `MAP_BUILD_TOKEN`：GitHub → Settings → Developer settings → Fine-grained tokens → Generate，
+Repository access 只选本仓库，Permissions → Actions 选 Read and write。加好后手动跑一次「Deploy telemetry worker」，它会写成 Worker secret `GH_TOKEN`。
+之后 App「地图库 → 让云端重新生成当前地图」、看板「会话」页的「强制重建全部地图」都能用；建图采集传上来也会自动触发重建。
+
 ## App 里
 
 「场地数据 → 云端后台」：填上面的地址（不带 https:// 也行）和口令，打开「连接后台」。
@@ -64,6 +68,8 @@ npx wrangler dev        # http://localhost:8787
 | PUT/GET | `/api/maps/<地图编号>` | 地图 JSON |
 | PUT/GET | `/api/reports/<名字>.json`、GET `/api/reports` | 评估报告 |
 | GET | `/api/logs?day=YYYY-MM-DD`、`/api/logs/<key>` | 日志分块（NDJSON，每 200 条或 30 秒一块） |
+| POST | `/api/rebuild` | 触发云端建图（map-build.yml），JSON `{"map_id": "...", "force": true}`，map_id 省略 = 全部；要 Worker secret `GH_TOKEN` |
+| PUT/GET | `/api/config/exclude` | 云端建图不用的会话名（JSON 数组），cloud_build.py 每次合并进 EXCLUDE |
 | GET | `/api/packages` | 云端地图包列表（名字、类型、版本、大小、磁场格数、蓝牙标签数） |
 | PUT/GET | `/api/packages/<地图编号>` | 地图包（App 打包：地图 + 磁场 + 蓝牙 + 视觉特征地图，zlib 压缩）；上传头 `X-Map-Name`（URL 编码）、`X-Map-Kind`、`X-Map-Version`（毫秒），比云端旧的版本返回 409 |
 

@@ -17,6 +17,8 @@ struct LibraryView: View {
     @State private var newName = ""
     @State private var switchError: String?
     @State private var confirmDelete: MapLibrary.Entry?
+    @State private var rebuildMsg: String?
+    @State private var rebuilding = false
 
     private var demo: Bool { DemoMode.isOn }
     private var busy: Bool { AppEngines.shared.magnetic.phase != .idle || AppEngines.shared.survey.isRunning }
@@ -182,6 +184,22 @@ struct LibraryView: View {
                 }
                 if !cloud.busy && cloud.list.isEmpty {
                     Text("云端还没有地图。").foregroundStyle(DS.Palette.textSecondary)
+                }
+                if let id = lib.activeId {
+                    Button {
+                        Haptics.tap()
+                        rebuilding = true
+                        Task {
+                            rebuildMsg = await tel.requestRebuild(mapId: id)
+                            rebuilding = false
+                        }
+                    } label: {
+                        Label("让云端重新生成当前地图", systemImage: "arrow.triangle.2.circlepath.icloud")
+                    }
+                    .disabled(rebuilding)
+                    if let m = rebuildMsg {
+                        Text(m).font(.footnote).foregroundStyle(DS.Palette.textSecondary)
+                    }
                 }
                 if mode.developer {
                     Button { Task { await cloud.uploadActive() } } label: {

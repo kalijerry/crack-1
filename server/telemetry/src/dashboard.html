@@ -85,7 +85,7 @@
       </div>
       <div id="logs"></div>
     </div>
-    <div id="tab-sessions" hidden><button id="reloadSessions">刷新</button><table id="sessions"></table></div>
+    <div id="tab-sessions" hidden><button id="reloadSessions">刷新</button> <button id="rebuildAll">强制重建全部地图</button> <span id="rebuildMsg" class="kv"></span><table id="sessions"></table></div>
     <div id="tab-builds" hidden><button id="reloadBuilds">刷新</button> <button id="dlTags">下载标签位置表（标签 → 通道 / 段 / 层 / 货架图 / 商品）</button><div id="builds"></div></div>
     <div id="tab-reports" hidden><button id="reloadReports">刷新</button><div id="reports"></div></div>
   </section>
@@ -201,6 +201,12 @@ async function loadSessions() {
   };
 }
 $("reloadSessions").onclick = loadSessions;
+$("rebuildAll").onclick = async () => {
+  $("rebuildMsg").textContent = "提交中…";
+  const r = await api("/api/rebuild", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ force: true }) });
+  const d = await r.json().catch(() => ({}));
+  $("rebuildMsg").textContent = r.ok ? d.message || "已开始重建" : d.error || "失败（HTTP " + r.status + "）";
+};
 async function loadBuilds() {
   const r = await api("/api/builds"); if (!r.ok) return;
   // 后台只收签名（Ad Hoc）包；这里再过滤一次，旧的未签名包不显示

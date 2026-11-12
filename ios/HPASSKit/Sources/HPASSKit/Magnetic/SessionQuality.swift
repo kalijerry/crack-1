@@ -12,7 +12,7 @@ import Foundation
 ///
 /// 处理：
 /// - 不合格的段连同前后各一段（漂移在被看出来之前就开始了）丢掉，磁场和蓝牙都不用；
-/// - 能判断的段里不合格的超过 maxBadFraction，整个会话不用（轨迹整体不可信）；
+/// - 能判断的段里不合格的超过 maxBadFraction（且至少 minBadToReject 段），整个会话不用（轨迹整体不可信）；
 /// - 太短的会话（路程 < minPathCm 或合格样本 < minGoodSamples）不用。
 public final class SessionQualityGate {
     public struct Report: Codable {
@@ -42,6 +42,8 @@ public final class SessionQualityGate {
     public var magMinSamples = 30
     public var magMaxResidualUT = 5.0
     public var maxBadFraction = 0.3
+    /// 整个会话不用至少要这么多段不合格（再加上比例超过 maxBadFraction）
+    public var minBadToReject = 2
     public var signMaxCm = 300.0
     public var minPathCm = 2000.0
     public var minGoodSamples = 300
@@ -145,7 +147,9 @@ public final class SessionQualityGate {
         let goodSamples = mag.filter { win($0.tMs).map { !drop[$0] } ?? false }.count
         var reason: String?
         if path < minPathCm { reason = String(format: "太短（路程 %.0f m）", path / 100) }
-        else if judged > 0 && Double(nBad) / Double(judged) > maxBadFraction {
+        // 至少 2 段不合格才整个不用：走廊短采一遍只有 3～4 段能判断，1 段对不上（拐弯、某处磁场乱）就扔掉整遍太狠，
+        // 那一段连同前后已经丢掉了（11/12 走廊采集：残差中位 1.2 µT 的一遍因为 3 段里 1 段不合格被整个丢掉）
+        else if judged > 0 && nBad >= minBadToReject && Double(nBad) / Double(judged) > maxBadFraction {
             reason = "轨迹不可信：能判断的 \(judged) 段里 \(nBad) 段位置对不上（标签 / 磁场）"
         } else if goodSamples < minGoodSamples { reason = "合格样本太少（\(goodSamples) 个）" }
         let rep = Report(name: name, kept: reason == nil, reason: reason, windows: nw, judged: judged, bad: nBad,

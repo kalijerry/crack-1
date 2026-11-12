@@ -42,6 +42,21 @@ final class TagFusionTests: XCTestCase {
         XCTAssertEqual(ok.report.bad, 0)
     }
 
+    /// 短会话（30 秒、3 段能判断）只有 1 段偏：丢掉那段和前后，但整个会话保留
+    func testGateKeepsShortSessionWithOneBadWindow() {
+        let s = scenario()
+        let g = SessionQualityGate(tagPositions: s.tags)
+        g.minGoodSamples = 0
+        let track = s.track.filter { $0.tMs < 30_000 }.map { t -> (tMs: Int64, p: Point2) in
+            (t.tMs, Point2(t.p.x, t.tMs >= 20_000 ? 1200 : 0))
+        }
+        let ble = s.ble.filter { $0.tMs < 30_000 }
+        let v = g.evaluate(name: "z", track: track, ble: ble, mag: [], others: nil, othersBuilder: nil)
+        XCTAssertEqual(v.report.bad, 1)
+        XCTAssertTrue(v.report.kept)
+        XCTAssertFalse(v.report.droppedSpans.isEmpty)
+    }
+
     func testShelfSignParse() {
         XCTAssertEqual(ShelfSigns.parse("082-20")?.aisle, 82)
         XCTAssertEqual(ShelfSigns.parse("O82 - 2O")?.bay, 20)

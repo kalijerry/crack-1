@@ -17,6 +17,12 @@
   ARKit 只当相对真值：对齐吃掉了整体平移旋转，结果偏乐观，但版本之间可比；
 - 跳变：相邻两次输出跳 > 3 m 的次数；App 自报不确定度（unc_cm）中位，和实际误差比。
 
+视觉复核会话（meta purpose = review，App「设置 → 诊断 → 视觉复核」，带 review.csv）
+- 真值是 ARKit 认出房间后的相机位置经「ARKit → 地图」变换换到地图上的绝对位置，视觉不参与定位；
+  误差是地图上的绝对误差（不做刚体对齐），比上面的 err_rms_m 严格。
+- review_err_median_m / review_err_p90_m、1 m 内 / 2 m 内比例、有把握（converged）时的中位、
+  有真值时定位有估计的比例、误差第一次连续 3 s 都在 2 m 内用了几秒、自报不确定度 / 实际误差。
+
 另外附上每张地图最近一次云端建图报告里的覆盖率、进图会话数。
 
 环境变量：HPASS_URL、HPASS_TOKEN（同 cloud_build.py）；MAP_ID（可选，只看这一张）；SINCE（可选，YYYYMMDD，只看这天以后的会话）；
@@ -76,6 +82,10 @@ def load_session(d):
              for r in _rows(os.path.join(d, "arkit_pose.csv"))]
     track = [(_f(r["t_ms"]), _f(r["x_cm"]), _f(r["y_cm"]), _f(r.get("unc_cm"), 0.0))
              for r in _rows(os.path.join(d, "track.csv"))]
+    review = []
+    for r in _rows(os.path.join(d, "review.csv")):
+        review.append((_f(r["t_ms"]), _f(r["truth_x_cm"]), _f(r["truth_y_cm"]), _f(r.get("est_x_cm")), _f(r.get("est_y_cm")),
+                       _f(r.get("unc_cm")), r.get("converged") == "1"))
     q = None
     qp = os.path.join(d, "quality.json")
     if os.path.exists(qp):
@@ -83,7 +93,7 @@ def load_session(d):
             q = json.load(open(qp, encoding="utf-8"))
         except ValueError:
             q = None
-    return {"name": os.path.basename(os.path.normpath(d)), "meta": meta, "raw": raw, "imu": imu, "poses": poses, "track": track, "quality": q}
+    return {"name": os.path.basename(os.path.normpath(d)), "meta": meta, "raw": raw, "imu": imu, "poses": poses, "track": track, "quality": q, "review": review}
 
 
 # ---------------------------------------------------------------- 小工具
@@ -303,6 +313,10 @@ def eval_live(s):
     out = {"name": s["name"], "kind": "live", "map_id": meta.get("map_id", ""),
            "mag_calibration": meta.get("mag_calibration"), "map_source": meta.get("map_source"),
            "seconds": _r1((tr[-1][0] - tr[0][0]) / 1000, 0) if len(tr) > 1 else 0}
+    if meta.get("purpose") == "review" or s.get("review"):
+        out["review"] = True
+        out["review_start"] = meta.get("review_start")
+        out.update(eval_review(s.get("review") or []))
     if len(tr) < 2:
         return out
     out["jumps_3m"] = sum(1 for a, b in zip(tr, tr[1:]) if math.hypot(b[1] - a[1], b[2] - a[2]) > JUMP_CM)
@@ -322,6 +336,55 @@ def eval_live(s):
     res = rigid_fit_residuals([a for a, _ in pts], [b for _, b in pts])
     out["err_rms_m"] = _r1(math.sqrt(sum(r * r for r in res) / len(res)) / 100)
     out["err_p90_m"] = _r1(pct(res, 0.9) / 100)
+    return out
+
+
+REVIEW_SETTLE_CM = 200.0
+REVIEW_SETTLE_MS = 3000
+
+
+def eval_review(rows):
+    """review.csv 行 [(t, 真值 x, y, 估计 x, y, unc, converged)] → review_* 指标（和 HPASSKit PositionReviewStats 同一口径）"""
+    rows = [r for r in rows if None not in r[:3]]
+    if not rows:
+        return {}
+    errs, conv_errs, uncs = [], [], []
+    settled_at = since = None
+    for t, tx, ty, ex, ey, unc, conv in rows:
+        if ex is None or ey is None:
+            since = None
+            continue
+        e = math.hypot(ex - tx, ey - ty)
+        errs.append(e)
+        if conv:
+            conv_errs.append(e)
+        if unc is not None:
+            uncs.append(unc)
+        if e <= REVIEW_SETTLE_CM:
+            since = t if since is None else since
+            if settled_at is None and t - since >= REVIEW_SETTLE_MS:
+                settled_at = since
+        else:
+            since = None
+    out = {"review_samples": len(errs), "review_truth_samples": len(rows),
+           "review_truth_s": _r1((rows[-1][0] - rows[0][0]) / 1000, 0),
+           "review_estimate_share": _r1(len(errs) / len(rows), 2)}
+    if errs:
+        med = median(errs)
+        out.update({
+            "review_err_median_m": _r1(med / 100, 2), "review_err_p90_m": _r1(pct(errs, 0.9) / 100, 2),
+            "review_err_max_m": _r1(max(errs) / 100, 2),
+            "review_within_1m": _r1(sum(1 for e in errs if e <= 100) / len(errs), 2),
+            "review_within_2m": _r1(sum(1 for e in errs if e <= 200) / len(errs), 2),
+        })
+        if conv_errs:
+            out["review_err_converged_median_m"] = _r1(median(conv_errs) / 100, 2)
+        if uncs and med > 0:
+            out["review_unc_over_err"] = _r1(median(uncs) / med, 2)
+        tr = [(r[1], r[2]) for r in rows]
+        out["review_walk_m"] = _r1(sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(tr, tr[1:])) / 100)
+    if settled_at is not None:
+        out["review_settle_s"] = _r1((settled_at - rows[0][0]) / 1000)
     return out
 
 
@@ -367,6 +430,14 @@ def summarize(surveys, lives, builds):
             "live_jumps_per_min": _r1(sum(x.get("jumps_3m", 0) for x in g["lives"]) /
                                       max(1e-9, sum(x.get("seconds") or 0 for x in g["lives"]) / 60)) if g["lives"] else None,
         }
+        rv = [x for x in g["lives"] if x.get("review_samples")]
+        g["summary"].update({
+            "review_sessions": len(rv),
+            "review_samples": sum(x["review_samples"] for x in rv),
+            "review_err_median_m": _r1(median([x.get("review_err_median_m") for x in rv]), 2),
+            "review_err_p90_m": _r1(median([x.get("review_err_p90_m") for x in rv]), 2),
+            "review_within_2m": _r1(median([x.get("review_within_2m") for x in rv]), 2),
+        })
         b = builds.get(mid)
         if b:
             g["summary"].update({"coverage": _r1(b.get("coverage"), 2), "walkable_m2": _r1(b.get("walkableM2"), 0),
@@ -382,7 +453,8 @@ def _cell(v, suffix=""):
 def markdown(maps):
     L = ["# 采集 / 定位效果评估", ""]
     L.append("回访一致性：同一地点隔 ≥ 15 s 再经过时 |B| 的差（中位，µT），越小越好；原始 = 原始磁力计减整段固定偏置（建图口径），"
-             "iOS = iOS 校准后的值。定位误差：实时定位轨迹和 ARKit 轨迹刚体对齐后的残差（m），偏乐观，版本之间比。")
+             "iOS = iOS 校准后的值。定位误差：实时定位轨迹和 ARKit 轨迹刚体对齐后的残差（m），偏乐观，版本之间比。"
+             "视觉复核：视觉认出房间后的地图位置当真值，地磁混合定位的绝对误差（m），不做对齐。")
     for mid, g in sorted(maps.items()):
         s = g["summary"]
         L += ["", f"## {mid}", ""]
@@ -393,6 +465,11 @@ def markdown(maps):
                  f"越界比例：iOS {_cell(s['ios_out_of_range'])}，原始 {_cell(s['raw_out_of_range'])}")
         L.append(f"- 实时定位 {s['live_sessions']} 次（能和 ARKit 对比的 {s['live_scored']} 次）：误差中位 {_cell(s['live_err_rms_m'], ' m')}，"
                  f"跳 > 3 m {_cell(s['live_jumps_per_min'], ' 次/分钟')}")
+        if s.get("review_sessions"):
+            L.append(f"- 视觉复核 {s['review_sessions']} 次（{s['review_samples']} 个样本，地图上的绝对误差）：误差中位 "
+                     f"{_cell(s['review_err_median_m'], ' m')}，P90 {_cell(s['review_err_p90_m'], ' m')}，"
+                     f"2 m 内 {_cell(None if s['review_within_2m'] is None else round(s['review_within_2m'] * 100), '%')}"
+                     "（各会话的中位数）")
         if g["surveys"]:
             L += ["", "| 采集会话 | 秒 | 路程 m | ARKit 正常 | 回访 原始 µT | 回访 iOS µT | iOS 偏置漂移 µT | 越界 iOS / 原始 | 质量分 |",
                   "|---|---|---|---|---|---|---|---|---|"]
@@ -408,6 +485,16 @@ def markdown(maps):
                 L.append(f"| {x['name']} | {_cell(x.get('seconds'))} | {_cell(x.get('walk_m'))} | {_cell(x.get('err_rms_m'))} | "
                          f"{_cell(x.get('err_p90_m'))} | {_cell(x.get('unc_reported_m'))} | {_cell(x.get('jumps_3m'))} | "
                          f"{_cell(x.get('mag_calibration'))} |")
+        reviews = [x for x in g["lives"] if x.get("review")]
+        if reviews:
+            L += ["", "| 视觉复核 | 起点 | 有真值 秒 | 走 m | 误差中位 m | P90 m | 最大 m | 1 m 内 | 2 m 内 | 有把握时中位 m | 有估计 | 稳定用时 s | 自报/实际 |",
+                  "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+            for x in reviews:
+                L.append(f"| {x['name']} | {_cell(x.get('review_start'))} | {_cell(x.get('review_truth_s'))} | {_cell(x.get('review_walk_m'))} | "
+                         f"{_cell(x.get('review_err_median_m'))} | {_cell(x.get('review_err_p90_m'))} | {_cell(x.get('review_err_max_m'))} | "
+                         f"{_cell(x.get('review_within_1m'))} | {_cell(x.get('review_within_2m'))} | "
+                         f"{_cell(x.get('review_err_converged_median_m'))} | {_cell(x.get('review_estimate_share'))} | "
+                         f"{_cell(x.get('review_settle_s'))} | {_cell(x.get('review_unc_over_err'))} |")
     return "\n".join(L) + "\n"
 
 

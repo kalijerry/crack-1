@@ -129,5 +129,40 @@ class SessionTest(unittest.TestCase):
             self.assertEqual(x["unc_reported_m"], 0.8)
 
 
+    def test_review_absolute_error(self):
+        """视觉复核：review.csv 里真值和估计直接相减（不对齐）；前 4 s 偏 5 m，之后偏 0.5 m"""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = os.path.join(tmp, "mag_review")
+            os.makedirs(d)
+            json.dump({"live": True, "map_id": "m1", "purpose": "review", "review_start": "auto"},
+                      open(os.path.join(d, "meta.json"), "w"))
+            t0 = 1_700_000_000_000
+            with open(os.path.join(d, "review.csv"), "w") as f, open(os.path.join(d, "track.csv"), "w") as ft:
+                f.write("t_ms,truth_x_cm,truth_y_cm,est_x_cm,est_y_cm,err_cm,unc_cm,converged,steps\n")
+                ft.write("t_ms,x_cm,y_cm,unc_cm\n")
+                f.write(f"{t0 - 200},0,0,,,,,0,0\n")          # 还没有估计
+                for i in range(100):                          # 20 s，5 Hz，沿 x 走 1 m/s
+                    t = t0 + i * 200
+                    x = i * 20.0
+                    off = 500.0 if i < 20 else 50.0
+                    f.write(f"{t},{x:.1f},0,{x:.1f},{off:.1f},{off:.1f},100,{0 if i < 20 else 1},{i}\n")
+                    ft.write(f"{t},{x:.1f},{off:.1f},100\n")
+            sv, lv = ce.evaluate_dirs([d])
+            x = lv[0]
+            self.assertTrue(x["review"])
+            self.assertEqual(x["review_samples"], 100)
+            self.assertEqual(x["review_truth_samples"], 101)
+            self.assertEqual(x["review_err_median_m"], 0.5)
+            self.assertEqual(x["review_err_max_m"], 5.0)
+            self.assertEqual(x["review_within_1m"], 0.8)
+            self.assertEqual(x["review_err_converged_median_m"], 0.5)
+            self.assertAlmostEqual(x["review_settle_s"], 4.2, delta=0.01)   # 第一行（无估计）起算
+            self.assertEqual(x["review_unc_over_err"], 2.0)
+            self.assertAlmostEqual(x["review_walk_m"], 19.8, delta=0.01)
+            md = ce.markdown(ce.summarize(sv, lv, {}))
+            self.assertIn("视觉复核 1 次", md)
+            self.assertIn("| mag_review | auto |", md)
+
+
 if __name__ == "__main__":
     unittest.main()

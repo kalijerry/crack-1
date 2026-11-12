@@ -98,6 +98,12 @@ struct SettingsView: View {
                 DSRowLabel(title: "精度测试", systemImage: "scope", tint: .purple, subtitle: "走一圈测试路线，看定位准不准")
             }
             NavigationLink {
+                PositionReviewView()
+            } label: {
+                DSRowLabel(title: "视觉复核", systemImage: "checkmark.seal", tint: .teal,
+                           subtitle: "以视觉定位为真值，实时测地磁混合定位误差")
+            }
+            NavigationLink {
                 OfficeCarryTestView { tab = .mapping }
             } label: {
                 DSRowLabel(title: "双机测试", systemImage: "iphone.gen3.radiowaves.left.and.right", tint: .orange,

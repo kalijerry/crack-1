@@ -16,8 +16,17 @@ public final class RawBiasTracker {
     private var n = 0
     private var perSecond: [(Double, Double, Double)] = []
     public private(set) var bias: (Double, Double, Double)?
+    /// 一共攒了多少秒的数据（不受 windowSeconds 限制）。存本机偏置前看它够不够长
+    public private(set) var secondsSeen = 0
 
     public init() {}
+
+    /// windowSeconds 设很大 = 整次会话的中位数（和云端建图同一个口径）
+    public convenience init(windowSeconds: Int, minSeconds: Int = 5) {
+        self.init()
+        self.windowSeconds = windowSeconds
+        self.minSeconds = minSeconds
+    }
 
     public func reset() {
         currentSecond = nil
@@ -25,6 +34,7 @@ public final class RawBiasTracker {
         n = 0
         perSecond = []
         bias = nil
+        secondsSeen = 0
     }
 
     public var isReady: Bool { bias != nil }
@@ -37,6 +47,7 @@ public final class RawBiasTracker {
         let sec = tMs / 1000
         if let c = currentSecond, c != sec, n > 0 {
             perSecond.append((acc.0 / Double(n), acc.1 / Double(n), acc.2 / Double(n)))
+            secondsSeen += 1
             if perSecond.count > windowSeconds { perSecond.removeFirst(perSecond.count - windowSeconds) }
             acc = (0, 0, 0)
             n = 0

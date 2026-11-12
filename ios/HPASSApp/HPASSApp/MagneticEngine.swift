@@ -1544,7 +1544,15 @@ final class MagneticEngine: ObservableObject {
         thermalTimer?.invalidate()
         thermalTimer = nil
         stopARGate()
-        queue.async { [pipe] in pipe.mode = .idle }
+        queue.async { [pipe] in
+            // 没有本机偏置存档时（参考系含磁力计、iOS 给校准值）攒够了就存一份：iOS 校准值一次定位里会漂几十 µT，
+            // 固定偏置的读数前后一致得多（tools/collection_eval.py 的回访一致性）
+            if pipe.mode != .calibrating, MagBiasStore.loadValid() == nil, !pipe.magBias.polluted,
+               pipe.biasTracker.secondsSeen >= MagBiasStore.liveMinSeconds, let b = pipe.biasTracker.bias {
+                MagBiasStore.save(b, source: "live")
+            }
+            pipe.mode = .idle
+        }
         phase = .idle
         feature = nil
         UIApplication.shared.isIdleTimerDisabled = false
@@ -1571,11 +1579,12 @@ final class MagneticEngine: ObservableObject {
         // v4：真四元数 + 陀螺辅助重力；mx..mz 写上面这个「校准后」磁场
         pipe.imuWriter?.append(s.csvLineV4(mag: m, magAcc: magAcc))
         let feat: MagneticFeature?
+        // 「原始 − 校准」一直攒（地图不是 raw 也攒）：结束时没有本机存档就存下来，下次定位用固定偏置（MagBiasStore.liveMinSeconds）
+        if s.magValid, let r = pipe.lastRaw, let rt = pipe.lastRawT, abs(rt - s.tMs) <= 30 {
+            pipe.biasTracker.add(tMs: s.tMs, raw: r, calibrated: s.mag)
+        }
         if pipe.useRawMag {
             pipe.extractor.updateGravity(sample)
-            if s.magValid, let r = pipe.lastRaw, let rt = pipe.lastRawT, abs(rt - s.tMs) <= 30 {
-                pipe.biasTracker.add(tMs: s.tMs, raw: r, calibrated: s.mag)
-            }
             if pipe.biasTracker.isReady || pipe.magBias.bias != nil {
                 feat = pipe.latest
             } else if s.magValid {

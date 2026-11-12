@@ -154,7 +154,8 @@ public final class CollectionQualityMonitor {
         refreshLive(tMs: tMs)
     }
 
-    /// 磁场强度（µT，校准后的模长）。expected：已有磁场图在当前位置的强度（没有图 / 图外为 nil）。
+    /// 磁场强度（µT）：App 送的是「原始磁力计 − 整段累计偏置」的模长（和云端建图同一个口径，不用 iOS 校准值，见 SurveyEngine.MagBox）。
+    /// expected：已有磁场图在当前位置的强度（没有图 / 图外为 nil）。
     /// 内部按 10 Hz 抽样。
     public func mag(tMs: Int64, totalUT: Double, expectedUT: Double?) {
         if let l = lastMagMs, tMs - l < 100 { return }

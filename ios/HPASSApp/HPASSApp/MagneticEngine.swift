@@ -129,6 +129,14 @@ private final class MagPipeline {
     var pendingLateral: LateralObservation?
     var lastLatLeft: Double?
     var lastLatRight: Double?
+
+    // 视觉复核：ARKit 认出房间后的相机位置换到地图当真值，和地磁混合定位逐帧比（见 PositionReviewStats）
+    var reviewAlign: MapARTransform?
+    var reviewWriter: CSVWriter?
+    var reviewStats = PositionReviewStats()
+    var reviewLastMs: Int64 = 0
+    var reviewLastPublishMs: Int64 = 0
+    var lastUncCm = 0.0
 }
 
 /// 地磁模式：校准（现场建磁场图）和定位（惯导 + 磁场地图的粒子滤波）。
@@ -208,8 +216,23 @@ final class MagneticEngine: ObservableObject {
     var forceCameraOff = false
     /// 实时定位结束（不管从哪个页面结束）之后调一次：盲测模式在这里收尾（关近距离传感器、后台保活、敲击记录）
     var onLiveStopped: (() -> Void)?
-    /// 这次实时定位允许用摄像头
-    var cameraAllowed: Bool { visualEnhancement && !forceCameraOff && ARKitLogger.isSupported }
+    /// 这次实时定位允许用摄像头（视觉复核时不管「视觉增强」开没开，摄像头都要开着当裁判）
+    var cameraAllowed: Bool { (visualEnhancement || reviewMode) && !forceCameraOff && ARKitLogger.isSupported }
+
+    // MARK: 视觉复核（PositionReviewSession 在 startLive 之前设好）
+    /// 视觉复核：摄像头全程开着，ARKit 认出房间后的位置只当真值，**不喂给定位**（不当观测、不抓定位、深度不参与），
+    /// 测的是纯「计步 + 地磁 + 蓝牙」的误差。逐 0.2 秒写 review.csv，结束时摘要写进 meta.json（purpose = review）。
+    var reviewMode = false
+    /// 复核的起点：true = 视觉认出的位置和朝向当起点（只测跟踪）；false = 地磁自己冷启动（连起步一起测）
+    var reviewStartFromVisual = true
+    @Published private(set) var reviewStats = PositionReviewStats()
+    @Published private(set) var reviewTruth: Point2?
+    @Published private(set) var reviewEstimate: Point2?
+    @Published private(set) var reviewTruthTrail: [Point2] = []
+    @Published private(set) var reviewEstTrail: [Point2] = []
+    /// 复核：视觉已经认出房间（有真值了）
+    @Published private(set) var reviewHasTruth = false
+    static let reviewTrailCapacity = 1500
     /// 实时定位录制的附加 meta（盲测模式填），开始和结束时各取一次
     var liveExtraMeta: (() -> [String: Any])?
     /// 这次实时定位的录制目录（imu.csv、mag_raw.csv、ble.csv、meta.json；结束时拷进 track.csv）
@@ -349,6 +372,10 @@ final class MagneticEngine: ObservableObject {
         }
         ar.onRelocalized = { [weak self] cam in
             Task { @MainActor in self?.applyVisualFix(camera: cam) }
+        }
+        ar.onAnchoredPose = { [weak self] t, x, z in
+            guard let self else { return }
+            queue.async { self.handleReviewTruth(t: t, a: Point2(x, z), pipe: pipe) }
         }
         signReader.onRead = { [weak self] _, text, _ in
             Task { @MainActor in self?.handleShelfSign(text) }
@@ -493,8 +520,10 @@ final class MagneticEngine: ObservableObject {
         startPedometerAndActivity()
         arLoggedThisSession = false
         startLiveRecording()
+        startReviewRecording()
         BackgroundKeeper.shared.begin("实时定位")
         startARGate()
+        if reviewMode { arGateTick() }          // 复核：马上开摄像头，不等姿态
         AppLog.i("地磁", "实时定位：打开传感器，视觉增强 \(cameraAllowed ? "开（竖持时才开摄像头）" : "关（不用摄像头）")，深度 \(depthMode.title)，罗盘修正 \(useCompassHeading ? "开" : "关")，地磁纠偏 \(useMagCorrection ? "开" : "关")")
         startBLE()
         loadMonitor()
@@ -524,10 +553,12 @@ final class MagneticEngine: ObservableObject {
             pipe.rawWriter?.close(); pipe.rawWriter = nil
             pipe.carryMode = ""
         }
+        stopReviewRecording()
         writeLiveMeta(final: true)
         // 盲测附加的东西只属于这一次实时定位：从「导航」页 / 地磁页 / 传感器被别的页面抢走结束时也要清掉（评审）
         forceCameraOff = false
         liveExtraMeta = nil
+        reviewMode = false
         if let cb = onLiveStopped { onLiveStopped = nil; cb() }
         liveSignsWriter?.close()
         liveSignsWriter = nil
@@ -911,6 +942,7 @@ final class MagneticEngine: ObservableObject {
 
     /// 读到货架黄标签（定位时摄像头本来就开着做视觉里程计）
     private func handleShelfSign(_ text: String) {
+        guard !reviewMode else { return }           // 复核：摄像头只当裁判，货架标签不抓定位
         guard phase == .live, isTracking || searching, let ss = shelfSigns, let sg = ss.sign(for: text) else { return }
         if let l = lastSignText, l.0 == text, Date().timeIntervalSince(l.1) < 3 { return }
         lastSignText = (text, Date())
@@ -940,19 +972,14 @@ final class MagneticEngine: ObservableObject {
     /// 把它当成一次 σ≈50 cm 的位置观测交给粒子滤波（VisualFixPolicy），计步照样推粒子。
     /// 还没有粒子滤波（这张地图没有磁场图）时，它就是一个外部给的起点。
     private func applyVisualFix(camera cam: simd_float4x4) {
+        if reviewMode { applyReviewStart(camera: cam); return }
         guard phase == .live, isTracking || searching, let t = StoreDataStore.shared.map?.arAlign else { return }
         guard VisualFixPolicy.acceptsFix(enhancementEnabled: cameraAllowed, posture: posture,
                                          arTrackingNormal: vioTracking == 2) else {
             AppLog.i("地磁", "视觉认出房间，但条件不满足（姿态 \(posture.title)，跟踪 \(vioTracking)），不当观测用")
             return
         }
-        let a = Point2(Double(cam.columns.3.x) * 100, Double(cam.columns.3.z) * 100)
-        let p = t.toMap(a)
-        // 相机朝前 = −z 轴；转到地图系，朝向 0 = +y
-        let f = Point2(-Double(cam.columns.2.x), -Double(cam.columns.2.z))
-        let c = cos(t.phi), s = sin(t.phi)
-        let d = Point2(f.x * c - f.y * s, f.x * s + f.y * c)
-        let h = d.length > 0.1 ? atan2(d.x, d.y) : headingRad
+        let (a, p, h) = visualPose(cam, t)
         let before = position
         let wasSearching = searching
         let applied: Bool = queue.sync {
@@ -981,6 +1008,111 @@ final class MagneticEngine: ObservableObject {
                  + (before.map { "，当前估计偏 \(Int($0.distance(to: p))) cm" } ?? ""))
     }
 
+    /// 相机位姿 → (ARKit 平面位置, 地图位置, 地图朝向)
+    private func visualPose(_ cam: simd_float4x4, _ t: MapARTransform) -> (Point2, Point2, Double) {
+        let a = Point2(Double(cam.columns.3.x) * 100, Double(cam.columns.3.z) * 100)
+        let p = t.toMap(a)
+        // 相机朝前 = −z 轴；转到地图系，朝向 0 = +y
+        let f = Point2(-Double(cam.columns.2.x), -Double(cam.columns.2.z))
+        let c = cos(t.phi), s = sin(t.phi)
+        let d = Point2(f.x * c - f.y * s, f.x * s + f.y * c)
+        let h = d.length > 0.1 ? atan2(d.x, d.y) : headingRad
+        return (a, p, h)
+    }
+
+    // MARK: 视觉复核
+
+    /// 复核时视觉认出房间：不当观测。起点选「视觉」且还没开始推算时，拿它当起点（相当于用户长按定点 + 设朝向），之后完全不管。
+    private func applyReviewStart(camera cam: simd_float4x4) {
+        guard phase == .live, let t = StoreDataStore.shared.map?.arAlign else { return }
+        visualFixes += 1
+        reviewHasTruth = true
+        endVisualSearch()
+        guard reviewStartFromVisual, !isTracking else {
+            AppLog.i("复核", "视觉认出房间（第 \(visualFixes) 次），只当真值，不喂给定位")
+            return
+        }
+        let (a, p, h) = visualPose(cam, t)
+        restartTracking(at: p, heading: h, checkLabel: "复核·视觉起点", isCorrection: false)
+        queue.sync { pipe.aligner.set(t, ar: a) }            // AR 叠加用（不影响粒子）
+        searching = false
+        isTracking = true
+        locState = .tracking
+        position = p
+        headingRad = h
+        trail = [p]
+        Haptics.success()
+        AppLog.i("复核", "视觉认出房间：\(p)，朝向 \(Int(h * 180 / Double.pi))°，当起点；之后视觉只当真值")
+    }
+
+    /// 复核录制：review.csv 和真值变换。没有视觉特征地图 / 对齐变换时不录（界面会先拦住）。
+    private func startReviewRecording() {
+        reviewStats = PositionReviewStats()
+        reviewTruth = nil
+        reviewEstimate = nil
+        reviewTruthTrail = []
+        reviewEstTrail = []
+        reviewHasTruth = false
+        guard reviewMode, let d = liveSessionDir, let t = StoreDataStore.shared.map?.arAlign else { return }
+        let w = try? CSVWriter(url: d.appendingPathComponent("review.csv"),
+                               header: "t_ms,truth_x_cm,truth_y_cm,est_x_cm,est_y_cm,err_cm,unc_cm,converged,steps")
+        queue.sync {
+            pipe.reviewAlign = t
+            pipe.reviewWriter = w
+            pipe.reviewStats = PositionReviewStats()
+            pipe.reviewLastMs = 0
+            pipe.reviewLastPublishMs = 0
+        }
+        UIApplication.shared.isIdleTimerDisabled = true
+        AppLog.i("复核", "开始视觉复核：起点 \(reviewStartFromVisual ? "视觉" : "地磁自动定位")，视觉位置只当真值")
+    }
+
+    private func stopReviewRecording() {
+        guard reviewMode else { return }
+        let stats: PositionReviewStats = queue.sync {
+            pipe.reviewWriter?.close()
+            pipe.reviewWriter = nil
+            pipe.reviewAlign = nil
+            return pipe.reviewStats
+        }
+        reviewStats = stats
+        UIApplication.shared.isIdleTimerDisabled = false
+        AppLog.i("复核", "复核结束：\(stats.count) 个样本，误差中位 \(stats.medianCm.map { Fmt.f($0 / 100, 2) } ?? "—") m，"
+                 + "P90 \(stats.p90Cm.map { Fmt.f($0 / 100, 2) } ?? "—") m，2 m 内 \(stats.withinShare(200).map { "\(Int($0 * 100))%" } ?? "—")")
+    }
+
+    /// 真值位姿（引擎队列上，30 Hz → 5 Hz）：和此刻的地磁混合估计相减，写一行 review.csv；界面 2 Hz 刷新。
+    private nonisolated func handleReviewTruth(t: Int64, a: Point2, pipe: MagPipeline) {
+        guard let align = pipe.reviewAlign, pipe.mode == .live, t - pipe.reviewLastMs >= 200 else { return }
+        pipe.reviewLastMs = t
+        let truth = align.toMap(a)
+        let est: Point2? = pipe.tracking ? pipe.lastShown : nil
+        let conv = pipe.lastConverged
+        let err = pipe.reviewStats.add(tMs: t, truth: truth, estimate: est, converged: conv)
+        let steps = pipe.stepBase + (pipe.lastOut?.stepCount ?? 0)
+        pipe.reviewWriter?.append([
+            "\(t)", Fmt.f(truth.x, 1), Fmt.f(truth.y, 1),
+            est.map { Fmt.f($0.x, 1) } ?? "", est.map { Fmt.f($0.y, 1) } ?? "",
+            err.map { Fmt.f($0, 1) } ?? "", est == nil ? "" : Fmt.f(pipe.lastUncCm, 1),
+            conv ? "1" : "0", "\(steps)",
+        ].joined(separator: ","))
+        guard t - pipe.reviewLastPublishMs >= 500 else { return }
+        pipe.reviewLastPublishMs = t
+        let stats = pipe.reviewStats
+        Task { @MainActor in
+            self.reviewStats = stats
+            self.reviewTruth = truth
+            self.reviewEstimate = est
+            self.reviewHasTruth = true
+            self.reviewTruthTrail.append(truth)
+            if self.reviewTruthTrail.count > Self.reviewTrailCapacity { self.reviewTruthTrail.removeFirst(self.reviewTruthTrail.count - Self.reviewTrailCapacity) }
+            if let e = est {
+                self.reviewEstTrail.append(e)
+                if self.reviewEstTrail.count > Self.reviewTrailCapacity { self.reviewEstTrail.removeFirst(self.reviewEstTrail.count - Self.reviewTrailCapacity) }
+            }
+        }
+    }
+
     // MARK: 房间视觉认房间的等待状态
 
     private func beginVisualSearch() {
@@ -995,7 +1127,7 @@ final class MagneticEngine: ObservableObject {
 
     private func visualTick() {
         guard let s = visualSearchStarted, searching else { endVisualSearch(); return }
-        if !visualTimeoutCounted, Date().timeIntervalSince(s) >= Self.visualTimeoutSec {
+        if !reviewMode, !visualTimeoutCounted, Date().timeIntervalSince(s) >= Self.visualTimeoutSec {
             visualTimeoutCounted = true
             visualTimeouts += 1
             // 一直认不出（多半不在这个房间）：丢掉特征地图，ARKit 按普通模式跟踪，不然视觉里程计一直不可用
@@ -1103,6 +1235,11 @@ final class MagneticEngine: ObservableObject {
             meta["battery_end"] = Double(UIDevice.current.batteryLevel)
             meta["thermal_end"] = ProcessInfo.processInfo.thermalState.rawValue
             meta["visual_fixes"] = visualFixes
+            if reviewMode { meta["review"] = reviewStats.summary() }
+        }
+        if reviewMode {
+            meta["purpose"] = "review"
+            meta["review_start"] = reviewStartFromVisual ? "visual" : "auto"
         }
         // 地图几何版本 / 原点平移（扫描段注册表）：回放时按它换算地图坐标
         for (k, v) in MapLibrary.shared.sessionMapMeta { meta[k] = v }
@@ -1127,7 +1264,7 @@ final class MagneticEngine: ObservableObject {
             let reader = signReader
             ar.onFrame = { f, t in reader.process(f, tMs: t) }
             if wm != nil { AppLog.i("地磁", "已载入视觉特征地图：手机竖着对着房间就能认出位置（只当位置观测）") }
-            let mode = depthMode
+            let mode: DepthMode = (reviewMode && depthMode == .fuse) ? .logOnly : depthMode    // 复核：深度不参与定位
             let h = headingRad
             queue.sync {
                 pipe.vioEnabled = true
@@ -1173,6 +1310,11 @@ final class MagneticEngine: ObservableObject {
 
     /// 每秒一次：「视觉增强」开着且手机竖持 3 秒 → 开摄像头；姿态不对 6 秒、或 20 秒都没正常跟踪 → 关摄像头（关后 30 秒内不再开）。
     private func arGateTick() {
+        if reviewMode, phase == .live {
+            // 复核：摄像头从头到尾开着当裁判，不按姿态启停、也不等定位开始（跟踪不好时界面提示「竖着拿、对着房间」）
+            if !arRunning { startVisualOdometry() }
+            return
+        }
         guard phase == .live, isTracking || searching else {
             if arRunning { stopVisualOdometry() }
             return
@@ -1544,7 +1686,15 @@ final class MagneticEngine: ObservableObject {
         thermalTimer?.invalidate()
         thermalTimer = nil
         stopARGate()
-        queue.async { [pipe] in pipe.mode = .idle }
+        queue.async { [pipe] in
+            // 没有本机偏置存档时（参考系含磁力计、iOS 给校准值）攒够了就存一份：iOS 校准值一次定位里会漂几十 µT，
+            // 固定偏置的读数前后一致得多（tools/collection_eval.py 的回访一致性）
+            if pipe.mode != .calibrating, MagBiasStore.loadValid() == nil, !pipe.magBias.polluted,
+               pipe.biasTracker.secondsSeen >= MagBiasStore.liveMinSeconds, let b = pipe.biasTracker.bias {
+                MagBiasStore.save(b, source: "live")
+            }
+            pipe.mode = .idle
+        }
         phase = .idle
         feature = nil
         UIApplication.shared.isIdleTimerDisabled = false
@@ -1571,11 +1721,12 @@ final class MagneticEngine: ObservableObject {
         // v4：真四元数 + 陀螺辅助重力；mx..mz 写上面这个「校准后」磁场
         pipe.imuWriter?.append(s.csvLineV4(mag: m, magAcc: magAcc))
         let feat: MagneticFeature?
+        // 「原始 − 校准」一直攒（地图不是 raw 也攒）：结束时没有本机存档就存下来，下次定位用固定偏置（MagBiasStore.liveMinSeconds）
+        if s.magValid, let r = pipe.lastRaw, let rt = pipe.lastRawT, abs(rt - s.tMs) <= 30 {
+            pipe.biasTracker.add(tMs: s.tMs, raw: r, calibrated: s.mag)
+        }
         if pipe.useRawMag {
             pipe.extractor.updateGravity(sample)
-            if s.magValid, let r = pipe.lastRaw, let rt = pipe.lastRawT, abs(rt - s.tMs) <= 30 {
-                pipe.biasTracker.add(tMs: s.tMs, raw: r, calibrated: s.mag)
-            }
             if pipe.biasTracker.isReady || pipe.magBias.bias != nil {
                 feat = pipe.latest
             } else if s.magValid {
@@ -1675,6 +1826,7 @@ final class MagneticEngine: ObservableObject {
     private nonisolated func emit(pipe: MagPipeline, tMs: Int64, shown: Point2, unc: Double, est: MagneticEstimate?,
                                   heading: Double, headingDeg: Double, src: String, feature feat: MagneticFeature?) {
         let steps = pipe.stepBase + (pipe.lastOut?.stepCount ?? 0)
+        pipe.lastUncCm = unc
         // 变化检测：只用有把握的定位（地磁收敛，或纯视觉 / 推算时没有地磁估计）
         if let m = pipe.monitor, let f = pipe.monitorField, let ft = feat, est?.converged == true {
             m.add(position: shown, feature: ft, field: f)

@@ -31,6 +31,9 @@ final class ARKitLogger: NSObject, ARSessionDelegate {
     /// 带视觉特征地图启动后，ARKit 认出了这个地方（从「重定位中」变成正常）时回调：此刻相机的位姿。
     /// 之后 ARKit 的世界坐标就是特征地图保存时的坐标。跟丢再认出来会再回调。
     var onRelocalized: (@Sendable (simd_float4x4) -> Void)?
+    /// 认出房间且位姿稳定之后（ARKit 世界坐标 = 特征地图保存时的坐标、刚校正过的跳变也已稳定），每帧（30 Hz）回调相机 (x, z)（cm）。
+    /// 视觉复核拿它当真值；没认出、跟踪不正常、跳变后还没稳定时不回调。在内部串行队列上调用。
+    var onAnchoredPose: (@Sendable (Int64, Double, Double) -> Void)?
     /// 每秒约 2 帧的相机画面（货架标签识别用）；在 ARKit 的队列上调，别久占
     var onFrame: ((ARFrame, Int64) -> Void)?
     private var usingWorldMap = false
@@ -261,6 +264,9 @@ final class ARKitLogger: NSObject, ARSessionDelegate {
             Fmt.f(Double(q.vector.w), 5), "\(state)", "\(reason)",
         ].joined(separator: ","))
         onPose?(t, Double(p.x) * 100, Double(p.z) * 100, state)
+        if usingWorldMap, relocConfirmed, !relocPending, state == 2 {
+            onAnchoredPose?(t, Double(p.x) * 100, Double(p.z) * 100)
+        }
         if frameCounter % 30 == 0, state == 2, let f = onFrame { f(frame, t) }
 
         // 深度：30 Hz 里每 3 帧取一次，约 10 Hz

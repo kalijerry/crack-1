@@ -506,14 +506,17 @@ final class SurveyEngine: ObservableObject {
         }
         let mb = magBox
         recorder.tap.imu = { s in
-            if s.magValid { mb.set(tMs: s.tMs, totalUT: (s.mag.0 * s.mag.0 + s.mag.1 * s.mag.1 + s.mag.2 * s.mag.2).squareRoot(),
-                                   accuracy: s.magAccuracy) }
+            // 质量打分的磁场：原始磁力计 − 整段累计偏置（和云端建图同一个口径），iOS 校准值只用来估偏置
+            if s.magValid { mb.addCalibrated(tMs: s.tMs, s.mag, accuracy: s.magAccuracy) }
             let h = HPASSKit.IMUSample(tMs: s.tMs, ax: s.acc.0, ay: s.acc.1, az: s.acc.2,
                                        gx: s.gyr.0, gy: s.gyr.1, gz: s.gyr.2,
                                        mx: s.mag.0, my: s.mag.1, mz: s.mag.2)
             sq.async { box.sh?.imu(h) }
         }
-        recorder.tap.raw = { t, v in sq.async { box.sh?.rawMag(tMs: t, v) } }
+        recorder.tap.raw = { t, v in
+            mb.addRaw(tMs: t, v)
+            sq.async { box.sh?.rawMag(tMs: t, v) }
+        }
         ar.onFloor = { [weak self] y in
             Task { @MainActor in self?.arFloorY = y }
         }
@@ -1168,17 +1171,37 @@ private final class ShadowBox: @unchecked Sendable {
     var sh: ShadowLocalizer?
 }
 
-/// 最新一个磁场样本（传感器线程写、主线程取）
+/// 质量打分用的最新磁场样本（传感器线程写、主线程取）。
+///
+/// 强度 = |原始磁力计 − 偏置|，偏置 = 开始以来「原始 − iOS 校准」的累计中位数（RawBiasTracker，和云端建图同一个口径）。
+/// 不直接用 iOS 校准后的强度：实测办公室里 iOS 的偏置每 10 秒漂 40～60 µT，按 10～120 µT 判「磁场异常」时
+/// 一半以上的段都会误报；原始 − 固定偏置同一个地方前后差 2～7 µT（tools/collection_eval.py）。
+/// 真有磁铁贴上来时原始读数整体跳几百 µT，减掉固定偏置后照样越界，仍然报得出来。
 private final class MagBox: @unchecked Sendable {
     struct Sample { var tMs: Int64; var totalUT: Double; var accuracy: Int }
     private let lock = NSLock()
     private var latest: Sample?
-    func set(tMs: Int64, totalUT: Double, accuracy: Int) {
-        lock.lock(); latest = Sample(tMs: tMs, totalUT: totalUT, accuracy: accuracy); lock.unlock()
+    private let tracker = RawBiasTracker(windowSeconds: 3600)
+    private var lastRaw: (t: Int64, v: (Double, Double, Double))?
+    private var accuracy = -1
+
+    func addRaw(tMs: Int64, _ v: (Double, Double, Double)) {
+        lock.lock(); defer { lock.unlock() }
+        lastRaw = (tMs, v)
+        guard let c = tracker.corrected(v) else { return }      // 前几秒偏置还没出来：先不判
+        latest = Sample(tMs: tMs, totalUT: (c.0 * c.0 + c.1 * c.1 + c.2 * c.2).squareRoot(), accuracy: accuracy)
     }
+
+    func addCalibrated(tMs: Int64, _ m: (Double, Double, Double), accuracy acc: Int) {
+        lock.lock(); defer { lock.unlock() }
+        accuracy = acc
+        guard let r = lastRaw, abs(r.t - tMs) <= 30 else { return }
+        tracker.add(tMs: tMs, raw: r.v, calibrated: m)
+    }
+
     /// 取走最新的（取过就清掉，同一个样本不算两次）
     func take() -> Sample? { lock.lock(); defer { latest = nil; lock.unlock() }; return latest }
-    func reset() { lock.lock(); latest = nil; lock.unlock() }
+    func reset() { lock.lock(); latest = nil; lastRaw = nil; accuracy = -1; tracker.reset(); lock.unlock() }
 }
 
 /// 涂色图层：一张图（每格一个像素）+ 它在地图上的范围（cm）。2D 和 3D 共用。

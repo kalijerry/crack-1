@@ -1,0 +1,43 @@
+name: Collection eval
+
+# 采集 / 定位效果评估：只读后台会话，按地图出回访一致性、iOS 偏置漂移、实时定位误差（对比 ARKit）、覆盖率。
+# 每天北京时间 03:00 跑一次，也可以手动：Actions → Collection eval → Run workflow。
+# 结果在这次运行的 Summary 里，同时传到后台 /api/reports/eval_<时间>.json。会话数据只在临时目录。
+
+on:
+  schedule:
+    - cron: "0 19 * * *"
+  workflow_dispatch:
+    inputs:
+      map_id:
+        description: "只看这张地图（留空 = 全部）"
+        required: false
+      since:
+        description: "只看这天以后的会话（YYYYMMDD，留空 = 全部）"
+        required: false
+      dry_run:
+        description: "不上传报告"
+        type: boolean
+        default: false
+
+concurrency:
+  group: collection-eval
+  cancel-in-progress: false
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Evaluate
+        env:
+          HPASS_URL: ${{ secrets.HPASS_URL }}
+          HPASS_TOKEN: ${{ secrets.HPASS_TOKEN }}
+          MAP_ID: ${{ github.event.inputs.map_id }}
+          SINCE: ${{ github.event.inputs.since }}
+          DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '0' }}
+        run: python3 -I tools/collection_eval.py

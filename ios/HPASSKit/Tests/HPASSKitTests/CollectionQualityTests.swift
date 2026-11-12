@@ -75,8 +75,29 @@ final class CollectionQualityTests: XCTestCase {
         XCTAssertTrue(w5.issues.contains(.magMismatch))
         XCTAssertEqual(q.bad, 1)
         XCTAssertTrue(q.kept, q.reason ?? "")                   // 1/12 段差，整体照用
+        XCTAssertNil(q.mapStale)
         XCTAssertEqual(q.droppedSpansMs, [[T0 + 40_000, T0 + 70_000]])
         XCTAssertEqual(q.droppedSpans, [[40, 70]])
+    }
+
+    /// 整段都和已有地图对不上（地图过期 / 当初带磁吸配件采的）：不自动停、不剔除，标 mapStale，好让云端用它重建
+    func testWholeSessionMapMismatchMeansStaleMap() {
+        let m = CollectionQualityMonitor()
+        let t = walk(m, seconds: 120, magShape: { k in 15 * sin(Double(k)) })
+        XCTAssertNil(m.live.stopReason)
+        let q = m.finish(tMs: t)
+        XCTAssertEqual(q.mapStale, true)
+        XCTAssertTrue(q.kept, q.reason ?? "")
+        XCTAssertEqual(q.bad, 0)
+        XCTAssertTrue(q.droppedSpansMs.isEmpty)
+        XCTAssertGreaterThan(q.issueCounts["magMismatch"] ?? 0, 6)      // 问题照样记下来
+    }
+
+    /// 地图过期也不放过别的问题：跟丢照样停
+    func testStaleMapStillStopsOnTrackingLoss() {
+        let m = CollectionQualityMonitor()
+        walk(m, seconds: 100, tracking: { $0 < 600 }, magShape: { k in 15 * sin(Double(k)) })
+        XCTAssertTrue(m.live.stopReason?.contains("相机跟丢了") ?? false, m.live.stopReason ?? "")
     }
 
     func testBigCorrectionMarksDrift() {

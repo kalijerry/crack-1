@@ -18,8 +18,10 @@ extension MultiSessionFusion {
         public var qualityGate: Bool
         /// 磁场图只用主体连通分量（关掉 = 各分量各自对齐后都留在图里，分量之间不对齐）
         public var mainComponentOnly: Bool
-        public init(qualityGate: Bool = true, mainComponentOnly: Bool = true) {
-            self.qualityGate = qualityGate; self.mainComponentOnly = mainComponentOnly
+        /// 多遍互相对齐（SessionRegistration）：nil = 自动（没有通道中心线的地图才做；有通道的地图靠贴通道）
+        public var registration: Bool?
+        public init(qualityGate: Bool = true, mainComponentOnly: Bool = true, registration: Bool? = nil) {
+            self.qualityGate = qualityGate; self.mainComponentOnly = mainComponentOnly; self.registration = registration
         }
         /// hpass-build 出云端地图包用的
         public static let cloud = ProductionOptions()
@@ -47,6 +49,8 @@ extension MultiSessionFusion {
         public var gate: SessionQualityGate
         /// 用上的货架标签观测次数
         public var signObservations: Int
+        /// 多遍互相对齐的修正（会话名 → 修正；没做对齐时为空）
+        public var registration: [String: SessionRegistration.Rigid] = [:]
     }
 
     /// 云端出图流水线（见类型说明）。没有合格会话时返回 nil（云端不出图）。
@@ -64,7 +68,18 @@ extension MultiSessionFusion {
         }
         func bleOf(_ k: Int) -> [BLESample] { bleIn[k] }
         // 第 1 遍：各会话原样对齐
-        let r1 = fuse(sessions)
+        var r1 = fuse(sessions)
+        // 多遍互相对齐：按磁场 + 可走区域微调每遍的位置和朝向（见 SessionRegistration），之后每遍融合都套上
+        var rigid: [SessionRegistration.Rigid?] = Array(repeating: nil, count: n)
+        var registration: [String: SessionRegistration.Rigid] = [:]
+        if options.registration ?? map.crosses.isEmpty, n > 0 {
+            let reg = SessionRegistration(widthCm: map.width, heightCm: map.height, walkable: SessionEvaluator.walkable(map))
+            let rs = reg.solve(r1.samples.enumerated().map { k, ss in
+                .init(name: sessions[k].name, samples: ss.map { ($0.p, $0.f, $0.tMs) })
+            })
+            for (k, r) in rs.enumerated() where !r.isIdentity { rigid[k] = r; registration[sessions[k].name] = r }
+            if !registration.isEmpty { r1 = fuse(sessions, rigid: rigid) }
+        }
         // 货架标签：每条换成「人应该在那段货架前」的区域
         let shelfSigns = ShelfSigns(map: map, walkable: SessionEvaluator.walkable(map))
         let signObs: [[TagTrajectoryCorrector.SignObservation]] = (0..<n).map { k in
@@ -98,7 +113,7 @@ extension MultiSessionFusion {
             filters = Array(repeating: nil, count: n); keepIdx = Array(0..<n)
         } else {
         // 第 2 遍：带修正对齐，做质量检查
-        let r2 = fuse(sessions, corrections: corrections)
+        let r2 = fuse(sessions, corrections: corrections, rigid: rigid)
         for (k, s) in sessions.enumerated() {
             let others = MagneticFieldBuilder(widthCm: map.width, heightCm: map.height, cellCm: cellCm)
             var any = false
@@ -115,9 +130,10 @@ extension MultiSessionFusion {
         // 第 3 遍：只用合格的会话和合格的段
         let kept = keepIdx.map { sessions[$0] }
         let keptCorr = keepIdx.map { corrections[$0] }
+        let keptRigid = keepIdx.map { rigid[$0] }
         let keptBLE = keepIdx.enumerated().map { j, k in filters[j].map { f in bleOf(k).filter { f($0.tMs) } } ?? bleOf(k) }
         // 没筛、没修正时第 3 遍和第 1 遍一样，直接用
-        let r = !options.qualityGate && corrStats.isEmpty ? r1 : fuse(kept, filters: filters, corrections: keptCorr)
+        let r = !options.qualityGate && corrStats.isEmpty ? r1 : fuse(kept, filters: filters, corrections: keptCorr, rigid: keptRigid)
         // 和主体连不上的会话：整体偏移对不齐（可能差 10～16 µT），磁场图只用主体（分量 0）
         var rm = r
         let offMain = r.sessions.filter { $0.component != 0 }.map(\.name)
@@ -125,9 +141,11 @@ extension MultiSessionFusion {
         if r.components > 1 && options.mainComponentOnly {
             let main = r.sessions.indices.filter { r.sessions[$0].component == 0 }
             excluded = offMain
-            rm = fuse(main.map { kept[$0] }, filters: main.map { filters[$0] }, corrections: main.map { keptCorr[$0] })
+            rm = fuse(main.map { kept[$0] }, filters: main.map { filters[$0] }, corrections: main.map { keptCorr[$0] },
+                      rigid: main.map { keptRigid[$0] })
         }
         return ProductionBuild(magnetic: rm, all: r, keptIndices: keepIdx, keptBLE: keptBLE, magExcluded: excluded, offMain: offMain,
-                               quality: quality, corrections: corrStats, gate: gate, signObservations: nSigns)
+                               quality: quality, corrections: corrStats, gate: gate, signObservations: nSigns,
+                               registration: registration)
     }
 }

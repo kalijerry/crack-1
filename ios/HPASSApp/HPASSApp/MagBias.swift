@@ -22,6 +22,8 @@ enum MagBiasStore {
     static let maxAgeDays = 30.0
     /// 实时定位学偏置：至少攒这么多秒「原始 − 校准」才存（短了中位数还在跟着 iOS 漂）
     static let liveMinSeconds = 30
+    /// 这么新的存档（毫秒）核对没通过也不作废，只这次不用
+    static let keepFreshMs = 86_400_000.0
 
     static func load() -> Stored? {
         guard let d = UserDefaults.standard.data(forKey: key),
@@ -158,7 +160,15 @@ final class MagBiasEstimator {
         validated = true
         if med < band.lowerBound - Self.validationSlackUT || med > band.upperBound + Self.validationSlackUT {
             AppLog.w("地磁", "磁力计偏置核对没通过：|B| 中位 \(Int(med)) µT，地图 \(Int(band.lowerBound))～\(Int(band.upperBound)) µT；这次只用计步 + 地图")
-            if source == .learned { MagBiasStore.invalidate() }
+            // 一天内刚学的偏置不作废：采集时 iOS 校准值对过它，对不上多半是地图过期（比如当初带着磁吸配件采的），
+            // 作废了下次只会退回更漂的 iOS 校准值
+            if source == .learned {
+                if let st = MagBiasStore.load(), Double(Fmt.nowMs() - st.savedMs) < MagBiasStore.keepFreshMs {
+                    AppLog.w("地磁", "本机偏置是 \(Int(Double(Fmt.nowMs() - st.savedMs) / 3_600_000)) 小时内学的，先不作废：更可能是地图磁场过期，建议重采这张图")
+                } else {
+                    MagBiasStore.invalidate()
+                }
+            }
             bias = nil
             source = .rejected
             polluted = true

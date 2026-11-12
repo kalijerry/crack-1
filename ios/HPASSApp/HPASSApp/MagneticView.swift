@@ -170,6 +170,23 @@ struct MagneticView: View {
         return StoreMap(width: store.widthCm, height: store.heightCm, shelves: [], crosses: [])
     }
 
+    /// 视觉定位位置：3 秒内更新过才画（摄像头关了、跟丢了就不画）
+    private var freshVisualPosition: Point2? {
+        guard let p = engine.reviewTruth, let at = engine.reviewTruthAt, Date().timeIntervalSince(at) < 3 else { return nil }
+        return p
+    }
+
+    /// 视觉自动校验：定位位置和视觉位置差多少（黄点 = 视觉）
+    private var visualCheckText: String? {
+        guard engine.visualCheckOn || engine.reviewHasTruth else { return nil }
+        let s = engine.reviewStats
+        guard engine.reviewHasTruth else { return "等摄像头认出房间（竖着拿、对着房间）" }
+        func m(_ cm: Double?) -> String { cm.map { Fmt.f($0 / 100, 1) + " m" } ?? "—" }
+        let now = freshVisualPosition == nil ? "视觉暂时没有" : "现在差 " + m(s.lastErrorCm)
+        let within = s.withinShare(100).map { "，1 m 内 \(Int($0 * 100))%" } ?? ""
+        return "\(now) · 中位 \(m(s.medianCm)) · P90 \(m(s.p90Cm))\(within)（\(s.count) 个点）"
+    }
+
     private var canvas: some View {
         let isSurvey = step == .survey
         let showsTrack = step != .map
@@ -181,8 +198,9 @@ struct MagneticView: View {
                          position: isSurvey ? survey.position : (showsTrack ? engine.position : nil),
                          headingRad: isSurvey ? survey.headingRad : engine.headingRad,
                          uncertaintyCm: isSurvey ? 0 : engine.uncertaintyCm,
-                         // 蓝牙粗定位：和显示位置差得远时画橙色空心圈
-                         rawEstimate: step == .live ? engine.bleEstimate : (isSurvey && survey.bleBase ? survey.bleFix?.position : nil),
+                         // 采集时蓝牙粗定位画橙色空心圈；定位页不画了，改画视觉位置（黄点）当参照
+                         rawEstimate: isSurvey && survey.bleBase ? survey.bleFix?.position : nil,
+                         visualPosition: step == .live ? freshVisualPosition : nil,
                          route: step == .live ? engine.navRoute : nil,
                          showFingerprints: false,
                          markPoints: store.points,
@@ -1013,6 +1031,7 @@ struct MagneticView: View {
                             .font(.footnote).foregroundStyle(.orange)
                     }
                 }
+                if let v = visualCheckText { row("视觉校验（黄点 = 视觉）", v) }
                 if !engine.lateralText.isEmpty { row("障碍物距离（激光雷达）", engine.lateralText) }
                 if let r = engine.pedometerRatio { row("计步器 / 惯导距离", Fmt.f(r, 2)) }
                 if !engine.activityText.isEmpty { row("运动类型", engine.activityText) }

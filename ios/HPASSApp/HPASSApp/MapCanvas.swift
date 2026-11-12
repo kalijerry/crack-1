@@ -45,6 +45,8 @@ struct MapCanvas: View {
     var uncertaintyCm: Double = 0
     /// 原始指纹定位结果（与融合结果不同时画成空心圈）
     var rawEstimate: Point2?
+    /// 视觉定位位置（ARKit 认出房间后换到地图上）：实心黄点，当参照看定位准不准
+    var visualPosition: Point2? = nil
     var route: Route?
     var showFingerprints = true
     /// 点击地图回调，参数是地图坐标（cm）
@@ -538,6 +540,14 @@ struct MapCanvas: View {
             let c = t.toScreen(raw)
             let rect = CGRect(x: c.x - 6, y: c.y - 6, width: 12, height: 12)
             ctx.stroke(Path(ellipseIn: rect), with: .color(.orange), lineWidth: 2)
+        }
+
+        // 视觉定位：实心黄点（深色描边，浅色地图上也看得清）
+        if let v = visualPosition {
+            let c = t.toScreen(v)
+            let rect = CGRect(x: c.x - 7, y: c.y - 7, width: 14, height: 14)
+            ctx.fill(Path(ellipseIn: rect), with: .color(.yellow))
+            ctx.stroke(Path(ellipseIn: rect), with: .color(.black.opacity(0.7)), lineWidth: 1.5)
         }
 
         // 宽通道建议走线

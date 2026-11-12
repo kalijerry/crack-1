@@ -125,5 +125,24 @@ class QualityRejectedTest(unittest.TestCase):
             self.assertIsNone(cb.quality_rejected(d))
 
 
+class SurveySummaryTest(unittest.TestCase):
+    def test_counts_corrections_and_limited(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(cb.survey_summary(d))
+            (Path(d) / "anchors.csv").write_text(
+                "t_ms,kind,map_x_cm,map_y_cm,ar_x_cm,ar_z_cm,heading_rad,note\n"
+                "0,start,0,0,0,0,,\n0,align,0,0,0,0,0.1,\n"
+                "5000,reanchor,1,1,1,1,,路口 修正前偏 230 cm\n9000,reanchor,1,1,1,1,,视觉重定位\n", encoding="utf-8")
+            rows = ["t_ms,x_m,y_m,z_m,qx,qy,qz,qw,tracking,limited_reason"]
+            rows += [f"{i * 100},{i * 0.1},0,0,0,0,0,1,{1 if i < 5 else 2},0" for i in range(101)]
+            (Path(d) / "arkit_pose.csv").write_text("\n".join(rows) + "\n")
+            s = cb.survey_summary(d)
+            self.assertEqual((s["reanchors"], s["visual"], s["jumps_cm"], s["start"]), (2, 1, [230], "手动长按"))
+            self.assertAlmostEqual(s["walk_m"], 10.0, places=3)
+            self.assertAlmostEqual(s["dur_s"], 10.0)
+            self.assertAlmostEqual(s["limited"], 5 / 101)
+            self.assertIn("修正 2 次", cb.format_survey_summary("x", s))
+
+
 if __name__ == "__main__":
     unittest.main()

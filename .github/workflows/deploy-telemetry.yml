@@ -50,6 +50,7 @@ jobs:
         run: npx wrangler deploy
       - name: Smoke test
         run: |
-          code=$(curl -s -o /dev/null -w "%{http_code}" https://hpass.gui.ink/)
-          echo "https://hpass.gui.ink/ → $code"
+          # 用 workers.dev 地址：hpass.gui.ink 这个 zone 对 GitHub 机房的 IP 返回 403（Cloudflare 防机器人），测不出部署好坏
+          code=$(curl -s -o /dev/null -w "%{http_code}" https://hpass-telemetry.kalijerry.workers.dev/)
+          echo "https://hpass-telemetry.kalijerry.workers.dev/ → $code"
           [ "$code" = "200" ] || { echo "::error::部署后看板打不开（$code）"; exit 1; }

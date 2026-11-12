@@ -65,7 +65,7 @@ def package_meta(map_id, secs=None):
 
 # ---- 房间的视觉特征地图（ARWorldMap）：纯函数在 cloud_build_lib.py（不读环境变量，单元测试直接 import）----
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cloud_build_lib import (WM_FILE, WM_META, WM_WARN, WM_MAX, map_align, map_frame_id,  # noqa: E402
+from cloud_build_lib import (survey_summary, format_survey_summary, WM_FILE, WM_META, WM_WARN, WM_MAX, map_align, map_frame_id,  # noqa: E402
                              align_equivalent, worldmap_compatible, pick_worldmap,
                              map_geometry_version, build_unchanged, quality_rejected)
 
@@ -104,6 +104,10 @@ def main():
             if os.path.basename(d) in EXCLUDE:
                 print(f"  跳过 {os.path.basename(d)}：手动排除")
                 continue
+            if not is_live:
+                ss = survey_summary(d)
+                if ss:
+                    print(format_survey_summary(os.path.basename(d), ss))
             g = groups.setdefault(mid, {"build": [], "test": [], "live": []})
             g["live" if is_live else ("test" if meta.get("purpose") == "test" else "build")].append(d)
     reports = get_json("/api/reports")

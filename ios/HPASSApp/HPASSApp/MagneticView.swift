@@ -788,8 +788,8 @@ struct MagneticView: View {
                         .font(.footnote)
                 }
                 if let n = survey.sessionName { row("会话", n).font(.footnote) }
-                if survey.walkedSinceAnchorM > SurveyEngine.anchorEveryM && !survey.corridorLock {
-                    Text("已经走了 \(Int(SurveyEngine.anchorEveryM)) m 以上没修正。可以在下一个路口长按修正一次（可选）。")
+                if survey.walkedSinceAnchorM > survey.anchorIntervalM && !survey.corridorLock {
+                    Text("已经走了 \(Int(survey.anchorIntervalM)) m 以上没修正。可以在下一个路口长按修正一次（可选）。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
